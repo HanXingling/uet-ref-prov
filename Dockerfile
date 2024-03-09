@@ -42,12 +42,16 @@ RUN make
 RUN make xdp
 
 FROM base AS runtime
-RUN apt-get -y install \
+RUN apt-get -y install --no-install-recommends \
 	libnuma1 \
 	libuuid1 \
 	libxdp1 \
 	libnl-3-200 \
-	libnl-route-3-200
+	libnl-route-3-200 \
+	`# for lame tools exec()'d by ref code` \
+	iputils-ping `# ping` \
+	net-tools `# arp` \
+	iproute2 `# ip`
 COPY --from=build-libfabric /stage /
 RUN ldconfig
 RUN fi_info
