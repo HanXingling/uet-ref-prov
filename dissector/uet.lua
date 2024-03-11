@@ -9,8 +9,16 @@
 p_uet = Proto("uet", "UltraEthernet Transport")
 p_uet.prefs["ip_proto"] = Pref.uint("IP protocol#", 253, "IP protocol number for UET")
 
+local dissect_data = Dissector.get("data")
+
 function p_uet.dissector(buf, pinfo, root)
 	pinfo.cols.protocol = p_uet.name
+
+	local offset = 0
+	local pktlen = buf:len()
+	local data_buf = buf(offset, pktlen)
+	local subtree = root:add(p_uet, data_buf)
+	dissect_data:call(data_buf:tvb(), pinfo, subtree)
 end
 
 function p_uet:init()
