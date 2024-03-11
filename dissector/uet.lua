@@ -23,8 +23,9 @@ local types = {
 
 local fld = p_uet.fields
 fld.entropy = ProtoField.uint16("uet.entropy", "Entropy", base.DEC)
-fld.type = ProtoField.uint8("uet.type", "Type", base.HEX, types, 0xF0)
-
+fld.type = ProtoField.uint16("uet.type", "Type", base.HEX, types, 0xf000)
+fld.flags = ProtoField.uint16("uet.flags", "Flags", base.HEX, nil, 0x0fe0)
+fld.next_hdr = ProtoField.uint16("uet.next_hdr", "Next Header", base.HEX, nil, 0x001f)
 
 local dissect_data = Dissector.get("data")
 
@@ -33,7 +34,9 @@ function p_uet.dissector(buf, pinfo, root)
 
 	local subtree = root:add(p_uet, data_buf)
 	subtree:add(fld.entropy, buf(0, 2))
-	subtree:add(fld.type, buf(2, 1))
+	subtree:add(fld.type, buf(2, 2))
+	subtree:add(fld.flags, buf(2, 2))
+	subtree:add(fld.next_hdr, buf(2, 2))
 
 	local h_type = buf(2, 1):bitfield(0, 4)
 	local type_str = types[h_type]
