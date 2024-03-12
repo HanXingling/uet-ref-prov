@@ -35,17 +35,18 @@ fld.entropy = ProtoField.uint16("uet.entropy", "Entropy", base.DEC)
 fld.type = ProtoField.uint16("uet.type", "Type", base.HEX, types, 0xf000)
 fld.flags = ProtoField.uint16("uet.flags", "Flags", base.HEX, nil, 0x0fe0)
 fld.next_hdr = ProtoField.uint16("uet.next_hdr", "Next Header", base.HEX, nil, 0x001f)
+fld.ack_code = ProtoField.uint16("uet.ack.code", "ACK code", base.HEX, nil, 0x001f)
 fld.psn = ProtoField.uint32("uet.psn", "Packet Sequence Number", base.DEC)
 fld.spdcid = ProtoField.uint16("uet.spdcid", "Source PDC ID", base.DEC)
 fld.dpdcid = ProtoField.uint16("uet.dpdcid", "Destination PDC ID", base.DEC)
 
 -- N.B. masks shifted left by 5 bits (for next_hdr)
-fld.flag_syn = ProtoField.bool("uet.flags.syn", "SYN", 16, {"Yes", "No"}, 0x800)
-fld.flag_clr = ProtoField.uint16("uet.flags.clr", "CLR", base.DEC, nil, 0x0600)
-fld.flag_cc = ProtoField.bool("uet.flags.cc", "CC", 16, {"Yes - Congestion Control State present", "No"}, 0x0100)
-fld.flag_ar = ProtoField.bool("uet.flags.ar", "AR (ACK Requested)", 16, {"Yes", "No"}, 0x0080)
-fld.flag_retx = ProtoField.bool("uet.flags.retx", "RETX (is retransmit)", 16, {"Yes", "No"}, 0x0040)
-fld.flag_rsv = ProtoField.bool("uet.flags.rsv", "RSV", 16, {"Yes", "No"}, 0x0020)
+fld.flag_rreq_syn = ProtoField.bool("uet.flags.rreq.syn", "SYN", 16, {"Yes", "No"}, 0x800)
+fld.flag_rreq_clr = ProtoField.uint16("uet.flags.rreq.clr", "CLR", base.DEC, nil, 0x0600)
+fld.flag_rreq_cc = ProtoField.bool("uet.flags.rreq.cc", "CC", 16, {"Yes - Congestion Control State present", "No"}, 0x0100)
+fld.flag_rreq_ar = ProtoField.bool("uet.flags.rreq.ar", "AR (ACK Requested)", 16, {"Yes", "No"}, 0x0080)
+fld.flag_rreq_retx = ProtoField.bool("uet.flags.rreq.retx", "RETX (is retransmit)", 16, {"Yes", "No"}, 0x0040)
+fld.flag_rreq_rsv = ProtoField.bool("uet.flags.rreq.rsv", "RSV", 16, {"Yes", "No"}, 0x0020)
 
 local dissect_data = Dissector.get("data")
 
@@ -66,12 +67,12 @@ function p_uet.dissector(buf, pinfo, root)
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
 		subtree:add(fld.next_hdr, buf(2, 2))
 		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
-		flags_tree:add(fld.flag_syn, buf(2, 2))
-		flags_tree:add(fld.flag_clr, buf(2, 2))
-		flags_tree:add(fld.flag_cc, buf(2, 2))
-		flags_tree:add(fld.flag_ar, buf(2, 2))
-		flags_tree:add(fld.flag_retx, buf(2, 2))
-		flags_tree:add(fld.flag_rsv, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_clr, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_cc, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_ar, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_retx, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_rsv, buf(2, 2))
 
 		subtree:add(fld.psn, buf(4, 4))
 		subtree:add(fld.spdcid, buf(8, 2))
@@ -79,6 +80,10 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.dpdcid, buf(10, 2))
 		-- TODO: clear
 		-- TODO: cc_state
+	end if h_type == TYPE_PDS_ACK then
+		local flags_tree = subtree:add(fld.flags, buf(2, 2))
+		subtree:add(fld.ack_code, buf(2, 2))
+		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 	end
 
 	if summary ~= "" then
