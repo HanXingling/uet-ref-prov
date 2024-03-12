@@ -38,6 +38,15 @@ local hdr_types = {
 	[HDR_RSP]		= "SES response",
 }
 
+local req_opcodes = {
+	[0x05]			= "UET_SEND - (non-matching) send operation",
+}
+local resp_opcodes = {
+	[0]			= "UET_DEFAULT_RESPONSE",
+	[1]			= "UET_RESPONSE",
+	[2]			= "UET_RESPONSE_W_DATA",
+}
+
 local yes_no = {"Yes", "No"}
 local fld = p_uet.fields
 fld.entropy	= ProtoField.uint16("uet.entropy",	"Entropy",			base.DEC)
@@ -66,7 +75,7 @@ fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, yes_no, 
 
 fld.ses_req			= ProtoField.none("uet.ses.req",			"SES request") -- FIXME: Proto()?
 fld.ses_req_rsv			= ProtoField.uint8("uet.ses.req.rsv",			"Reserved",			base.DEC, nil, 0xc0)
-fld.ses_req_opcode		= ProtoField.uint8("uet.ses.req.opcode",		"Opcode",			base.HEX, nil, 0x3f)
+fld.ses_req_opcode		= ProtoField.uint8("uet.ses.req.opcode",		"Opcode",			base.HEX, req_opcodes, 0x3f)
 fld.ses_req_ver			= ProtoField.uint8("uet.ses.req.version",		"Version",			base.HEX, nil, 0xc0)
 fld.ses_req_flag_dc		= ProtoField.bool("uet.ses.req.flags.dc",		"Delivery Complete (DC)",	8, yes_no, 0x20)
 fld.ses_req_flag_ie		= ProtoField.bool("uet.ses.req.flags.ie",		"Initiator Error (IE)",		8, yes_no, 0x10)
@@ -92,7 +101,7 @@ fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet 
 
 fld.ses_resp			= ProtoField.none("uet.ses.resp",			"SES response") -- FIXME: Proto()?
 fld.ses_resp_rsv		= ProtoField.uint8("uet.ses.resp.rsv",			"Reserved",			base.DEC, nil, 0xc0)
-fld.ses_resp_opcode		= ProtoField.uint8("uet.ses.resp.opcode",		"Opcode",			base.HEX, nil, 0x3f)
+fld.ses_resp_opcode		= ProtoField.uint8("uet.ses.resp.opcode",		"Opcode",			base.HEX, resp_opcodes, 0x3f)
 fld.ses_resp_ver		= ProtoField.uint24("uet.ses.resp.version",		"Version",			base.DEC, nil, 0xc00000)
 fld.ses_resp_list		= ProtoField.uint24("uet.ses.resp.list",		"List",				base.DEC, nil, 0x300000)
 fld.ses_resp_retcode		= ProtoField.uint24("uet.ses.resp.retcode",		"Return code",			base.HEX, nil, 0x0fffff)
