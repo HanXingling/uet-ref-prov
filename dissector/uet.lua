@@ -63,6 +63,29 @@ fld.flag_ack_req = ProtoField.uint16("uet.flags.ack.req", "Requests", base.DEC, 
 fld.flag_ack_retry_delay = ProtoField.uint16("uet.flags.ack.retry_delay", "Retry Delay", base.DEC, nil, 0x00c0)
 fld.flag_ack_rsv = ProtoField.bool("uet.flags.ack.rsv", "RSV", 16, {"Yes", "No"}, 0x0020)
 
+fld.ses_req = ProtoField.none("uet.ses.req", "SES request") -- FIXME: Proto()?
+fld.ses_req_rsv = ProtoField.uint8("uet.ses.req.rsv", "Reserved", base.DEC, nil, 0xc0)
+fld.ses_req_opcode = ProtoField.uint8("uet.ses.req.opcode", "Opcode", base.HEX, nil, 0x3f)
+fld.ses_req_ver = ProtoField.uint8("uet.ses.req.version", "Version", base.HEX, nil, 0xc0)
+fld.ses_req_flag_dc = ProtoField.bool("uet.ses.req.flags.dc", "Delivery Complete (DC)", 8, {"Yes", "No"}, 0x20)
+fld.ses_req_flag_ie = ProtoField.bool("uet.ses.req.flags.ie", "Initiator Error (IE)", 8, {"Yes", "No"}, 0x10)
+fld.ses_req_flag_relative = ProtoField.bool("uet.ses.req.flags.relative", "Relative", 8, {"Yes", "No"}, 0x08)
+fld.ses_req_flag_response = ProtoField.bool("uet.ses.req.flags.response", "Response requested", 8, {"Yes", "No"}, 0x04)
+fld.ses_req_flag_hd = ProtoField.bool("uet.ses.req.flags.hd", "Header Data (HD)", 8, {"Yes", "No"}, 0x02)
+fld.ses_req_flag_som = ProtoField.bool("uet.ses.req.flags.som", "Start of Message (SOM)", 8, {"Yes", "No"}, 0x01)
+fld.ses_req_rsv2 = ProtoField.uint16("uet.ses.req.rsv2", "Reserved", base.HEX, nil, 0xf000)
+fld.ses_req_index = ProtoField.uint16("uet.ses.req.index", "Index", base.DEC, nil, 0x0fff)
+fld.ses_req_index_gen = ProtoField.uint8("uet.ses.req.index_gen", "Index generation", base.DEC)
+fld.ses_req_job_id = ProtoField.uint8("uet.ses.req.job_id", "Job ID", base.HEX)
+fld.ses_req_rsv3 = ProtoField.uint16("uet.ses.req.rsv3", "Reserved", base.HEX, nil, 0xf000)
+fld.ses_req_pidonfep = ProtoField.uint16("uet.ses.req.pid_on_fep", "PID on FEP", base.DEC, nil, 0x0fff)
+fld.ses_req_msgid = ProtoField.uint16("uet.ses.req.message_id", "Message ID", base.DEC)
+fld.ses_req_rsv4 = ProtoField.uint64("uet.ses.req.rsv4", "Reserved", base.HEX, nil, 0xfe00000000000000)
+fld.ses_req_buff_offs = ProtoField.uint64("uet.ses.req.buffer_offset", "Buffer offset", base.HEX, nil, 0x01ffffffffffffff)
+fld.ses_req_initiator = ProtoField.uint32("uet.ses.req.initiator", "Initiator", base.HEX)
+fld.ses_req_match_bits = ProtoField.uint64("uet.ses.req.match_bits", "Match bits", base.HEX)
+fld.ses_req_hdr_data = ProtoField.uint64("uet.ses.req.header_data", "Header data", base.HEX)
+fld.ses_req_len = ProtoField.uint64("uet.ses.req.len", "Request length", base.HEX)
 
 local dissect_data = Dissector.get("data")
 
@@ -75,6 +98,7 @@ function p_uet.dissector(buf, pinfo, root)
 	local h_type = buf(2, 1):bitfield(0, 4)
 	local type_str = types[h_type]
 	local summary = ""
+	local offset = 4
 	if type_str ~= nil then
 		summary = type_str
 	end
@@ -94,8 +118,39 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.spdcid, buf(8, 2))
 		-- TODO: mode&offset for SYN
 		subtree:add(fld.dpdcid, buf(10, 2))
+		offset = offset + 8
 		-- TODO: clear
 		-- TODO: cc_state
+
+		local h_next = buf(3, 1):bitfield(3, 5)
+		summary = summary .. " " .. h_next
+		-- TODO: distinct Proto()
+		if h_next == HDR_REQ_STD then
+			local req_tree = subtree:add(fld.ses_req, buf(offset, 44))
+			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
+			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
+			req_tree:add(fld.ses_req_ver, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_dc, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_ie, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_relative, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_response, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_hd, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_som, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_rsv2, buf(offset+2, 2))
+			req_tree:add(fld.ses_req_index, buf(offset+2, 2))
+			req_tree:add(fld.ses_req_index_gen, buf(offset+4, 1))
+			req_tree:add(fld.ses_req_job_id, buf(offset+5, 3))
+			req_tree:add(fld.ses_req_rsv3, buf(offset+8, 2))
+			req_tree:add(fld.ses_req_pidonfep, buf(offset+8, 2))
+			req_tree:add(fld.ses_req_msgid, buf(offset+10, 2))
+			req_tree:add(fld.ses_req_rsv4, buf(offset+12, 8))
+			req_tree:add(fld.ses_req_buff_offs, buf(offset+12, 8))
+			req_tree:add(fld.ses_req_initiator, buf(offset+20, 4))
+			req_tree:add(fld.ses_req_match_bits, buf(offset+24, 8))
+			req_tree:add(fld.ses_req_hdr_data, buf(offset+32, 8))
+			req_tree:add(fld.ses_req_len, buf(offset+40, 4))
+			offset = offset + 44
+		end
 	end if h_type == TYPE_PDS_ACK then
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
 		subtree:add(fld.ack_code, buf(2, 2))
@@ -109,13 +164,13 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
+		offset = offset + 8
 	end
 
 	if summary ~= "" then
 		pinfo.cols.info = summary
 	end
 
-	local offset = 12
 	local pktlen = buf:len() - offset
 	local data_buf = buf(offset, pktlen)
 	dissect_data:call(data_buf:tvb(), pinfo, subtree)
