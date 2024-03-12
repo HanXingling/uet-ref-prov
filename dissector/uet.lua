@@ -148,9 +148,14 @@ function p_uet.dissector(buf, pinfo, root)
 		-- TODO: cc_state
 
 		local h_next = buf(3, 1):bitfield(3, 5)
-		summary = summary .. " " .. h_next
 		-- TODO: distinct Proto()
 		if h_next == HDR_REQ_STD then
+			local opcode = buf(offset, 1):bitfield(2, 6)
+			local opcode_str = req_opcodes[opcode]
+			if opcode_str ~= nil then
+				summary = summary .. " " .. opcode_str
+			end
+
 			local req_tree = subtree:add(fld.ses_req, buf(offset, 44))
 			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
 			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
@@ -198,6 +203,11 @@ function p_uet.dissector(buf, pinfo, root)
 		offset = offset + 8
 
 		-- TODO: any next-header-type discriminator?
+		local opcode = buf(offset, 1):bitfield(2, 6)
+		local opcode_str = resp_opcodes[opcode]
+		if opcode_str ~= nil then
+			summary = summary .. " " .. opcode_str
+		end
 		local resp_tree = subtree:add(fld.ses_resp, buf(offset, 16))
 		resp_tree:add(fld.ses_resp_rsv, buf(offset, 1))
 		resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
