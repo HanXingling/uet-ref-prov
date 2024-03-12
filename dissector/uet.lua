@@ -48,6 +48,14 @@ fld.flag_rreq_ar = ProtoField.bool("uet.flags.rreq.ar", "AR (ACK Requested)", 16
 fld.flag_rreq_retx = ProtoField.bool("uet.flags.rreq.retx", "RETX (is retransmit)", 16, {"Yes", "No"}, 0x0040)
 fld.flag_rreq_rsv = ProtoField.bool("uet.flags.rreq.rsv", "RSV", 16, {"Yes", "No"}, 0x0020)
 
+-- N.B. masks shifted left by 5 bits (for ack_code)
+fld.flag_ack_m = ProtoField.bool("uet.flags.ack.m", "M (ECN marked)", 16, {"Yes", "No"}, 0x0800)
+fld.flag_ack_ax = ProtoField.bool("uet.flags.ack.ax", "AX (ACK Extension)", 16, {"Yes", "No"}, 0x0400)
+fld.flag_ack_req = ProtoField.uint16("uet.flags.ack.req", "Requests", base.DEC, nil, 0x0300)
+fld.flag_ack_retry_delay = ProtoField.uint16("uet.flags.ack.retry_delay", "Retry Delay", base.DEC, nil, 0x00c0)
+fld.flag_ack_rsv = ProtoField.bool("uet.flags.ack.rsv", "RSV", 16, {"Yes", "No"}, 0x0020)
+
+
 local dissect_data = Dissector.get("data")
 
 function p_uet.dissector(buf, pinfo, root)
@@ -84,6 +92,15 @@ function p_uet.dissector(buf, pinfo, root)
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
 		subtree:add(fld.ack_code, buf(2, 2))
 		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
+		flags_tree:add(fld.flag_ack_m, buf(2, 2))
+		flags_tree:add(fld.flag_ack_ax, buf(2, 2))
+		flags_tree:add(fld.flag_ack_req, buf(2, 2))
+		flags_tree:add(fld.flag_ack_retry_delay, buf(2, 2))
+		flags_tree:add(fld.flag_ack_rsv, buf(2, 2))
+
+		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
+		subtree:add(fld.spdcid, buf(8, 2))
+		subtree:add(fld.dpdcid, buf(10, 2))
 	end
 
 	if summary ~= "" then
