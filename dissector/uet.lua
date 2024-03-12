@@ -26,6 +26,9 @@ fld.entropy = ProtoField.uint16("uet.entropy", "Entropy", base.DEC)
 fld.type = ProtoField.uint16("uet.type", "Type", base.HEX, types, 0xf000)
 fld.flags = ProtoField.uint16("uet.flags", "Flags", base.HEX, nil, 0x0fe0)
 fld.next_hdr = ProtoField.uint16("uet.next_hdr", "Next Header", base.HEX, nil, 0x001f)
+fld.psn = ProtoField.uint32("uet.psn", "Packet Sequence Number", base.DEC)
+fld.spdcid = ProtoField.uint16("uet.spdcid", "Source PDC ID", base.DEC)
+fld.dpdcid = ProtoField.uint16("uet.dpdcid", "Destination PDC ID", base.DEC)
 
 -- N.B. masks shifted left by 5 bits (for next_hdr)
 fld.flag_syn = ProtoField.bool("uet.flags.syn", "SYN", 16, {"Yes", "No"}, 0x800)
@@ -45,7 +48,6 @@ function p_uet.dissector(buf, pinfo, root)
 	subtree:add(fld.type, buf(2, 2))
 	local flags_tree = subtree:add(fld.flags, buf(2, 2))
 	subtree:add(fld.next_hdr, buf(2, 2))
-
 	-- TODO: per-type
 	flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 	flags_tree:add(fld.flag_syn, buf(2, 2))
@@ -55,13 +57,21 @@ function p_uet.dissector(buf, pinfo, root)
 	flags_tree:add(fld.flag_retx, buf(2, 2))
 	flags_tree:add(fld.flag_rsv, buf(2, 2))
 
+	subtree:add(fld.psn, buf(4, 4))
+	subtree:add(fld.spdcid, buf(8, 2))
+	-- TODO: mode&offset for SYN
+	subtree:add(fld.dpdcid, buf(10, 2))
+
+	-- TODO: clear
+	-- TODO: cc_state
+
 	local h_type = buf(2, 1):bitfield(0, 4)
 	local type_str = types[h_type]
 	if type_str ~= nil then
 		pinfo.cols.info = type_str
 	end
 
-	local offset = 4
+	local offset = 12
 	local pktlen = buf:len() - offset
 	local data_buf = buf(offset, pktlen)
 	dissect_data:call(data_buf:tvb(), pinfo, subtree)
