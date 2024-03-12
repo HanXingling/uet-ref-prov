@@ -9,16 +9,25 @@
 p_uet = Proto("uet", "UltraEthernet Transport")
 p_uet.prefs["ip_proto"] = Pref.uint("IP protocol#", 253, "IP protocol number for UET")
 
+local
+	TYPE_UET_ENCR,
+	TYPE_RUD_REQ,
+	TYPE_ROD_REQ,
+	TYPE_RUDI_REQ,
+	TYPE_UUD_REQ,
+	TYPE_RUDI_RESP,
+	TYPE_PDS_ACK,
+	TYPE_CTRL = 1, 2, 3, 4, 5, 6, 7, 8
 local types = {
-	[0]	= "Reserved",
-	[1]	= "UET Encryption header",
-	[2]	= "RUD Request",
-	[3]	= "ROD Request",
-	[4]	= "RUDI Request",
-	[5]	= "UUD Request",
-	[6]	= "RUDI Response",
-	[7]	= "PDS ACK",
-	[8]	= "Control",
+	[0]			= "Reserved",
+	[TYPE_UET_ENCR]		= "UET Encryption header",
+	[TYPE_RUD_REQ]		= "RUD Request",
+	[TYPE_ROD_REQ]		= "ROD Request",
+	[TYPE_RUDI_REQ]		= "RUDI Request",
+	[TYPE_UUD_REQ]		= "UUD Request",
+	[TYPE_RUDI_RESP]	= "RUDI Response",
+	[TYPE_PDS_ACK]		= "PDS ACK",
+	[TYPE_CTRL]		= "Control",
 }
 
 local fld = p_uet.fields
@@ -46,29 +55,34 @@ function p_uet.dissector(buf, pinfo, root)
 	local subtree = root:add(p_uet, buf)
 	subtree:add(fld.entropy, buf(0, 2))
 	subtree:add(fld.type, buf(2, 2))
-	local flags_tree = subtree:add(fld.flags, buf(2, 2))
-	subtree:add(fld.next_hdr, buf(2, 2))
-	-- TODO: per-type
-	flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
-	flags_tree:add(fld.flag_syn, buf(2, 2))
-	flags_tree:add(fld.flag_clr, buf(2, 2))
-	flags_tree:add(fld.flag_cc, buf(2, 2))
-	flags_tree:add(fld.flag_ar, buf(2, 2))
-	flags_tree:add(fld.flag_retx, buf(2, 2))
-	flags_tree:add(fld.flag_rsv, buf(2, 2))
-
-	subtree:add(fld.psn, buf(4, 4))
-	subtree:add(fld.spdcid, buf(8, 2))
-	-- TODO: mode&offset for SYN
-	subtree:add(fld.dpdcid, buf(10, 2))
-
-	-- TODO: clear
-	-- TODO: cc_state
-
 	local h_type = buf(2, 1):bitfield(0, 4)
 	local type_str = types[h_type]
+	local summary = ""
 	if type_str ~= nil then
-		pinfo.cols.info = type_str
+		summary = type_str
+	end
+
+	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
+		local flags_tree = subtree:add(fld.flags, buf(2, 2))
+		subtree:add(fld.next_hdr, buf(2, 2))
+		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
+		flags_tree:add(fld.flag_syn, buf(2, 2))
+		flags_tree:add(fld.flag_clr, buf(2, 2))
+		flags_tree:add(fld.flag_cc, buf(2, 2))
+		flags_tree:add(fld.flag_ar, buf(2, 2))
+		flags_tree:add(fld.flag_retx, buf(2, 2))
+		flags_tree:add(fld.flag_rsv, buf(2, 2))
+
+		subtree:add(fld.psn, buf(4, 4))
+		subtree:add(fld.spdcid, buf(8, 2))
+		-- TODO: mode&offset for SYN
+		subtree:add(fld.dpdcid, buf(10, 2))
+		-- TODO: clear
+		-- TODO: cc_state
+	end
+
+	if summary ~= "" then
+		pinfo.cols.info = summary
 	end
 
 	local offset = 12
