@@ -30,11 +30,19 @@ local types = {
 	[TYPE_CTRL]		= "Control",
 }
 
+local
+	HDR_REQ_STD,
+	HDR_RSP = 2, 3
+local hdr_types = {
+	[HDR_REQ_STD]		= "Standard SES request",
+	[HDR_RSP]		= "SES response",
+}
+
 local fld = p_uet.fields
 fld.entropy = ProtoField.uint16("uet.entropy", "Entropy", base.DEC)
 fld.type = ProtoField.uint16("uet.type", "Type", base.HEX, types, 0xf000)
 fld.flags = ProtoField.uint16("uet.flags", "Flags", base.HEX, nil, 0x0fe0)
-fld.next_hdr = ProtoField.uint16("uet.next_hdr", "Next Header", base.HEX, nil, 0x001f)
+fld.next_hdr = ProtoField.uint16("uet.next_hdr", "Next Header", base.HEX, hdr_types, 0x001f)
 fld.ack_code = ProtoField.uint16("uet.ack.code", "ACK code", base.HEX, nil, 0x001f)
 fld.psn = ProtoField.uint32("uet.psn", "Packet Sequence Number", base.DEC)
 fld.spdcid = ProtoField.uint16("uet.spdcid", "Source PDC ID", base.DEC)
