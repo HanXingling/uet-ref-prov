@@ -85,7 +85,9 @@ fld.ses_req_buff_offs = ProtoField.uint64("uet.ses.req.buffer_offset", "Buffer o
 fld.ses_req_initiator = ProtoField.uint32("uet.ses.req.initiator", "Initiator", base.HEX)
 fld.ses_req_match_bits = ProtoField.uint64("uet.ses.req.match_bits", "Match bits", base.HEX)
 fld.ses_req_hdr_data = ProtoField.uint64("uet.ses.req.header_data", "Header data", base.HEX)
-fld.ses_req_len = ProtoField.uint64("uet.ses.req.len", "Request length", base.HEX)
+fld.ses_req_len = ProtoField.uint64("uet.ses.req.len", "Request length", base.DEC)
+fld.ses_req_payload_offs = ProtoField.uint32("uet.ses.req.packet_offset", "Packet offset", base.DEC)
+fld.ses_req_payload_len = ProtoField.uint32("uet.ses.req.packet_len", "Packet length", base.DEC) -- FIXME: 14 bits?
 
 local dissect_data = Dissector.get("data")
 
@@ -136,6 +138,7 @@ function p_uet.dissector(buf, pinfo, root)
 			req_tree:add(fld.ses_req_flag_response, buf(offset+1, 1))
 			req_tree:add(fld.ses_req_flag_hd, buf(offset+1, 1))
 			req_tree:add(fld.ses_req_flag_som, buf(offset+1, 1))
+			local is_som = buf(offset+1, 1):bitfield(7, 1)
 			req_tree:add(fld.ses_req_rsv2, buf(offset+2, 2))
 			req_tree:add(fld.ses_req_index, buf(offset+2, 2))
 			req_tree:add(fld.ses_req_index_gen, buf(offset+4, 1))
@@ -144,10 +147,15 @@ function p_uet.dissector(buf, pinfo, root)
 			req_tree:add(fld.ses_req_pidonfep, buf(offset+8, 2))
 			req_tree:add(fld.ses_req_msgid, buf(offset+10, 2))
 			req_tree:add(fld.ses_req_rsv4, buf(offset+12, 8))
-			req_tree:add(fld.ses_req_buff_offs, buf(offset+12, 8))
+			req_tree:add(fld.ses_req_buff_offs, buf(offset+12, 8)) -- TODO: deferrable send
 			req_tree:add(fld.ses_req_initiator, buf(offset+20, 4))
 			req_tree:add(fld.ses_req_match_bits, buf(offset+24, 8))
-			req_tree:add(fld.ses_req_hdr_data, buf(offset+32, 8))
+			if is_som == 1 then
+				req_tree:add(fld.ses_req_hdr_data, buf(offset+32, 8))
+			else
+				req_tree:add(fld.ses_req_payload_offs, buf(offset+32, 4))
+				req_tree:add(fld.ses_req_payload_len, buf(offset+36, 4))
+			end
 			req_tree:add(fld.ses_req_len, buf(offset+40, 4))
 			offset = offset + 44
 		end
