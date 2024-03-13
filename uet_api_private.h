@@ -195,7 +195,9 @@ struct uet_rx_desc {
 #define UET_RX_DESC_FLAG_POST_CQ     1
 #define UET_RX_DESC_FLAG_WRITE       2
 #define UET_RX_DESC_FLAG_WRITE_IMM   4
+#define UET_RX_DESC_FLAG_ERR_TRACK   8
 	int desc_flags;                          /* flags for this descriptor */
+	uet_ses_rc_t ses_rc;    /* ses return code, for marking errored msg's */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	void *context;                                      /* for completion */
 	uint64_t cq_flags;                   /* for flags field of completion */
@@ -221,7 +223,7 @@ typedef enum {
 	UET_TX_DESC_STATE_INACTIVE = 0,
 	UET_TX_DESC_STATE_ACTIVE,                      /* active transmission */
 	UET_TX_DESC_STATE_WAIT,                         /* waiting for ack(s) */
-	UET_TX_DESC_STATE_RETRANSMIT,     /* waiting for ack(s) to retransmit */
+	UET_TX_DESC_STATE_RETX,           /* waiting for ack(s) to retransmit */
 	UET_TX_DESC_STATE_ERR,                  /* transmit encountered error */
 	UET_TX_DESC_STATE_ERR_COMPLETE,     /* ready to post error completion */
 	UET_TX_DESC_STATE_COMPLETE,               /* ready to post completion */
@@ -235,6 +237,7 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_POST_CQ          1
 #define UET_TX_DESC_FLAG_MSG_ID_ALLOCATED 2
 #define UET_TX_DESC_FLAG_IMM_DATA_VALID   4
+#define UET_TX_DESC_FLAG_CANCEL_PENDING   8
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t tag_or_immdata;           /* tag or immediate data for write */
@@ -248,15 +251,15 @@ struct uet_tx_desc {
 	uint32_t job_id;                        /* job id associated with msg */
 	uint16_t msg_id;                              /* id allocated for msg */
 	uet_pds_mode_t pds_mode;                      /* packet delivery mode */
-	size_t remaining_bytes;              /* num msg bytes not transmitted */
-	size_t ack_bytes;              /* num msg bytes that have been ack'ed */
 	size_t unack_pkts;        /* number of unacknowledged pkts oustanding */
+	size_t remaining_bytes;              /* num msg bytes not transmitted */
 	struct uet_mr_desc *mr_desc;          /* ptr to mr desc if applicable */
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	uint64_t seq_num;	   /* local sequence number used for ordering */
 	uint32_t retransmit_cnt; /* number of time msg has been retransmitted */
 	time_t backoff_max;      /* max backoff time in msecs for retransmits */
 	time_t tx_time;		      /* earliest time msg can be transmitted */
+	bool delay_retx;          /* parm for deferred message retransmission */
 	int err_code;                                           /* error info */
 };
 
@@ -269,6 +272,7 @@ struct uet_tx_desc_ring_entry {
 struct uet_instance {
 	struct dlist_entry domain_list_head;          /* domain obj list head */
 	struct uet_nic nic;                              /* nic control block */
+	size_t max_payload_len;                   /* max payload for a packet */
 	struct uet_pds pds;			  /* pds control block struct */
 	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
