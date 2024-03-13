@@ -45,6 +45,7 @@ typedef enum {
 	UET_READ        = 0x02,
 	UET_SEND        = 0x05,
 	UET_TAGGED_SEND = 0x09,
+	UET_MSG_ERR     = 0x0f,
 } uet_ses_req_opcode_t;
 
 /* uet ses response opcodes */
@@ -75,6 +76,7 @@ typedef enum {
 	UET_RC_BAD_PID          = 0x1A,
 	UET_RC_BAD_JOB_ID       = 0x1B,
 	UET_RC_BAD_ADDR         = 0x1C,
+	UET_RC_CANCELLED        = 0x1D,
 	UET_RC_UNDELIVERABLE    = 0x1E,
 	UET_RC_DROPPED          = 0x1F,
 	UET_RC_UNCOR_TRNSNT     = 0x21,

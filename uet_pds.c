@@ -589,7 +589,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	int rc;
 	uet_ses_rc_t ses_rc;
 	size_t rx_pkt_size;
-	bool pkt_is_ack, rc_ok;
+	bool pkt_is_ack, gtd_del;
 	union uet_pkt *pkt;
 	struct uet_ep *dst_uet_ep;
 	struct uet_msg_match_info match_info;
@@ -693,7 +693,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 					dst_uet_ep, pkt, rx_pkt_size,
 					pds_info, UET_HDR_REQ_STD,
 					&rsp_ses_hdr_len, &rsp_next_hdr,
-					&rsp_ses_hdr, &rc_ok);
+					&rsp_ses_hdr, &gtd_del);
 		if (rc == FI_SUCCESS)
 			/* transmit ack */
 			rc = uet_pds_tx_ack_pkt(dst_uet_ep, pkt, rsp_next_hdr,
