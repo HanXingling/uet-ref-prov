@@ -1,1 +1,4 @@
 Dockerfile
+/scripts
+/dissector
+*.pcap

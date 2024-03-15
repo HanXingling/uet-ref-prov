@@ -1,0 +1,47 @@
+#!/bin/sh
+
+: ${UETREF_OCI_IMAGE:=uet-ref}
+: ${UETREF_PREFIX:=uet}
+
+
+
+mode="$1"
+
+set -ex
+for idx in 1 2 ; do
+	podman stop --time 0 --ignore "${UETREF_PREFIX}${idx}"
+	podman rm --ignore "${UETREF_PREFIX}${idx}"
+	podman run \
+		"--name=${UETREF_PREFIX}${idx}" \
+		--rm \
+		-d \
+		--cap-add=NET_RAW \
+		--network=bridge \
+		-e UET_IFNAME=eth0 \
+		"$UETREF_OCI_IMAGE" \
+		sleep inf
+done
+
+
+get_ip() {
+	podman inspect --format='{{ .NetworkSettings.IPAddress }}' "${UETREF_PREFIX}${1}"
+}
+
+nsenter --target=$(podman inspect --format='{{ .State.Pid }}' "${UETREF_PREFIX}1") \
+	--user \
+	--net \
+	tcpdump -s0 -n -e -i eth0 -U -w "uet${mode:+-}${mode}".pcap &
+TCPDUMP_PID=$!
+# stopping the container also kills tcpdump (by removing the net_device)
+##trap "kill $TCPDUMP_PID" EXIT
+
+podman exec -d \
+	"${UETREF_PREFIX}1" \
+	uet server $mode $(get_ip 2)
+podman exec \
+	"${UETREF_PREFIX}2" \
+	uet client $mode $(get_ip 1)
+
+for idx in 1 2 ; do
+	podman stop --time 0 "${UETREF_PREFIX}${idx}"
+done
