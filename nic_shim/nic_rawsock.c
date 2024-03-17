@@ -190,7 +190,7 @@ int nic_rawsock_tx_pkt(struct uet_nic *nic,
 	pkt->common.ipv4.check = uet_ipv4_csum(&pkt->common.ipv4);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-	uet_pkt_hex_dump((void *)pkt, pkt_size, 0);
+	uet_pkt_hex_dump((void *)pkt, pkt_size, 0, true);
 #endif
 
 	len = sendto(rdata->sock_fd.fd, pkt, pkt_size, 0,
@@ -234,7 +234,7 @@ int nic_rawsock_rx_pkt(struct uet_nic *nic,
 	}
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-	uet_pkt_hex_dump((void *)pkt, len, 0);
+	uet_pkt_hex_dump((void *)pkt, len, 0, false);
 #endif
 
 	*rx_pkt_size = len;
