@@ -328,7 +328,7 @@ int nic_xdp_tx_pkt(struct uet_nic *nic,
 	memcpy(xdp_pkt_data, pkt, pkt_size);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-	uet_pkt_hex_dump(xdp_pkt_data, tx_desc->len, tx_desc->addr);
+	uet_pkt_hex_dump(xdp_pkt_data, tx_desc->len, tx_desc->addr, true);
 #endif
 
 	xdata->next_frame[0] = ((xdata->next_frame[0] + 1) % NUM_FRAMES);
@@ -419,7 +419,7 @@ int nic_xdp_rx_pkt(struct uet_nic *nic,
 		memcpy(pkt, xdp_pkt_data, desc->len);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-		uet_pkt_hex_dump(pkt, desc->len, orig_addr);
+		uet_pkt_hex_dump(pkt, desc->len, orig_addr, false);
 #endif
 
 		/* Push the addr back at the current Fill index. */

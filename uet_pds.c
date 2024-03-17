@@ -30,16 +30,16 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack)
 
 	*pkt_is_ack = false;
 
-	pds_type = (ntohs(pkt->common.pds.prolog.type_flags_next) &
+	pds_type = (ntohs(pkt->common.pds.prlg.type_next_flags) &
 		    UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT;
-	next_hdr = (ntohs(pkt->common.pds.prolog.type_flags_next) &
+	next_hdr = (ntohs(pkt->common.pds.prlg.type_next_flags) &
 		    UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT;
 
 	switch (pds_type) {
-	case UET_PDS_ROD_REQ:
+	case UET_PDS_TYPE_ROD_REQ:
 		pds_req = true;
 		break;
-	case UET_PDS_ACK:
+	case UET_PDS_TYPE_ACK:
 		pds_req = false;
 		next_hdr = UET_HDR_RSP;
 		break;
@@ -123,33 +123,35 @@ static bool uet_pds_ep_addr_match(
 		if (!uet_ep->pds.tx.tx_active)
 			return false;
 
-		job_id = (ntohl(pkt->std_rsp.ses.gen_jobid) &
-			  UET_SES_JOB_ID_MASK) >> UET_SES_JOB_ID_SHIFT;
+		job_id = ((ntohl(pkt->std_rsp.ses.cmn.index_gen_job_id) &
+			   UET_SES_RSP_JOB_ID_MASK) >>
+			  UET_SES_RSP_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
 			return false;
 		match_info->job_id_match = true;
 
-		msg_id = ntohs(pkt->std_rsp.ses.msg_id);
+		msg_id = ntohs(pkt->std_rsp.ses.cmn.msg_id);
 		if (msg_id != uet_ep->pds.tx.pkt_parms.msg_id)
 			return false;
 		match_info->msg_id_match = true;
 	} else {
-		job_id = (ntohl(pkt->std_req.ses.gen_jobid) &
-			  UET_SES_JOB_ID_MASK) >> UET_SES_JOB_ID_SHIFT;
+		job_id = ((ntohl(pkt->std_req.ses.cmn.index_gen_job_id) &
+			   UET_SES_REQ_JOB_ID_MASK) >>
+			  UET_SES_REQ_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
 			return false;
 		match_info->job_id_match = true;
 
-		pid_on_fep = (ntohs(pkt->std_req.ses.resv_pid_on_fep) &
-			      UET_SES_STD_REQ_PID_ON_FEP_MASK) >>
-			     UET_SES_STD_REQ_PID_ON_FEP_SHIFT;
+		pid_on_fep = ((ntohs(pkt->std_req.ses.cmn.rsvd_pid_on_fep) &
+			       UET_SES_REQ_PID_ON_FEP_MASK) >>
+			      UET_SES_REQ_PID_ON_FEP_SHIFT);
 		if (pid_on_fep != uet_ep->uet_addr.pid_on_fep)
 			return false;
 		match_info->pid_on_fep_match = true;
 
-		index = (ntohs(pkt->std_req.ses.resv_index) &
-			      UET_SES_STD_REQ_INDEX_MASK) >>
-			     UET_SES_STD_REQ_INDEX_SHIFT;
+		index = ((ntohs(pkt->std_req.ses.cmn.rsvd_res_index) &
+			  UET_SES_REQ_RES_INDEX_MASK) >>
+			 UET_SES_REQ_RES_INDEX_SHIFT);
 		if (index != uet_ep->uet_addr.start_index)
 			return false;
 		match_info->index_match = true;
@@ -258,10 +260,9 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 			   pkt->common.ipv4.daddr, tot_len,
 			   uet->pds.ack_ip_tos);
 
-	ack->pds.prolog.type_flags_code = htons(
-			(UET_PDS_ACK << UET_PDS_TYPE_SHIFT)                   |
-			(UET_PDS_RSP_FLAGS_NONE << UET_PDS_FLAGS_SHIFT)       |
-			(UET_PDS_CODE_ACK << UET_PDS_CODE_SHIFT));
+	ack->pds.prlg.type_ctrl_flags = htons(
+		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
+		(UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 	ack->pds.psn = pkt->common.pds.psn;
 	pkt_overlay = (struct uet_pds_hdr_overlay *) &pkt->common.pds.spdcid;
 	ack_overlay = (struct uet_pds_hdr_overlay *) &ack->pds.spdcid;
@@ -343,7 +344,7 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	int rc;
 	uint16_t ack_pkt_len;
 	struct uet_std_rsp_pkt *ack;
-	struct uet_ses_std_rsp ses;
+	struct uet_ses_rsp ses;
 
 	ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
 
@@ -355,18 +356,17 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	}
 
 	/* build ses header */
-	ses.w0 = htonl((UET_RESPONSE << UET_SES_STD_RSP_OPCODE_SHIFT) |
-		       (UET_SES_VER << UET_SES_STD_RSP_VER_SHIFT)     |
-		       (UET_EXPECTED << UET_SES_STD_RSP_LIST_SHIFT)   |
-		       (ses_rc << UET_SES_STD_RSP_RC_SHIFT));
-	ses.msg_id = pkt->std_req.ses.msg_id;
+	ses.cmn.list_opcode = ((UET_EXPECTED << UET_SES_RSP_LIST_SHIFT) |
+			       (UET_RESPONSE << UET_SES_OPCODE_SHIFT));
+	ses.cmn.ver_ret_code = ((UET_SES_VER << UET_SES_VER_SHIFT) |
+				(ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
+	ses.cmn.msg_id = pkt->std_req.ses.cmn.msg_id;
 	ses.mod_len = 0;
-	ses.resv = 0;
-	ses.gen_jobid = pkt->std_req.ses.gen_jobid;
+	ses.cmn.index_gen_job_id = pkt->std_req.ses.cmn.index_gen_job_id;
 
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, ack, ack_pkt_len, UET_HDR_RSP,
-			      sizeof(struct uet_ses_std_rsp), &ses);
+			      sizeof(struct uet_ses_rsp), &ses);
 
 	/* send ack packet */
 	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack, (size_t) ack_pkt_len);
@@ -463,7 +463,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	case UET_HDR_REQ_STD:
 		switch (mode) {
 		case UET_PDS_MODE_ROD:
-			pds_pkt_type = UET_PDS_ROD_REQ;
+			pds_pkt_type = UET_PDS_TYPE_ROD_REQ;
 			break;
 		default:
 			UET_API_ERR("Unsupported packet delivery mode = %d",
@@ -472,15 +472,13 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		}
 
 		pds = &uet_pkt->std_req.pds;
-		pds->prolog.type_flags_next = htons(
-			(pds_pkt_type << UET_PDS_TYPE_SHIFT)                  |
-			((UET_PDS_REQ_FLAGS_NO_CLR | UET_PDS_REQ_FLAGS_AR) <<
-			 UET_PDS_FLAGS_SHIFT)                                 |
+		pds->prlg.type_next_flags = htons(
+			(pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
+			(UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
 			(next_hdr << UET_PDS_NEXT_HDR_SHIFT));
 		if (flags & UET_PDS_FLAG_RETRANSMIT)
-			pds->prolog.type_flags_next |= htons(
-				(UET_PDS_REQ_FLAGS_RETX <<
-				 UET_PDS_FLAGS_SHIFT));
+			pds->prlg.type_next_flags |= htons(
+				(UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT));
 		pds->psn = htonl(uet_ep->pds.tx.psn);
 		pds_overlay = (struct uet_pds_hdr_overlay *) &pds->spdcid;
 		pds_overlay->pid_on_fep = htons(uet_ep->uet_addr.pid_on_fep);
@@ -596,7 +594,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	struct uet_pds_to_ses_funcs *ses_upcall;
 	struct uet_pds_tx_state *pds_tx;
 	struct uet_pds_ack_state *ack_state;
-	struct uet_ses_std_rsp rsp_ses_hdr;
+	struct uet_ses_rsp rsp_ses_hdr;
 	struct uet_pds_info pds_info;
 	size_t rsp_ses_hdr_len;
 	uet_next_hdr_t rsp_next_hdr;
@@ -692,8 +690,8 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 		rc = ses_upcall->rx_req((uet_pkt_handle_t) pkt,
 					dst_uet_ep, pkt, rx_pkt_size,
 					pds_info, UET_HDR_REQ_STD,
-					&rsp_ses_hdr_len, &rsp_next_hdr,
-					&rsp_ses_hdr, &gtd_del);
+					&rsp_next_hdr, &rsp_ses_hdr,
+					&rsp_ses_hdr_len, &gtd_del);
 		if (rc == FI_SUCCESS)
 			/* transmit ack */
 			rc = uet_pds_tx_ack_pkt(dst_uet_ep, pkt, rsp_next_hdr,

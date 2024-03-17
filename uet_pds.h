@@ -71,8 +71,8 @@ struct uet_pds_to_ses_funcs {
 			     void *ses_hdr, uint32_t eager_len);
 	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_ep *uet_ep,
 		      void *pkt, size_t pkt_len, struct uet_pds_info pds_info,
-		      uet_next_hdr_t req_next_hdr, size_t *rsp_ses_hdr_len,
-		      uet_next_hdr_t *rsp_next_hdr, void *rsp_ses_hdr,
+		      uet_next_hdr_t req_next_hdr, uet_next_hdr_t *rsp_next_hdr,
+		      void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
 		      bool *gtd_del);
 	int (*rx_rsp)(uet_pkt_handle_t tx_pkt_handle, void *rsp,
 		      size_t rsp_len);

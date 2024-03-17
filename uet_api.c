@@ -263,7 +263,7 @@ static void uet_rx_msg_key_init(struct uet_rx_msg_key *key, union uet_pkt *pkt)
 {
 	memset(key, 0, sizeof(struct uet_rx_msg_key));
 	key->initiator = pkt->std_req.ses.initiator;
-	key->msg_id = pkt->std_req.ses.msg_id;
+	key->msg_id = pkt->std_req.ses.cmn.msg_id;
 }
 
 /* insert entry into rx msg hash table */
@@ -303,7 +303,7 @@ static void uet_tag_initiator_key_init(struct uet_tag_initiator_key *key,
 				       union uet_pkt *pkt)
 {
 	memset(key, 0, sizeof(struct uet_tag_initiator_key));
-	key->tag = pkt->std_req.ses.match;
+	key->tag = pkt->std_req.ses.match_bits;
 	key->initiator = pkt->std_req.ses.initiator;
 }
 
@@ -343,8 +343,8 @@ static struct uet_rx_desc *uet_tag_initiator_hash_lookup(
 /* init key for mr lookup */
 static void uet_mr_key_init(struct uet_mr_key *key, union uet_pkt *pkt)
 {
-	key->rkey = (ntohll(pkt->std_req.ses.match) & UET_MR_KEY_RKEY_MASK) >>
-		UET_MR_KEY_RKEY_SHIFT;
+	key->rkey = ((ntohll(pkt->std_req.ses.match_bits) &
+		      UET_MR_KEY_RKEY_MASK) >> UET_MR_KEY_RKEY_SHIFT);
 }
 
 /* insert entry into mr hash table */
@@ -1151,6 +1151,8 @@ static uet_ses_rc_t uet_rx_msg_err(
  *                    to be returned
  *      payload_len - ptr to location where payload length in bytes is
  *                    to be returned
+ *      first_msg_pkt - ptr to location where first message packet
+ *                    indication is to be returned
  *      gtd_del     - ptr to location where ses indicates whether pds
  *                    needs to maintain ses response state, may be
  *                    set to true to indicate pds needs to guarantee
@@ -1168,7 +1170,7 @@ static uet_ses_rc_t uet_get_rx_desc(
 	uint32_t req_len;
 	uint64_t hd;
 	struct uet_domain *uet_dom;
-	struct uet_ses_std_req *ses;
+	struct uet_ses_req_std *ses;
 	struct uet_mr_key mr_key;
 	struct uet_mr_desc *mr_desc;
 
@@ -1176,14 +1178,14 @@ static uet_ses_rc_t uet_get_rx_desc(
 	req_len = ntohl(ses->req_len);
 
 	/* get payload length */
-	if (ses->flags & UET_SES_STD_REQ_SOM) {
+	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
 		*payload_len = rx_pkt_size - sizeof(struct uet_std_req_pkt);
 		if (*payload_len >= req_len)
 			*payload_len = req_len;
 	} else {
-		hd = ntohll(ses->hd);
-		*payload_len = (hd & UET_SES_STD_REQ_HD_PAY_LEN_MASK) >>
-			UET_SES_STD_REQ_HD_PAY_LEN_SHIFT;
+		hd = ntohll(ses->msg_off_payload_len);
+		*payload_len = ((hd & UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
+				UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT);
 	}
 
 	/* lookup rx descriptor for msg */
@@ -1252,6 +1254,7 @@ static uet_ses_rc_t uet_get_rx_desc(
 	(*rx_desc)->buf_desc.contig.len = mr_desc->buf_desc.contig.len;
 	(*rx_desc)->context = mr_desc->context;
 	(*rx_desc)->mr_desc = mr_desc;
+	(*rx_desc)->ses_rc = ses_rc;
 
 	return UET_RC_OK;
 
@@ -1292,7 +1295,7 @@ static uet_ses_rc_t uet_rx_send_pkt(
 	bool ep_gen_disabled, first_msg_pkt = false,
 	     invalid_payload_len = false;
 	void *buf_ptr;
-	struct uet_ses_std_req *ses;
+	struct uet_ses_req_std *ses;
 	struct uet_ring *ring;
 	struct uet_rx_desc *rx_desc;
 	struct uet_rx_msg_key msg_key;
@@ -1303,9 +1306,7 @@ static uet_ses_rc_t uet_rx_send_pkt(
 	ses = &pkt->std_req.ses;
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
 	req_len = ntohl(ses->req_len);
-	start_off = (ntohll(ses->resv_buf_off) &
-		     UET_SES_STD_REQ_BUF_OFF_MASK) >>
-		    UET_SES_STD_REQ_BUF_OFF_SHIFT;
+	start_off = ntohll(ses->buf_off);
 
 	/* get rx descriptor for message */
 	ses_rc = uet_get_rx_desc(uet_ep, pkt, rx_pkt_size, write, UET_RC_OK,
@@ -1315,9 +1316,9 @@ static uet_ses_rc_t uet_rx_send_pkt(
 		return ses_rc;
 
 	/* check for start of message */
-	if (ses->flags & UET_SES_STD_REQ_SOM) {
+	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
 		/* check if rx completion queue is available */
-		if (!(write) || (ses->flags & UET_SES_STD_REQ_HD)) {
+		if (!(write) || (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
 			if (uet_ep->recv_cq.cq_state == UET_CQ_DOWN) {
 				UET_API_ERR("RX: Completion Q DOWN");
 				return (uet_rx_msg_err(
@@ -1327,7 +1328,7 @@ static uet_ses_rc_t uet_rx_send_pkt(
 		}
 
 		/* process header data */
-		if (write && (ses->flags & UET_SES_STD_REQ_HD)) {
+		if (write && (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
 			/* check cq format */
 			if (uet_ep->recv_cq.format_size <
 			    sizeof(struct fi_cq_data_entry)) {
@@ -1336,7 +1337,7 @@ static uet_ses_rc_t uet_rx_send_pkt(
 					uet_ep, pkt, rx_desc, payload_len,
 					UET_RC_OP_VIOLATION, gtd_del));
 			}
-			rx_desc->imm_data = ntohll(ses->hd);
+			rx_desc->imm_data = ntohll(ses->cmpl_data);
 			rx_desc->desc_flags |= (UET_RX_DESC_FLAG_WRITE_IMM |
 						UET_RX_DESC_FLAG_POST_CQ);
 		}
@@ -1348,9 +1349,10 @@ static uet_ses_rc_t uet_rx_send_pkt(
 			invalid_payload_len = true;
 	} else {
 		/* set buffer offset and check payload length */
-		hd = ntohll(ses->hd);
-		buf_off = start_off + ((hd & UET_SES_STD_REQ_HD_MSG_OFF_MASK) >>
-				       UET_SES_STD_REQ_HD_MSG_OFF_SHIFT);
+		hd = ntohll(ses->msg_off_payload_len);
+		buf_off = (start_off +
+			   ((hd & UET_SES_REQ_STD_MSG_OFF_MASK) >>
+			    UET_SES_REQ_STD_MSG_OFF_SHIFT));
 		if (payload_len > max_payload_len)
 			invalid_payload_len = true;
 	}
@@ -1378,7 +1380,8 @@ static uet_ses_rc_t uet_rx_send_pkt(
 					uet_ep, pkt, rx_desc, payload_len,
 					UET_RC_OP_VIOLATION, gtd_del));
 			}
-			if (rx_desc->mr_desc->full_key != ntohll(ses->match)) {
+			if (rx_desc->mr_desc->full_key !=
+			    ntohll(ses->match_bits)) {
 				UET_API_ERR("RX: Write with Changed Key");
 				return (uet_rx_msg_err(
 					uet_ep, pkt, rx_desc, payload_len,
@@ -1401,8 +1404,9 @@ static uet_ses_rc_t uet_rx_send_pkt(
 		}
 
 		/* check for correct generation */
-		rx_gen = (uint32_t) ((ntohl(ses->gen_jobid) &
-				      UET_SES_GEN_MASK) >> UET_SES_GEN_SHIFT);
+		rx_gen = (uint32_t)((ntohl(ses->cmn.index_gen_job_id) &
+				     UET_SES_REQ_INDEX_GEN_MASK) >>
+				    UET_SES_REQ_INDEX_GEN_SHIFT);
 		if (rx_gen != ep_gen) {
 			UET_API_ERR("RX: Bad Generation");
 			return (uet_rx_msg_err(uet_ep, pkt, rx_desc,
@@ -1539,7 +1543,7 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 {
 	size_t msg_off, truncated_bytes;
 	bool err = false;
-	struct uet_ses_std_req *ses;
+	struct uet_ses_req_std *ses;
 	struct uet_rx_msg_key msg_key;
 	struct uet_rx_desc *rx_desc;
 
@@ -1555,12 +1559,13 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 		uet_rx_msg_err(uet_ep, pkt, rx_desc, 0,
 			       UET_RC_CANCELLED, gtd_del);
 	}
-	if (ses->flags & UET_SES_STD_REQ_SOM) {
+	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
 		UET_API_ERR("RX: Unexpected SOM on UET_MSG_ERR");
 		goto post_err_exit;
 	} else {
-		msg_off = (ntohll(ses->hd) & UET_SES_STD_REQ_HD_MSG_OFF_MASK) >>
-			  UET_SES_STD_REQ_HD_MSG_OFF_SHIFT;
+		msg_off = ((ntohll(ses->msg_off_payload_len) &
+			    UET_SES_REQ_STD_MSG_OFF_MASK) >>
+			   UET_SES_REQ_STD_MSG_OFF_SHIFT);
 		if (msg_off < rx_desc->msg_len) {
 			truncated_bytes = rx_desc->msg_len - msg_off;
 			if (truncated_bytes > rx_desc->remaining_bytes)
@@ -1601,9 +1606,6 @@ err_exit:
  *                        read data is transmitted
  *      req_next_hdr    - identifies header that follows pds header in request
  *      req_ses_hdr     - ptr to ses header in request packet
- *      rsp_ses_hdr_len - address of location where length of ses header
- *                        for response is to be returned, return contents
- *                        are only valid when function returns FI_SUCCESS
  *      rsp_next_hdr    - address of location where identifer of ses header
  *                        format for response is to be returned, return
  *                        contents are only valid when function FI_SUCCESS
@@ -1611,6 +1613,9 @@ err_exit:
  *                        be returned, return contents are only valid
  *                        when function returns FI_SUCCESS, buffer must be
  *                        large enough to hold maximum size ses response
+ *      rsp_ses_hdr_len - address of location where length of ses header
+ *                        for response is to be returned, return contents
+ *                        are only valid when function returns FI_SUCCESS
  *      gtd_del         - ptr to location where ses indicates whether pds
  *                        needs to maintain ses response state, return
  *                        contents are only valid when function returns
@@ -1625,9 +1630,9 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				 struct uet_ep *uet_ep, void *pkt,
 				 size_t pkt_len, struct uet_pds_info pds_info,
 				 uet_next_hdr_t req_next_hdr,
-				 size_t *rsp_ses_hdr_len,
 				 uet_next_hdr_t *rsp_next_hdr,
-				 void *rsp_ses_hdr, bool *gtd_del)
+				 void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
+				 bool *gtd_del)
 {
 	uet_ses_rc_t ses_rc;
 	uint8_t opcode;
@@ -1636,17 +1641,17 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	bool first_msg_pkt;
 	uet_ses_list_t list;
 	union uet_pkt *uet_pkt;
-	struct uet_ses_std_rsp *ses;
+	struct uet_ses_rsp *ses;
 	struct uet_rx_msg_key msg_key;
 	struct uet_rx_desc *rx_desc;
 
 	uet_pkt = (union uet_pkt *) pkt;
-	ses = (struct uet_ses_std_rsp *) rsp_ses_hdr;
+	ses = (struct uet_ses_rsp *) rsp_ses_hdr;
 
 	list = UET_EXPECTED;
 
-	opcode = (uet_pkt->std_req.ses.resv_opcode &
-		  UET_SES_STD_REQ_OPCODE_MASK) >> UET_SES_STD_REQ_OPCODE_SHIFT;
+	opcode = ((uet_pkt->std_req.ses.cmn.rsvd_opcode &
+		   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
 	switch (opcode) {
 	case UET_SEND:
 		ses_rc = uet_rx_send_pkt(uet_ep, uet_pkt, pkt_len, &list,
@@ -1674,26 +1679,28 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		break;
 	}
 
-	ses->w0 = htonl((UET_RESPONSE << UET_SES_STD_RSP_OPCODE_SHIFT) |
-			(UET_SES_VER << UET_SES_STD_RSP_VER_SHIFT)     |
-			(list << UET_SES_STD_RSP_LIST_SHIFT)           |
-			(ses_rc << UET_SES_STD_RSP_RC_SHIFT));
-	ses->msg_id = uet_pkt->std_req.ses.msg_id;
+	ses->cmn.list_opcode = ((list << UET_SES_RSP_LIST_SHIFT) |
+				(UET_RESPONSE << UET_SES_OPCODE_SHIFT));
+	ses->cmn.ver_ret_code = ((UET_SES_VER << UET_SES_VER_SHIFT) |
+				 (ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
+	ses->cmn.msg_id = uet_pkt->std_req.ses.cmn.msg_id;
 	if (ses_rc == UET_RC_OK)
 		ses->mod_len = uet_pkt->std_req.ses.req_len;
 	else
 		ses->mod_len = 0;
-	ses->resv = 0;
 	if (ses_rc == UET_RC_BAD_GENERATION) {
 		/* return correct generation */
-		gen = ep_gen << UET_SES_GEN_SHIFT;
-		job_id = (ntohl(uet_pkt->std_req.ses.gen_jobid) &
-				UET_SES_JOB_ID_MASK) << UET_SES_JOB_ID_SHIFT;
-		ses->gen_jobid = htonl(job_id | gen);
-	} else
-		ses->gen_jobid = uet_pkt->std_req.ses.gen_jobid;
+		gen = (ep_gen << UET_SES_REQ_INDEX_GEN_SHIFT);
+		job_id = ((ntohl(uet_pkt->std_req.ses.cmn.index_gen_job_id) &
+			   UET_SES_REQ_JOB_ID_MASK) <<
+			  UET_SES_REQ_JOB_ID_SHIFT);
+		ses->cmn.index_gen_job_id = htonl(gen | job_id);
+	} else {
+		ses->cmn.index_gen_job_id =
+			uet_pkt->std_req.ses.cmn.index_gen_job_id;
+	}
 
-	*rsp_ses_hdr_len = sizeof(struct uet_ses_std_rsp);
+	*rsp_ses_hdr_len = sizeof(struct uet_ses_rsp);
 	*rsp_next_hdr = UET_HDR_RSP;
 
 	return FI_SUCCESS;
@@ -1720,13 +1727,13 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 					uint32_t eager_len)
 {
 	struct uet_tx_desc *tx_desc;
-	struct uet_ses_std_req *ses;
+	struct uet_ses_req_std *ses;
 	struct uet_av_entry *av;
 	struct uet_ep *uet_ep;
 	int som = 0;
 	uint8_t opcode;
 
-	ses =  (struct uet_ses_std_req *) ses_hdr;
+	ses =  (struct uet_ses_req_std *) ses_hdr;
 	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
 	av = (struct uet_av_entry *) tx_desc->dst_addr_handle;
 	uet_ep = tx_desc->uet_ep;
@@ -1734,57 +1741,58 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	/* TODO: add iov suppport */
 	if ((tx_desc->buf_desc.contig.len == tx_desc->remaining_bytes) &&
 	    !(tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING)) {
-		som = UET_SES_STD_REQ_SOM;
-		ses->hd = 0;
-	} else
+		som = UET_SES_REQ_FLAG_SOM;
+		ses->cmpl_data = 0;
+	} else {
 		/* TODO: add iov support */
-		ses->hd = htonll(((tx_desc->buf_desc.contig.buf_off <<
-				   UET_SES_STD_REQ_HD_MSG_OFF_SHIFT) &
-				  UET_SES_STD_REQ_HD_MSG_OFF_MASK) |
-				 ((pkt_len <<
-				   UET_SES_STD_REQ_HD_PAY_LEN_SHIFT) &
-				  UET_SES_STD_REQ_HD_PAY_LEN_MASK));
+		ses->msg_off_payload_len =
+			htonll(((tx_desc->buf_desc.contig.buf_off <<
+				 UET_SES_REQ_STD_MSG_OFF_SHIFT) &
+				UET_SES_REQ_STD_MSG_OFF_MASK) |
+			       ((pkt_len <<
+				 UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT) &
+				UET_SES_REQ_STD_PAYLOAD_LEN_MASK));
+	}
 
-	ses->flags = (UET_SES_VER << UET_SES_STD_REQ_VER_SHIFT) |
-		      UET_SES_STD_REQ_REL                       |
-		      UET_SES_STD_REQ_RSP                       |
-		      som;
+	ses->cmn.ver_flags = ((UET_SES_VER << UET_SES_VER_SHIFT) |
+			      UET_SES_REQ_FLAG_REL                |
+			      som);
 
-	ses->gen_jobid = htonl((av->untagged_gen << UET_SES_GEN_SHIFT) |
-			       (tx_desc->job_id << UET_SES_JOB_ID_SHIFT));
+	ses->cmn.index_gen_job_id = htonl((av->untagged_gen <<
+					   UET_SES_REQ_INDEX_GEN_SHIFT) |
+					  (tx_desc->job_id <<
+					   UET_SES_REQ_JOB_ID_SHIFT));
 
-	ses->resv_buf_off = htonll(((tx_desc->remote_start_off <<
-				     UET_SES_STD_REQ_BUF_OFF_SHIFT) &
-				    UET_SES_STD_REQ_BUF_OFF_MASK));
+	ses->buf_off = htonll(tx_desc->remote_start_off);
 
 	if (tx_desc->cq_flags & FI_MSG) {
 		opcode = UET_SEND;
-		ses->match = UET_NO_TAG;
+		ses->match_bits = UET_NO_TAG;
 	} else if (tx_desc->cq_flags & FI_TAGGED) {
 		opcode = UET_TAGGED_SEND;
-		ses->match = htonll(tx_desc->tag_or_immdata);
-		ses->gen_jobid = htonl(
-			(av->tagged_gen << UET_SES_GEN_SHIFT) |
-			(tx_desc->job_id << UET_SES_JOB_ID_SHIFT));
+		ses->match_bits = htonll(tx_desc->tag_or_immdata);
+		ses->cmn.index_gen_job_id =
+			htonl((av->tagged_gen << UET_SES_REQ_INDEX_GEN_SHIFT) |
+			      (tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
 	} else {
 		opcode = UET_WRITE;
-		ses->match = htonll(tx_desc->remote_key);
+		ses->match_bits = htonll(tx_desc->remote_key);
 		if (som &&
 		    (tx_desc->desc_flags & UET_TX_DESC_FLAG_IMM_DATA_VALID)) {
-			ses->flags |= UET_SES_STD_REQ_HD;
-			ses->hd = htonll(tx_desc->tag_or_immdata);
+			ses->cmn.ver_flags |= UET_SES_REQ_FLAG_HD;
+			ses->cmpl_data = htonll(tx_desc->tag_or_immdata);
 		}
 	}
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING)
 		opcode = UET_MSG_ERR;
 
-	ses->resv_opcode = opcode << UET_SES_STD_REQ_OPCODE_SHIFT;
-	ses->resv_index = htons(av->addr->start_index <<
-				UET_SES_STD_REQ_INDEX_SHIFT);
-	ses->resv_pid_on_fep = htons(av->addr->pid_on_fep <<
-				     UET_SES_STD_REQ_PID_ON_FEP_SHIFT);
-	ses->msg_id = htons(tx_desc->msg_id);
+	ses->cmn.rsvd_opcode = (opcode << UET_SES_OPCODE_SHIFT);
+	ses->cmn.rsvd_res_index = htons(av->addr->start_index <<
+					UET_SES_REQ_RES_INDEX_SHIFT);
+	ses->cmn.rsvd_pid_on_fep = htons(av->addr->pid_on_fep <<
+					 UET_SES_REQ_PID_ON_FEP_SHIFT);
+	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->initiator = htonl(uet_ep->uet_addr.initiator_id);
 	/* TODO: add iov support */
 	ses->req_len = htonl((uint32_t) tx_desc->buf_desc.contig.len);
@@ -1830,8 +1838,8 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle, void *rsp,
 	}
 
 	/* check opcode */
-	opcode = (ntohl(pkt->std_rsp.ses.w0) & UET_SES_STD_RSP_OPCODE_MASK) >>
-		 UET_SES_STD_RSP_OPCODE_SHIFT;
+	opcode = ((pkt->std_rsp.ses.cmn.list_opcode & UET_SES_OPCODE_MASK) >>
+		  UET_SES_OPCODE_SHIFT);
 	switch (opcode) {
 	case UET_RESPONSE:
 		break;
@@ -1843,8 +1851,8 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle, void *rsp,
 	}
 
 	/* check return code */
-	ses_rc = (ntohl(pkt->std_rsp.ses.w0) & UET_SES_STD_RSP_RC_MASK) >>
-		 UET_SES_STD_RSP_RC_SHIFT;
+	ses_rc = ((pkt->std_rsp.ses.cmn.ver_ret_code &
+		   UET_SES_RSP_RET_CODE_MASK) >> UET_SES_RSP_RET_CODE_SHIFT);
 	switch (ses_rc) {
 	case UET_RC_OK:
 		break;
@@ -1852,8 +1860,9 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle, void *rsp,
 		UET_API_ERR("Msg Rsp: Bad Generation");
 		/* update generation for av and then retransmit */
 		av_entry = (struct uet_av_entry *) tx_desc->dst_addr_handle;
-		rx_gen = (uint32_t) ((ntohl(pkt->std_rsp.ses.gen_jobid) &
-				      UET_SES_GEN_MASK) >> UET_SES_GEN_SHIFT);
+		rx_gen = (uint32_t)((ntohl(pkt->std_rsp.ses.cmn.index_gen_job_id) &
+				     UET_SES_RSP_INDEX_GEN_MASK) >>
+				    UET_SES_RSP_INDEX_GEN_SHIFT);
 		av_entry->untagged_gen = rx_gen;
 		tx_desc->delay_retx = false;
 		goto retx_exit;

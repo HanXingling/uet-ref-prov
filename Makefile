@@ -2,13 +2,15 @@
 CC=gcc
 CLANG=clang
 
-INCS=-I. -I./nic_shim -I../libfabric -I../libfabric/include
+LIBFABRIC=../libfabric
+
+INCS=-I. -I./nic_shim -I$(LIBFABRIC) -I$(LIBFABRIC)/include
 CFLAGS=-Wall \
        -Wno-unused-variable \
        -Wno-implicit-function-declaration \
        -Wno-int-conversion \
        -Wno-address-of-packed-member
-LDFLAGS=-L../libfabric/src/.libs -lfabric
+LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
 
 HDRS=$(wildcard *.h nic_shim/*.h)
 

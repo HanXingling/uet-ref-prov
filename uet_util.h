@@ -8,6 +8,12 @@
 #ifndef _UET_UTIL_H_
 #define _UET_UTIL_H_
 
+#include <stdint.h>
+#include <stdbool.h>
+
+#include "uet_api.h"
+#include "uet_pkt_hdr.h"
+
 #define UET_MSEC_PER_SEC  1000
 #define UET_NSEC_PER_MSEC 1000000
 
@@ -52,6 +58,6 @@ uint16_t uet_ipv4_csum(struct iphdr *ipv4);
 void uet_build_ipv4_hdr(struct iphdr *ipv4, uint32_t dip, uint32_t sip,
 			uint16_t tot_len, uint8_t tos);
 void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
-void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr);
+void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
 
 #endif /* _UET_UTIL_H_ */
