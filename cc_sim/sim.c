@@ -9,8 +9,9 @@
 #include <time.h>
 #include <stdbool.h>
 
+#include <cc/uet_cc_st.h>
+
 #include "sim_util.h"
-#include "../uet_cc/uet_cc_st.h"
 
 static bool running = 1;
 

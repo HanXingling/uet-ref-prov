@@ -15,14 +15,14 @@
 
 #include <ofi_list.h>
 
+#include <uet_addr.h>
+#include <uet_pkt_hdr.h>
+#include <uet_nic.h>
+#include <uet_api.h>
+#include <uet_pds.h>
+#include <uet_api_private.h>
+#include <uet_util.h>
 #include "uet_cc_st.h"
-#include "../uet_addr.h"
-#include "../uet_pkt_hdr.h"
-#include "../uet_nic.h"
-#include "../uet_api.h"
-#include "../uet_pds.h"
-#include "../uet_api_private.h"
-#include "../uet_util.h"
 
 #define UET_CC_MAX_SACK_MTUS 16
 
