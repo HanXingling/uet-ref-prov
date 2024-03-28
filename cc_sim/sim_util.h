@@ -11,7 +11,7 @@ struct spsc_ring {
 	uint32_t tail;
 };
 
-struct red_info {
+struct red_cfg {
 	uint32_t low_thresh;
 	uint32_t high_thresh;
 	float avg_len;
@@ -74,20 +74,20 @@ static __always_inline uint32_t ring_count(struct spsc_ring *ring)
 	return ring->tail + ring->cap + 1 - ring->head;
 }
 
-static __always_inline bool red_may_enq(uint32_t qlen, struct red_info *red)
+static __always_inline bool red_mark(uint32_t qlen, struct red_cfg *red)
 {
 	red->avg_len = (1 - red->ewm) * qlen + red->ewm * red->avg_len;
 
 	if (red->avg_len >= red->high_thresh)
-		return false;
+		return true;
 
 	if (red->avg_len <= red->low_thresh)
-		return true;
+		return false;
 
 	float p = red->pmax * (red->avg_len - red->low_thresh)
 			/ (red->high_thresh - red->low_thresh);
 
-	return (float) rand() / RAND_MAX >= p;
+	return (float) rand() / RAND_MAX < p;
 }
 
 static __always_inline bool later_than(struct timespec lhs, struct timespec rhs)

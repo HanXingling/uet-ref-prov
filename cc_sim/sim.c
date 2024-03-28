@@ -28,9 +28,9 @@ struct config_params {
 	uint32_t rtt_nsec;
 	uint32_t rto_nsec;
 	uint32_t num_senders;
-	struct red_info drop_params;
-	struct red_info trim_params;
-	struct red_info ecn_params;
+	struct red_cfg drop_params;
+	struct red_cfg trim_params;
+	struct red_cfg ecn_params;
 };
 
 enum pkt_flags {
@@ -116,7 +116,7 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 
 		uint32_t data_queue_pop = ring_count(data_queue);
 
-		if (!red_may_enq(data_queue_pop, &params->drop_params)
+		if (red_mark(data_queue_pop, &params->drop_params)
 			    || data_queue_pop == params->qsize) {
 			struct timespec timeout = add_time(now, params->rto_nsec);
 
@@ -125,12 +125,7 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 			return;
 		}
 
-		if (!red_may_enq(data_queue_pop, &params->ecn_params)) {
-			sender->stats.ecns++;
-			pkt.flags |= FLAG_ECN_CE;
-		}
-
-		if (!red_may_enq(data_queue_pop, &params->trim_params)) {
+		if (red_mark(data_queue_pop, &params->trim_params)) {
 			uint32_t trim_queue_pop = ring_count(trim_queue);
 
 			if (trim_queue_pop == params->qsize) {
@@ -269,8 +264,13 @@ void recv_iter(struct config_params *params, struct sender_ctx *senders,
 			reply.flags |= FLAG_NACK;
 		else
 			reply.flags |= FLAG_ACK;
-		if (recv_pkt.flags & FLAG_ECN_CE)
+
+		/* ECN mark at dequeue time. */
+		if (red_mark(ring_count(data_queue), &params->ecn_params))
+		{
 			reply.flags |= FLAG_ECN_CE;
+			src->stats.ecns++;
+		}
 
 		ring_enq_tail(&src->ctrl_queue, &reply, sizeof(reply));
 
