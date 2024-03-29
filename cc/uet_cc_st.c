@@ -48,7 +48,7 @@ enum uet_ccc_state {
 	UET_CCC_STATE_READY     /* data to send, ready */
 };
 
-/* SmaRTTrack Sender API */
+/* SmaRTTrack (NSCC) Sender API */
 
 struct uet_cc_ctx {
 	struct {
@@ -127,6 +127,20 @@ static inline void set_ev_state(struct uet_cc_ctx *ccc, uint16_t ev, enum uet_cc
 	ccc->ev_state[idx] |= mask;
 }
 
+/**
+ * Allocates a new Congestion Control context.
+ *
+ * \param spraying_type specifies single-path, oblivious multi-path
+ *                      or aware (selective) multi-path operation.
+ * \param trim_supp     indicates if packet trimming is supported.
+ * \param mtu           Network maximum transmission unit.
+ * \param bw_mbps       Network bandwidth, used to determine window size.
+ * \param base_rtt_usec Network unloaded round-trip time.
+ * \param max_paths     The maximum number of paths used for spraying.
+ * \param handle        Passed to uet_cc_state_update to notify the reliability
+ *                      module when the CCC is ready/not ready to send.
+ * \returns Pointer to a newly allocated CCC.
+ */
 struct uet_cc_ctx *uet_cc_alloc_ctx(enum uet_cc_spraying_type spraying_type, bool trim_supp,
 	uint16_t mtu, uint32_t bw_mbps, uint32_t base_rtt_usec, uint16_t max_paths, void *handle)
 {
@@ -182,6 +196,11 @@ struct uet_cc_ctx *uet_cc_alloc_ctx(enum uet_cc_spraying_type spraying_type, boo
 	return ccc;
 }
 
+/**
+ * Frees a Congestion Control context.
+ *
+ * \param ccc           Congestion Control context.
+ */
 void uet_cc_free_ctx(struct uet_cc_ctx *ccc)
 {
 	free(ccc->ev_state);
@@ -401,12 +420,28 @@ static inline void update_avg_ecn_rate(struct uet_cc_ctx *ccc, uint32_t newly_ac
 	ccc->avg_ecn_rate = ccc->params.ecn_alpha * skip + exp_decay * ccc->avg_ecn_rate;
 }
 
+/**
+ * Requests to send packets on the given CCC.
+ *
+ * \param ccc           Congestion Control context.
+ * \param delta_backlog Additional bytes of data queued since the last request was made.
+ */
 void uet_cc_req_to_send(struct uet_cc_ctx *ccc, uint32_t delta_backlog)
 {
 	ccc->backlog += delta_backlog;
 	update_ccc_state(ccc);
 }
 
+/**
+ * Updates CCC state when Reliability confirms that a packet will be sent.
+ * Provides the entropy value to be used for that packet.
+ *
+ * \param ccc           Congestion Control context.
+ * \param pktsize       Size of the sent packet.
+ * \param retx			Specifies if the packet was retransmitted.
+ *
+ * \returns An entropy value.
+ */
 uint32_t uet_cc_send_complete(struct uet_cc_ctx *ccc, uint32_t pktsize, bool retx)
 {
 	uint32_t ev = select_entropy(ccc);
@@ -420,6 +455,16 @@ uint32_t uet_cc_send_complete(struct uet_cc_ctx *ccc, uint32_t pktsize, bool ret
 	return ev;
 }
 
+/**
+ * Updates CCC state when Reliability notifies that a packet has been ACKed.
+ *
+ * \param ccc               Congestion Control context.
+ * \param ev                (nullable) Entropy value used by ACKed packet.
+ * \param skip              Flag set by receiver indicating that the ev
+ *                          should be skipped on the next iteration.
+ * \param rtt_usec          Measured RTT of the ACKed packet.
+ * \param delta_inflight    Size of the ACKed packet.
+ */
 void uet_cc_process_ack(struct uet_cc_ctx *ccc, uint16_t *ev, bool skip, uint32_t rtt_usec,
 	int32_t delta_inflight)
 {
@@ -463,6 +508,16 @@ void uet_cc_process_ack(struct uet_cc_ctx *ccc, uint16_t *ev, bool skip, uint32_
 	update_ccc_state(ccc);
 }
 
+/**
+ * Updates CCC state when Reliability notifies that a packet has been lost.
+ *
+ * \param ccc           Congestion Control context.
+ * \param lost_bytes    Size of the lost packet.
+ * \param ev            (nullable) Entropy value used by lost packet.
+ * \param type          Method used to determine packet loss.
+ * \param skip          Flag set by receiver indicating that the ev
+ *                      should be skipped on the next iteration.
+ */
 void uet_cc_process_loss(struct uet_cc_ctx *ccc, uint32_t lost_bytes, uint16_t *ev,
 						enum uet_cc_loss_type type, bool skip)
 {
