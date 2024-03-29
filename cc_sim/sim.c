@@ -1,3 +1,16 @@
+/*
+ * Basic incast simulator for UET CC.
+ *
+ * The purpose of this program is to test the UET CC API.
+ * It simulates 1 or more source(s) sending packets to 1 destination.
+ * The simulation is real-time, in order to verify the time-based code in
+ * the CC implementation.
+ * Virtual packets are inserted into a single queue and ECN marked, trimmed
+ * and/or dropped according to the parameters set in this file.
+ * The receiver queues an ACK/NACK for each packet into a per-sender queue.
+ * Congestion on the return path is not simulated.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,17 +33,19 @@ void sigint_handler(int)
 	__atomic_store_n(&running, 0, __ATOMIC_RELEASE);
 }
 
+/* Configurable simulation parameters */
 struct config_params {
-	uint32_t qsize;
-	uint16_t pkt_size;
+	uint32_t qsize;					/* simulated switch queue size */
+	uint16_t pkt_size;				/* size of sent data pkts */
+	uint16_t trim_pkt_size;			/* size of trimmed data pkts */
 	uint16_t mtu;
-	uint32_t bw_gbps;
-	uint32_t rtt_nsec;
+	uint32_t bw_gbps;				/* receiver link speed */
+	uint32_t rtt_nsec;				/* unloaded network RTT */
 	uint32_t rto_nsec;
-	uint32_t num_senders;
-	struct red_cfg drop_params;
-	struct red_cfg trim_params;
-	struct red_cfg ecn_params;
+	uint32_t num_senders;			/* number of senders */
+	struct red_cfg drop_params;		/* RED config for dropping pkts */
+	struct red_cfg trim_params;		/* RED config for trimming pkts */
+	struct red_cfg ecn_params;		/* RED config for ECN marking pkts */
 };
 
 enum pkt_flags {
@@ -45,7 +60,6 @@ struct data_pkt {
 	uint16_t size;
 	enum pkt_flags flags;
 	struct timespec send_time;
-	struct timespec dequeue_time;
 };
 
 struct ctrl_pkt {
@@ -76,10 +90,10 @@ struct sender_ctx {
 	uint32_t id;
 	uint32_t in_flight;
 	bool send_requested;
-	bool pkt_pending;
 	bool ready;
 };
 
+/* Called by the CC implementation to signal when a CCC is ready/not ready to send. */
 void uet_cc_state_update(void *handle, bool ready)
 {
 	struct sender_ctx *send_ctx = handle;
@@ -87,6 +101,7 @@ void uet_cc_state_update(void *handle, bool ready)
 	send_ctx->ready = ready;
 }
 
+/* Iteration of the sender simulation. */
 void send_iter(struct config_params *params, struct sender_ctx *sender,
 			struct spsc_ring *data_queue, struct spsc_ring *trim_queue)
 {
@@ -95,39 +110,43 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
+	/* Request to send a packet if the flight limit isn't reached. */
 	if (!sender->send_requested && sender->in_flight < 2 * params->qsize) {
 		uet_cc_req_to_send(sender->ccc, pkt.size);
 		sender->send_requested = true;
 	}
 
-	if (!sender->pkt_pending && sender->send_requested && sender->ready)
-		sender->pkt_pending = true;
-
-	if (sender->pkt_pending && later_than(now, sender->timestamps.can_send)) {
+	/* Once the CCC is ready, send the packet. */
+	if (sender->send_requested && sender->ready
+			&& later_than(now, sender->timestamps.can_send)) {
 		uint32_t serialize_nsec = pkt.size * 8 / params->bw_gbps;
 
 		pkt.send_time = now;
+		/* Wait until packet is serialized before sending another. */
 		sender->timestamps.can_send = add_time(now, serialize_nsec);
 
 		uet_cc_send_complete(sender->ccc, pkt.size, false);
 		sender->send_requested = false;
-		sender->pkt_pending = false;
 		sender->in_flight++;
 
 		uint32_t data_queue_pop = ring_count(data_queue);
 
+		/* Check if packet should be dropped. */
 		if (red_mark(data_queue_pop, &params->drop_params)
 			    || data_queue_pop == params->qsize) {
 			struct timespec timeout = add_time(now, params->rto_nsec);
 
+			/* Queue a timestamp indicating when the sender knows packet was lost. */
 			ring_enq_tail(&sender->loss_queue, &timeout, sizeof(timeout));
 			sender->stats.drops++;
 			return;
 		}
 
+		/* Check if packet should be trimmed. */
 		if (red_mark(data_queue_pop, &params->trim_params)) {
 			uint32_t trim_queue_pop = ring_count(trim_queue);
 
+			/* If the trim queue is full, drop the packet. */
 			if (trim_queue_pop == params->qsize) {
 				struct timespec timeout = add_time(now, params->rto_nsec);
 
@@ -137,35 +156,22 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 			}
 			sender->stats.trims++;
 			pkt.flags |= FLAG_TRIM;
-			if (!trim_queue_pop) {
-				pkt.dequeue_time = add_time(now, params->rtt_nsec / 2);
-			} else {
-				struct data_pkt prev_pkt;
-
-				ring_peek_tail(trim_queue, &prev_pkt, sizeof(prev_pkt));
-				pkt.dequeue_time = add_time(prev_pkt.dequeue_time, serialize_nsec);
-			}
 			ring_enq_tail(trim_queue, &pkt, sizeof(pkt));
 		} else {
 			sender->stats.sent++;
-			if (!data_queue_pop) {
-				pkt.dequeue_time = add_time(now, params->rtt_nsec / 2);
-			} else {
-				struct data_pkt prev_pkt;
-
-				ring_peek_tail(data_queue, &prev_pkt, sizeof(prev_pkt));
-				pkt.dequeue_time = add_time(prev_pkt.dequeue_time, serialize_nsec);
-			}
 			ring_enq_tail(data_queue, &pkt, sizeof(pkt));
 		}
 	}
 
-	if (!sender->timestamps.can_recv.tv_sec && !sender->timestamps.can_recv.tv_nsec) {
+	/* Check if there are queued control packets and when the first one can be processed. */
+	if (!sender->timestamps.can_recv.tv_sec
+			&& !sender->timestamps.can_recv.tv_nsec) {
 		struct ctrl_pkt queued_pkt;
 
 		if (ring_peek_head(&sender->ctrl_queue, &queued_pkt, sizeof(queued_pkt)))
 			sender->timestamps.can_recv = queued_pkt.dequeue_time;
 
+	/* Process the control packet once the time has passed. */
 	} else if (later_than(now, sender->timestamps.can_recv)) {
 		struct ctrl_pkt recv_pkt;
 
@@ -185,9 +191,12 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 		sender->timestamps.can_recv.tv_nsec = 0;
 	}
 
+	/* Check if there are queued timeouts and when the first one can be processed. */
 	if (!sender->timestamps.next_timeout.tv_sec && !sender->timestamps.next_timeout.tv_nsec) {
 		ring_peek_head(&sender->loss_queue, &sender->timestamps.next_timeout,
 			sizeof(struct timespec));
+
+	/* Process the timeout once the time has passed. */
 	} else if (later_than(now, sender->timestamps.next_timeout)) {
 		struct timespec timeout;
 
@@ -210,7 +219,7 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 			snprintf(bw, sizeof(bw) - 1, "%.2f Gbps", bps / 1000000000);
 		else if (bps >= 1000000)
 			snprintf(bw, sizeof(bw) - 1, "%.2f Mbps", bps / 1000000);
-		else if (bps > 1000)
+		else if (bps >= 1000)
 			snprintf(bw, sizeof(bw) - 1, "%.2f Kbps", bps / 1000);
 		else
 			snprintf(bw, sizeof(bw) - 1, "%.2f bps", bps);
@@ -223,36 +232,53 @@ void send_iter(struct config_params *params, struct sender_ctx *sender,
 	}
 }
 
+/* Iteration of the receiver simulation. */
 void recv_iter(struct config_params *params, struct sender_ctx *senders,
-	struct spsc_ring *data_queue, struct spsc_ring *trim_queue, struct timespec *can_recv,
-	bool *recv_queue)
+	struct spsc_ring *data_queue, struct spsc_ring *trim_queue, struct timespec *can_recv)
 {
 	struct timespec now;
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
-	if (!can_recv->tv_sec && !can_recv->tv_nsec) {
-		struct data_pkt queued_pkt;
-		bool found_pkt = false;
-
-		if (ring_peek_head(trim_queue, &queued_pkt, sizeof(queued_pkt))) {
-			*can_recv = queued_pkt.dequeue_time;
-			found_pkt = true;
-			*recv_queue = true;
-		}
-		if (ring_peek_head(data_queue, &queued_pkt, sizeof(queued_pkt))
-				&& (!found_pkt || later_than(*can_recv, queued_pkt.dequeue_time))) {
-			*can_recv = queued_pkt.dequeue_time;
-			*recv_queue = false;
-		}
-	} else if (later_than(now, *can_recv)) {
+	/* Process queued data/trimmed packets. */
+	if (later_than(now, *can_recv)) {
 		struct data_pkt recv_pkt;
 		struct sender_ctx *src;
+		uint32_t serialize_nsec;
+		bool pkt_recvd = false;
 
-		if (!*recv_queue)
-			ring_deq_head(data_queue, &recv_pkt, sizeof(recv_pkt));
-		else
-			ring_deq_head(trim_queue, &recv_pkt, sizeof(recv_pkt));
+		/* Check trim (high priority) queue first. */
+		if (ring_count(trim_queue)) {
+			ring_peek_head(trim_queue, &recv_pkt, sizeof(recv_pkt));
+			struct timespec earliest_recv = add_time(recv_pkt.send_time,
+								params->rtt_nsec / 2);
+
+			if (!later_than(now, earliest_recv)) {
+				*can_recv = earliest_recv;
+			} else {
+				ring_deq_head(trim_queue, &recv_pkt, sizeof(recv_pkt));
+				serialize_nsec = params->trim_pkt_size * 8 / params->bw_gbps;
+				pkt_recvd = true;
+			}
+		}
+		if (!pkt_recvd && ring_count(data_queue)) {
+			ring_peek_head(data_queue, &recv_pkt, sizeof(recv_pkt));
+			struct timespec earliest_recv = add_time(recv_pkt.send_time,
+								params->rtt_nsec / 2);
+
+			if (!later_than(now, earliest_recv)) {
+				if (later_than(*can_recv, earliest_recv))
+					*can_recv = earliest_recv;
+			} else {
+				ring_deq_head(data_queue, &recv_pkt, sizeof(recv_pkt));
+				serialize_nsec = params->pkt_size * 8 / params->bw_gbps;
+				pkt_recvd = true;
+			}
+		}
+		if (!pkt_recvd)
+			return;
+		/* Wait until the serialization time elapses before dequeuing another packet. */
+		*can_recv = add_time(now, serialize_nsec);
 		src = &senders[recv_pkt.sender_id];
 
 		struct ctrl_pkt reply = {
@@ -273,9 +299,6 @@ void recv_iter(struct config_params *params, struct sender_ctx *senders,
 		}
 
 		ring_enq_tail(&src->ctrl_queue, &reply, sizeof(reply));
-
-		can_recv->tv_sec = 0;
-		can_recv->tv_nsec = 0;
 	}
 }
 
@@ -296,6 +319,7 @@ int main(int argc, char *argv[])
 	struct config_params params = {
 		.qsize = 256,
 		.pkt_size = 4096,
+		.trim_pkt_size = 128,
 		.mtu = 4096,
 		.bw_gbps = 10,
 		.rtt_nsec = 400000, /* Must be <= 2 * qsize * pktsize / bw */
@@ -326,10 +350,9 @@ int main(int argc, char *argv[])
 
 	srand(time(NULL));
 
-	struct timespec now, can_recv = {0, 0};
+	struct timespec now, sink_can_recv = {0, 0};
 
 	clock_gettime(CLOCK_MONOTONIC, &now);
-	bool recv_queue = false;
 
 	struct sender_ctx *senders = calloc(num_senders, sizeof(struct sender_ctx));
 
@@ -365,7 +388,6 @@ int main(int argc, char *argv[])
 			.id = i,
 			.in_flight = 0,
 			.send_requested = false,
-			.pkt_pending = false,
 			.ready = false
 		};
 		send_ctx.timestamps.can_print.tv_sec++;
@@ -387,7 +409,7 @@ int main(int argc, char *argv[])
 	while (__atomic_load_n(&running, __ATOMIC_ACQUIRE)) {
 		for (uint32_t i = 0; i < num_senders; i++)
 			send_iter(&params, &senders[i], &data_queue, &trim_queue);
-		recv_iter(&params, senders, &data_queue, &trim_queue, &can_recv, &recv_queue);
+		recv_iter(&params, senders, &data_queue, &trim_queue, &sink_can_recv);
 	}
 
 	for (uint32_t i = 0; i < num_senders; i++) {

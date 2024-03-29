@@ -51,22 +51,6 @@ static __always_inline bool ring_peek_head(struct spsc_ring *ring, void *dst, si
 	return true;
 }
 
-static __always_inline bool ring_peek_tail(struct spsc_ring *ring, void *dst, size_t len)
-{
-	if (ring->tail == ring->head)
-		return false;
-	uint32_t pos;
-
-	if (ring->tail)
-		pos = ring->tail - 1;
-	else
-		pos = ring->cap;
-
-	memcpy(dst, ring->buf + pos * len, len);
-
-	return true;
-}
-
 static __always_inline uint32_t ring_count(struct spsc_ring *ring)
 {
 	if (ring->tail >= ring->head)
