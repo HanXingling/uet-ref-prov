@@ -54,6 +54,19 @@ There are currently two implementations of the NIC shim interface APIs:
 Testing is performed using a simple top-level program that performs ping-pong
 message data transfer operations between a client and a server (see uet.c).
 
+### Congestion Control
+
+A partial implementation of UET Network Signal Congestion Control (NSCC), based on the
+v0.6 specification, can be found in the `cc` subdirectory. Multi-path packet delivery
+is not fully supported.
+
+The CC algorithm can be tested separately with a basic test app, which simulates multiple senders
+transmitting to a single receiver. Packets can be dropped, ECN marked or trimmed.
+The application measures the throughput achieved by each sender, to verify that the CC algorithm
+enables high bandwidth utilization and fair sharing among the senders.
+The app runs on a single machine and does not generate network traffic. The sources are
+located in the `cc_sim` subdirectory.
+
 ## Preparation
 
 Make sure the proper development libraries/headers are installed:
@@ -120,6 +133,18 @@ over the interface.
 # client...
 % sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet_xdp client 192.168.1.1
 ```
+
+### CC tester
+
+Simulation parameters (link speed, RTT, queue size, drop thresholds etc.) can be set by modifying
+the main function located in `cc_sim/sim.c`.
+
+```
+% make uet_cc_sim
+% LD_LIBRARY_PATH=../libfabric/src/.libs ./uet_cc_sim 2
+```
+
+Replace `2` with the desired number of senders.
 
 ## Environment Variables
 

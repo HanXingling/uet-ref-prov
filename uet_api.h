@@ -19,6 +19,8 @@
 #include <rdma/fi_eq.h>
 #include <rdma/fi_errno.h>
 #include <rdma/fi_tagged.h>
+#include <rdma/fi_rma.h>
+#include <rdma/fi_atomic.h>
 
 #include "uet_addr.h"
 
