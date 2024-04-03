@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Broadcom refers to Broadcom Limited and/or its subsidiaries.
+ */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>

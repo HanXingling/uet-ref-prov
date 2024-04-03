@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Broadcom refers to Broadcom Limited and/or its subsidiaries.
+ */
+
 #ifndef _BITMAP_H_
 #define _BITMAP_H_
 

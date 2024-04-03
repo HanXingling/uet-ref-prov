@@ -151,6 +151,7 @@ Replace `2` with the desired number of senders.
 - **LD_LIBRARY_PATH** - Needed for dynamic linking to libfabric library.
 - **UET_IFNAME** - The ifname of the interface to attach to.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
+- **UET_PDS** - [ `sng` ] (default=`sng` stop-n-go)
 
 ## XDP
 
