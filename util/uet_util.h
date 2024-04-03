@@ -11,7 +11,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "uet_api.h"
 #include "uet_pkt_hdr.h"
 
 #define UET_MSEC_PER_SEC  1000
