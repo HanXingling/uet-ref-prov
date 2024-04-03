@@ -42,10 +42,10 @@ typedef enum {
 
 /* pds tx flags */
 typedef enum {
-	UET_PDS_FLAG_SOM  = 0x01,        /* start of message */
-	UET_PDS_FLAG_EOM  = 0x02,        /* end of message */
-	UET_PDS_FLAG_EAGER_REQ  = 0x04,  /* request eager length predition */
-	UET_PDS_FLAG_RETRANSMIT = 0x08,  /* retransmit of pkt  */
+	UET_PDS_FLAG_SOM        = 0x01, /* start of message */
+	UET_PDS_FLAG_EOM        = 0x02, /* end of message */
+	UET_PDS_FLAG_EAGER_REQ  = 0x04, /* request eager length predition */
+	UET_PDS_FLAG_RETRANSMIT = 0x08, /* retransmit of pkt  */
 } uet_pds_tx_flags_t;
 
 /* pds tx som flags */

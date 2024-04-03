@@ -133,12 +133,12 @@ struct UET_PACKED uet_pds_req {
 	uint16_t            spdcid;
 	union {
 		uint16_t dpdcid;
-#define UET_PDS_REQ_PDC_MODE_MASK    0xf000
-#define UET_PDS_REQ_PDC_MODE_SHIFT   12
-#define UET_PDS_REQ_PDC_MODE_INC     0x01 /* reserved PDC for INC */
-#define UET_PDS_REQ_PSN_OFFSET_MASK  0x0fff
-#define UET_PDS_REQ_PSN_OFFSET_SHIFT 0
-		uint16_t mode_offset;
+#define UET_PDS_REQ_PDC_MODE_MASK  0xf000
+#define UET_PDS_REQ_PDC_MODE_SHIFT 12
+#define UET_PDS_REQ_PDC_MODE_INC   0x01 /* reserved PDC for INC */
+#define UET_PDS_REQ_PSN_OFF_MASK   0x0fff
+#define UET_PDS_REQ_PSN_OFF_SHIFT  0
+		uint16_t mode_psn_off;
 	};
 	union {
 		uint32_t clear_psn; /* cumulative clear PSN or original PSN */
@@ -188,6 +188,28 @@ struct UET_PACKED uet_pds_ack_ext {
 	};
 	uint32_t sack_bitmap_lower; /* zero if UET_PDS_ACK_CC_FLAGS_SVF */
 };
+
+/* uet pds nack codes */
+typedef enum {
+	UET_NACK_NONE            = 0x00,
+	UET_NACK_TRIM            = 0x01,
+	UET_NACK_CM_RESP         = 0x02,
+	UET_NACK_PDC             = 0x03,
+	UET_NACK_CCC             = 0x04,
+	UET_NACK_BITMAP          = 0x05,
+	UET_NACK_PKT_BUF         = 0x06,
+	UET_NACK_SES_RESP        = 0x07,
+	UET_NACK_SES_MSG         = 0x08,
+	UET_NACK_RESOURCE        = 0x09,
+	UET_NACK_PSN_WINDOW      = 0x0a,
+	UET_NACK_PSN_OOO         = 0x0b,
+	UET_NACK_PDCID           = 0x0c,
+	UET_NACK_NO_CONN         = 0x0d,
+	UET_NACK_CLOSING         = 0x0e,
+	UET_NACK_NO_GTD_DEL_RESP = 0x0f,
+	UET_NACK_SPDCID_INVALID  = 0x10,
+	UET_NACK_NEW_START_PSN   = 0x11,
+} uet_pds_nack_code_t;
 
 /* uet pds rod/rud nack header */
 struct UET_PACKED uet_pds_nack {
