@@ -77,7 +77,8 @@ fld.flag_ack_probe		= ProtoField.bool("uet.flags.ack.probe",		"Probe",		16, yes_
 fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, nil, 0x03)
 
 fld.ses_req			= ProtoField.none("uet.ses.req",			"SES request") -- FIXME: Proto()?
-fld.ses_req_rsv			= ProtoField.uint8("uet.ses.req.rsv",			"Reserved",			base.DEC, nil, 0xc0)
+fld.ses_req_flag_eom		= ProtoField.bool("uet.ses.req.flags.eom",		"End of Message (EOM)",		8, yes_no, 0x80)
+fld.ses_req_rsv			= ProtoField.uint8("uet.ses.req.rsv",			"Reserved",			base.HEX, nil, 0x40)
 fld.ses_req_opcode		= ProtoField.uint8("uet.ses.req.opcode",		"Opcode",			base.HEX, req_opcodes, 0x3f)
 fld.ses_req_ver			= ProtoField.uint8("uet.ses.req.version",		"Version",			base.HEX, nil, 0xc0)
 fld.ses_req_flag_dc		= ProtoField.bool("uet.ses.req.flags.dc",		"Delivery Complete (DC)",	8, yes_no, 0x20)
@@ -86,34 +87,30 @@ fld.ses_req_flag_relative	= ProtoField.bool("uet.ses.req.flags.relative",		"Rela
 fld.ses_req_flag_response	= ProtoField.bool("uet.ses.req.flags.response",		"Response requested",		8, yes_no, 0x04)
 fld.ses_req_flag_hd		= ProtoField.bool("uet.ses.req.flags.hd",		"Header Data (HD)",		8, yes_no, 0x02)
 fld.ses_req_flag_som		= ProtoField.bool("uet.ses.req.flags.som",		"Start of Message (SOM)",	8, yes_no, 0x01)
-fld.ses_req_rsv2		= ProtoField.uint16("uet.ses.req.rsv2",			"Reserved",			base.HEX, nil, 0xf000)
-fld.ses_index			= ProtoField.uint16("uet.ses.index",			"Index",			base.DEC, nil, 0x0fff)
 fld.ses_index_gen		= ProtoField.uint8("uet.ses.index_gen",			"Index generation",		base.DEC)
 fld.ses_job_id			= ProtoField.uint24("uet.ses.job_id",			"Job ID",			base.DEC)
+fld.ses_req_rsv2		= ProtoField.uint16("uet.ses.req.rsv2",			"Reserved",			base.HEX, nil, 0xf000)
+fld.ses_index			= ProtoField.uint16("uet.ses.index",			"Index",			base.DEC, nil, 0x0fff)
 fld.ses_req_rsv3		= ProtoField.uint16("uet.ses.req.rsv3",			"Reserved",			base.HEX, nil, 0xf000)
 fld.ses_req_pidonfep		= ProtoField.uint16("uet.ses.req.pid_on_fep",		"PID on FEP",			base.DEC, nil, 0x0fff)
-fld.ses_msgid			= ProtoField.uint16("uet.ses.message_id",		"Message ID",			base.DEC)
-fld.ses_req_rsv4		= ProtoField.uint64("uet.ses.req.rsv4",			"Reserved",			base.HEX, nil, 0xfe00000000000000)
-fld.ses_req_buff_offs		= ProtoField.uint64("uet.ses.req.buffer_offset",	"Buffer offset",		base.HEX, nil, 0x01ffffffffffffff)
+fld.ses_msgid			= ProtoField.uint16("uet.ses.message_id",		"Message ID",			base.DEC, nil, 0xfe00000000000000)
+fld.ses_req_buff_offs		= ProtoField.uint64("uet.ses.req.buffer_offset",	"Buffer offset",		base.HEX)
 fld.ses_req_initiator		= ProtoField.uint32("uet.ses.req.initiator",		"Initiator",			base.HEX)
 fld.ses_req_match_bits		= ProtoField.uint64("uet.ses.req.match_bits",		"Match bits",			base.HEX)
 fld.ses_req_hdr_data		= ProtoField.uint64("uet.ses.req.header_data",		"Header data",			base.HEX)
 fld.ses_req_len			= ProtoField.uint64("uet.ses.req.len",			"Request length",		base.DEC)
 fld.ses_req_payload_offs	= ProtoField.uint32("uet.ses.req.packet_offset",	"Packet offset",		base.DEC)
-fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet length",		base.DEC) -- FIXME: 14 bits?
+fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet length",		base.DEC)
 
 fld.ses_resp			= ProtoField.none("uet.ses.resp",			"SES response") -- FIXME: Proto()?
-fld.ses_resp_rsv		= ProtoField.uint8("uet.ses.resp.rsv",			"Reserved",			base.DEC, nil, 0xc0)
-fld.ses_resp_opcode		= ProtoField.uint8("uet.ses.resp.opcode",		"Opcode",			base.HEX, resp_opcodes, 0x3f)
-fld.ses_resp_ver		= ProtoField.uint24("uet.ses.resp.version",		"Version",			base.DEC, nil, 0xc00000)
-fld.ses_resp_list		= ProtoField.uint24("uet.ses.resp.list",		"List",				base.DEC, nil, 0x300000)
-fld.ses_resp_retcode		= ProtoField.uint24("uet.ses.resp.retcode",		"Return code",			base.HEX, nil, 0x0fffff)
-fld.ses_resp_rsv2		= ProtoField.uint8("uet.ses.resp.rsv2",			"Reserved",			base.HEX)
+fld.ses_resp_list		= ProtoField.uint16("uet.ses.resp.list",		"List",				base.DEC, nil, 0xc000)
+fld.ses_resp_opcode		= ProtoField.uint16("uet.ses.resp.opcode",		"Opcode",			base.HEX, resp_opcodes, 0x3fff)
+fld.ses_resp_ver		= ProtoField.uint8("uet.ses.resp.version",		"Version",			base.DEC, nil, 0xc)
+fld.ses_resp_retcode		= ProtoField.uint8("uet.ses.resp.retcode",		"Return code",			base.HEX, nil, 0x3f)
+-- ses_msgid
 -- index_gen
 -- job_id
 fld.ses_resp_mod_len		= ProtoField.uint32("uet.ses.resp.mod_length",		"Modified length",		base.DEC)
--- ses_msgid
-fld.ses_resp_rsv3		= ProtoField.uint16("uet.ses.resp.rsv3",		"Reserved",			base.HEX)
 
 local dissect_data	= Dissector.get("data")
 
@@ -149,47 +146,6 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.forward_psn, buf(12, 2))
 		offset = offset + 12
 		-- TODO: cc_state
-
-		local h_next = buf(2, 2):bitfield(4, 5)
-		-- TODO: distinct Proto()
-		if h_next == HDR_REQ_STD then
-			local opcode = buf(offset, 1):bitfield(2, 6)
-			local opcode_str = req_opcodes[opcode]
-			if opcode_str ~= nil then
-				summary = summary .. " " .. opcode_str
-			end
-
-			local req_tree = subtree:add(fld.ses_req, buf(offset, 44))
-			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
-			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
-			req_tree:add(fld.ses_req_ver, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_dc, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_ie, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_relative, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_response, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_hd, buf(offset+1, 1))
-			req_tree:add(fld.ses_req_flag_som, buf(offset+1, 1))
-			local is_som = buf(offset+1, 1):bitfield(7, 1)
-			req_tree:add(fld.ses_req_rsv2, buf(offset+2, 2))
-			req_tree:add(fld.ses_index, buf(offset+2, 2))
-			req_tree:add(fld.ses_index_gen, buf(offset+4, 1))
-			req_tree:add(fld.ses_job_id, buf(offset+5, 3))
-			req_tree:add(fld.ses_req_rsv3, buf(offset+8, 2))
-			req_tree:add(fld.ses_req_pidonfep, buf(offset+8, 2))
-			req_tree:add(fld.ses_msgid, buf(offset+10, 2))
-			req_tree:add(fld.ses_req_rsv4, buf(offset+12, 8))
-			req_tree:add(fld.ses_req_buff_offs, buf(offset+12, 8)) -- TODO: deferrable send
-			req_tree:add(fld.ses_req_initiator, buf(offset+20, 4))
-			req_tree:add(fld.ses_req_match_bits, buf(offset+24, 8))
-			if is_som == 1 then
-				req_tree:add(fld.ses_req_hdr_data, buf(offset+32, 8))
-			else
-				req_tree:add(fld.ses_req_payload_offs, buf(offset+32, 4))
-				req_tree:add(fld.ses_req_payload_len, buf(offset+36, 4))
-			end
-			req_tree:add(fld.ses_req_len, buf(offset+40, 4))
-			offset = offset + 44
-		end
 	end if h_type == TYPE_PDS_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
@@ -203,27 +159,66 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
 		offset = offset + 8
+	end
 
-		-- TODO: any next-header-type discriminator?
-		local opcode = buf(offset, 1):bitfield(2, 6)
-		local opcode_str = resp_opcodes[opcode]
-		if opcode_str ~= nil then
-			summary = summary .. " " .. opcode_str
+	-- TODO: TYPE_CTRL
+	if h_type ~= TYPE_CTRL then
+		local h_next = buf(2, 2):bitfield(4, 5)
+		-- TODO: distinct Proto()
+		if h_next == HDR_REQ_STD then
+			local opcode = buf(offset, 1):bitfield(2, 6)
+			local opcode_str = req_opcodes[opcode]
+			if opcode_str ~= nil then
+				summary = summary .. " " .. opcode_str
+			end
+
+			local req_tree = subtree:add(fld.ses_req, buf(offset, 44))
+			req_tree:add(fld.ses_req_flag_eom, buf(offset, 1))
+			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
+			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
+			req_tree:add(fld.ses_req_ver, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_dc, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_ie, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_relative, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_response, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_hd, buf(offset+1, 1))
+			req_tree:add(fld.ses_req_flag_som, buf(offset+1, 1))
+			local is_som = buf(offset+1, 1):bitfield(7, 1)
+			req_tree:add(fld.ses_msgid, buf(offset+2, 2))
+			req_tree:add(fld.ses_index_gen, buf(offset+4, 1))
+			req_tree:add(fld.ses_job_id, buf(offset+5, 3))
+			req_tree:add(fld.ses_req_rsv2, buf(offset+8, 2))
+			req_tree:add(fld.ses_req_pidonfep, buf(offset+8, 2))
+			req_tree:add(fld.ses_req_rsv3, buf(offset+10, 2))
+			req_tree:add(fld.ses_index, buf(offset+10, 2))
+			req_tree:add(fld.ses_req_buff_offs, buf(offset+12, 8))
+			req_tree:add(fld.ses_req_initiator, buf(offset+20, 4))
+			req_tree:add(fld.ses_req_match_bits, buf(offset+24, 8))
+			if is_som == 1 then
+				req_tree:add(fld.ses_req_hdr_data, buf(offset+32, 8))
+			else
+				req_tree:add(fld.ses_req_payload_offs, buf(offset+32, 4))
+				req_tree:add(fld.ses_req_payload_len, buf(offset+36, 4))
+			end
+			req_tree:add(fld.ses_req_len, buf(offset+40, 4))
+			offset = offset + 44
+		end if h_next == HDR_RSP then
+			local opcode = buf(offset, 1):bitfield(2, 6)
+			local opcode_str = resp_opcodes[opcode]
+			if opcode_str ~= nil then
+				summary = summary .. " " .. opcode_str
+			end
+			local resp_tree = subtree:add(fld.ses_resp, buf(offset, 12))
+			resp_tree:add(fld.ses_resp_list, buf(offset, 1))
+			resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
+			resp_tree:add(fld.ses_resp_ver, buf(offset+1, 1))
+			resp_tree:add(fld.ses_resp_retcode, buf(offset+1, 1))
+			resp_tree:add(fld.ses_msgid, buf(offset+2, 2))
+			resp_tree:add(fld.ses_index_gen, buf(offset+4, 1))
+			resp_tree:add(fld.ses_job_id, buf(offset+5, 3))
+			resp_tree:add(fld.ses_resp_mod_len, buf(offset+8, 4))
+			offset = offset + 12
 		end
-		local resp_tree = subtree:add(fld.ses_resp, buf(offset, 16))
-		resp_tree:add(fld.ses_resp_rsv, buf(offset, 1))
-		resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
-		resp_tree:add(fld.ses_resp_ver, buf(offset+1, 3))
-		resp_tree:add(fld.ses_resp_list, buf(offset+1, 3))
-		resp_tree:add(fld.ses_resp_retcode, buf(offset+1, 3))
-		resp_tree:add(fld.ses_resp_rsv2, buf(offset+1, 3)) -- TODO: payload len?
-		resp_tree:add(fld.ses_index_gen, buf(offset+4, 1))
-		resp_tree:add(fld.ses_job_id, buf(offset+5, 3))
-		resp_tree:add(fld.ses_resp_mod_len, buf(offset+8, 4))
-		resp_tree:add(fld.ses_msgid, buf(offset+12, 2))
-		resp_tree:add(fld.ses_resp_rsv3, buf(offset+14, 2))
-		-- TODO: message offset? when? (when it fits?)
-		offset = offset + 16
 	end
 
 	if summary ~= "" then
