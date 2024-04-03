@@ -50,29 +50,29 @@ local resp_opcodes = {
 
 local yes_no = {"Yes", "No"}
 local fld = p_uet.fields
-fld.entropy	= ProtoField.uint16("uet.entropy",	"Entropy",			base.DEC)
-fld.type	= ProtoField.uint16("uet.type",		"Type",				base.HEX, types, 0xf000)
-fld.flags	= ProtoField.uint16("uet.flags",	"Flags",			base.HEX, nil, 0x0fe0)
-fld.next_hdr	= ProtoField.uint16("uet.next_hdr",	"Next Header",			base.HEX, hdr_types, 0x001f)
-fld.ack_code	= ProtoField.uint16("uet.ack.code",	"ACK code",			base.HEX, nil, 0x001f)
-fld.psn		= ProtoField.uint32("uet.psn",		"Packet Sequence Number",	base.DEC)
-fld.spdcid	= ProtoField.uint16("uet.spdcid",	"Source PDC ID",		base.DEC)
-fld.dpdcid	= ProtoField.uint16("uet.dpdcid",	"Destination PDC ID",		base.DEC)
+fld.entropy	= ProtoField.uint16("uet.entropy",	"Entropy",				base.DEC)
+fld.type	= ProtoField.uint16("uet.type",		"Type",					base.HEX, types, 0xf000)
+fld.next_hdr	= ProtoField.uint16("uet.next_hdr",	"Next Header",				base.HEX, hdr_types, 0xf80)
+fld.flags	= ProtoField.uint16("uet.flags",	"Flags",				base.HEX, nil, 0x07f)
+fld.psn		= ProtoField.uint32("uet.psn",		"Packet Sequence Number",		base.DEC)
+fld.spdcid	= ProtoField.uint16("uet.spdcid",	"Source PDC ID",			base.DEC)
+fld.dpdcid	= ProtoField.uint16("uet.dpdcid",	"Destination PDC ID",			base.DEC)
+fld.forward_psn	= ProtoField.uint32("uet.forward_psn",	"Forward Packet Sequence Number",	base.DEC)
 
--- N.B. masks shifted left by 5 bits (for next_hdr)
-fld.flag_rreq_syn	= ProtoField.bool("uet.flags.rreq.syn",		"SYN",			16, yes_no, 0x800)
-fld.flag_rreq_clr	= ProtoField.uint16("uet.flags.rreq.clr",	"CLR",			base.DEC, nil, 0x0600)
-fld.flag_rreq_cc	= ProtoField.bool("uet.flags.rreq.cc",		"CC",			16, yes_no, 0x0100)
-fld.flag_rreq_ar	= ProtoField.bool("uet.flags.rreq.ar",		"AR (ACK Requested)",	16, yes_no, 0x0080)
-fld.flag_rreq_retx	= ProtoField.bool("uet.flags.rreq.retx",	"RETX (is retransmit)",	16, yes_no, 0x0040)
-fld.flag_rreq_rsv	= ProtoField.bool("uet.flags.rreq.rsv",		"RSV",			16, yes_no, 0x0020)
+-- ROD/RUD request flags
+fld.flag_rreq_syn	= ProtoField.bool("uet.flags.rreq.syn",		"SYN",			16, yes_no, 0x40)
+fld.flag_rreq_clr	= ProtoField.bool("uet.flags.rreq.clr",		"CLR (Clear)",		16, {"Specific PSN", "Cumulative"}, 0x20)
+fld.flag_rreq_cc	= ProtoField.bool("uet.flags.rreq.cc",		"CC state present",	16, yes_no, 0x10)
+fld.flag_rreq_ar	= ProtoField.bool("uet.flags.rreq.ar",		"AR (ACK Request)",	16, yes_no, 0x08)
+fld.flag_rreq_retx	= ProtoField.bool("uet.flags.rreq.retx",	"RETX (is retransmit)",	16, yes_no, 0x04)
+fld.flag_rreq_rsv	= ProtoField.bool("uet.flags.rreq.rsv",		"RSV",			16, nil, 0x03)
 
--- N.B. masks shifted left by 5 bits (for ack_code)
-fld.flag_ack_m			= ProtoField.bool("uet.flags.ack.m",			"M (ECN marked)",	16, yes_no, 0x0800)
-fld.flag_ack_ax			= ProtoField.bool("uet.flags.ack.ax",			"AX (ACK Extension)",	16, yes_no, 0x0400)
-fld.flag_ack_req		= ProtoField.uint16("uet.flags.ack.req",		"Requests",		base.DEC, nil, 0x0300)
-fld.flag_ack_retry_delay	= ProtoField.uint16("uet.flags.ack.retry_delay",	"Retry Delay",		base.DEC, nil, 0x00c0)
-fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, yes_no, 0x0020)
+-- ACK flags
+fld.flag_ack_m			= ProtoField.bool("uet.flags.ack.m",			"M (ECN marked)",	16, yes_no, 0x40)
+fld.flag_ack_ax			= ProtoField.bool("uet.flags.ack.ax",			"AX (ACK Extension)",	16, yes_no, 0x20)
+fld.flag_ack_req		= ProtoField.uint16("uet.flags.ack.req",		"Requests",		base.DEC, nil, 0x18)
+fld.flag_ack_probe		= ProtoField.bool("uet.flags.ack.probe",		"Probe",		16, yes_no, 0x04)
+fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, nil, 0x03)
 
 fld.ses_req			= ProtoField.none("uet.ses.req",			"SES request") -- FIXME: Proto()?
 fld.ses_req_rsv			= ProtoField.uint8("uet.ses.req.rsv",			"Reserved",			base.DEC, nil, 0xc0)
@@ -130,8 +130,8 @@ function p_uet.dissector(buf, pinfo, root)
 	end
 
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
-		local flags_tree = subtree:add(fld.flags, buf(2, 2))
 		subtree:add(fld.next_hdr, buf(2, 2))
+		local flags_tree = subtree:add(fld.flags, buf(2, 2))
 		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_clr, buf(2, 2))
@@ -144,11 +144,12 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.spdcid, buf(8, 2))
 		-- TODO: mode&offset for SYN
 		subtree:add(fld.dpdcid, buf(10, 2))
-		offset = offset + 8
 		-- TODO: clear
+		subtree:add(fld.forward_psn, buf(12, 2))
+		offset = offset + 12
 		-- TODO: cc_state
 
-		local h_next = buf(3, 1):bitfield(3, 5)
+		local h_next = buf(2, 2):bitfield(4, 5)
 		-- TODO: distinct Proto()
 		if h_next == HDR_REQ_STD then
 			local opcode = buf(offset, 1):bitfield(2, 6)
@@ -189,13 +190,13 @@ function p_uet.dissector(buf, pinfo, root)
 			offset = offset + 44
 		end
 	end if h_type == TYPE_PDS_ACK then
+		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		subtree:add(fld.ack_code, buf(2, 2))
 		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 		flags_tree:add(fld.flag_ack_m, buf(2, 2))
 		flags_tree:add(fld.flag_ack_ax, buf(2, 2))
 		flags_tree:add(fld.flag_ack_req, buf(2, 2))
-		flags_tree:add(fld.flag_ack_retry_delay, buf(2, 2))
+		flags_tree:add(fld.flag_ack_probe, buf(2, 2))
 		flags_tree:add(fld.flag_ack_rsv, buf(2, 2))
 
 		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
