@@ -39,8 +39,10 @@ local hdr_types = {
 }
 
 local req_opcodes = {
+	[0]			= "UET_NO_OP",
 	[0x01]			= "UET_WRITE - RMA Write",
 	[0x05]			= "UET_SEND - (non-matching) send operation",
+	[0x09]			= "UET_TAGGED_SEND",
 }
 local resp_opcodes = {
 	[0]			= "UET_DEFAULT_RESPONSE",
