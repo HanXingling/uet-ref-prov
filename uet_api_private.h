@@ -410,7 +410,7 @@ struct uet_ep {
 	struct uet_mr_desc *mr_hash_table;
 		  /* head of list containing mr's with provider-assigned keys */
 	struct dlist_entry mr_list_head;
-	struct uet_pds_state pds;                                /* pds state */
+	void *pds;                                               /* pds state */
 	uint32_t job_id;                                /* ses job identifier */
 	uint8_t untagged_gen;            /* ses generation for untagged msg's */
 	bool untagged_gen_disabled;  /* true=>gen disabled for untagged msg's */

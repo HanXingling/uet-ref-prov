@@ -302,37 +302,6 @@ struct uet_pds {
 	uint8_t ack_ip_tos;                             /* ip tos for ack's */
 };
 
-/* XXX: make uet_pds_state private (void* pointer in struct uet_ep) */
-
-/* pds transmit state */
-struct uet_pds_tx_state {
-	bool tx_active;      /* transmit in progress */
-	uint32_t psn;        /* next pkt sequence number */
-	time_t start_time;   /* tx start time for detecting timeout */
-	int    retry_cnt;    /* number of tx retransmissions */
-	struct {             /* parms needed for pkt retransmit */
-		uet_pkt_handle_t tx_pkt_handle;
-		uet_addr_handle_t dst_addr_handle;
-		uet_pds_mode_t mode;
-		uet_pds_tx_flags_t flags;
-		bool pds_info_valid;
-		struct uet_pds_info pds_info;
-		uint16_t msg_id;
-		uet_next_hdr_t next_hdr;
-		void *pkt;
-		size_t pkt_len;
-		bool dma_rdy;
-	} pkt_parms;
-};
-
-/* pds state structure                                                 */
-/*   - embedded in uet_ep struct                                       */
-/*   - will be removed from uet_ep struct when real pds is implemented */
-struct uet_pds_state {
-	struct dlist_entry ack_state_list_head;
-	struct uet_pds_tx_state tx;
-};
-
 /* initialize the PDS and set the proper downcall function pointers */
 int uet_pds_init(struct uet_instance *uet);
 
