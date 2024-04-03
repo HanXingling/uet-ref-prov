@@ -4,7 +4,7 @@ CLANG=clang
 
 LIBFABRIC=../libfabric
 
-INCS=-I. -I./nic_shim -I$(LIBFABRIC) -I$(LIBFABRIC)/include
+INCS=-I. -I./util -I./nic_shim -I$(LIBFABRIC) -I$(LIBFABRIC)/include
 CFLAGS=-Wall \
        -Wno-unused-variable \
        -Wno-implicit-function-declaration \
@@ -12,17 +12,17 @@ CFLAGS=-Wall \
        -Wno-address-of-packed-member
 LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
 
-HDRS=$(wildcard *.h nic_shim/*.h)
+HDRS=$(wildcard *.h util/*.h nic_shim/*.h)
 
 BIN=uet
-SRC=$(filter-out $(wildcard nic_shim/*xdp*), $(wildcard *.c nic_shim/*.c))
+SRC=$(filter-out $(wildcard nic_shim/*xdp*), $(wildcard *.c util/*.c nic_shim/*.c))
 OBJ_DIR=obj
 OBJ=$(patsubst %.c, $(OBJ_DIR)/%.o, $(SRC))
 
 XDP_BIN=uet_xdp
 XDP_SRC=$(SRC) $(filter-out nic_shim/*xdp_kern*, \
                             $(filter $(wildcard nic_shim/*xdp*.c), \
-                                     $(wildcard *.c nic_shim/*.c)))
+                                     $(wildcard *.c util/*.c nic_shim/*.c)))
 XDP_OBJ_DIR=obj_xdp
 XDP_OBJ=$(patsubst %.c, $(XDP_OBJ_DIR)/%.o, $(XDP_SRC))
 XDP_KERN_SRC=$(wildcard nic_shim/*xdp_kern*)

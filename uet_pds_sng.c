@@ -16,10 +16,69 @@
 #include "uet_api_private.h"
 #include "uet_nic.h"
 
+/* pds transmit state */
+struct uet_pds_sng_tx_state {
+	bool tx_active;      /* transmit in progress */
+	uint32_t psn;        /* next pkt sequence number */
+	time_t start_time;   /* tx start time for detecting timeout */
+	int    retry_cnt;    /* number of tx retransmissions */
+	struct {             /* parms needed for pkt retransmit */
+		uet_pkt_handle_t tx_pkt_handle;
+		uet_addr_handle_t dst_addr_handle;
+		uet_pds_mode_t mode;
+		uet_pds_tx_flags_t flags;
+		bool pds_info_valid;
+		struct uet_pds_info pds_info;
+		uint16_t msg_id;
+		uet_next_hdr_t next_hdr;
+		void *pkt;
+		size_t pkt_len;
+		bool dma_rdy;
+	} pkt_parms;
+};
+
+/* pds state structure                                                 */
+/*   - embedded in uet_ep struct                                       */
+/*   - will be removed from uet_ep struct when real pds is implemented */
+struct uet_pds_sng_state {
+	struct dlist_entry ack_state_list_head;
+	struct uet_pds_sng_tx_state tx;
+};
+
+/*
+ * overlay struct for fields in pds headers
+ *
+ * the stop-and-go reliability layer is simpler if the sequence number
+ * state is maintained between libfabric endpoints (rather than between
+ * FEPs as is done in the real pds reliability layer), so to enable that
+ * a couple of fields in the pds headers are repurposed as follows:
+ *
+ *   - the spdcid field is repurposed to carry the pid_on_fep of the
+ *     source endpoint that sent the request
+ *   - the dpdcid field is repurposed to carry the index of the
+ *     source endpoint that sent the request
+ *
+ * the fields are repurposed in both the pds request and the pds ack headers
+ */
+struct UET_PACKED uet_pds_hdr_overlay {
+	uint16_t pid_on_fep;
+	uint16_t index;
+};
+
+/* pds ack state */
+struct uet_pds_ack_state {
+	struct dlist_entry list_entry; /* for list of ack's sent */
+	time_t ack_time;               /* time ack was sent */
+	struct uet_std_rsp_pkt ack;    /* ack packet that was sent */
+};
+
 /* determine if tx is active for an endpoint */
 static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
 {
-	return uet_ep->pds.tx.tx_active;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
+
+	return pds_state->tx.tx_active;
 }
 
 /* determine if uet packet type is valid */
@@ -114,13 +173,15 @@ static bool uet_pds_ep_addr_match(
 {
 	uint16_t msg_id, pid_on_fep, index;
 	uint32_t job_id;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	if (ntohl(pkt->common.ipv4.daddr) != uet_ep->ipv4_addr)
 		return false;
 	match_info->ip_addr_match = true;
 
 	if (pkt_is_ack) {
-		if (!uet_ep->pds.tx.tx_active)
+		if (!pds_state->tx.tx_active)
 			return false;
 
 		job_id = ((ntohl(pkt->std_rsp.ses.cmn.index_gen_job_id) &
@@ -131,7 +192,7 @@ static bool uet_pds_ep_addr_match(
 		match_info->job_id_match = true;
 
 		msg_id = ntohs(pkt->std_rsp.ses.cmn.msg_id);
-		if (msg_id != uet_ep->pds.tx.pkt_parms.msg_id)
+		if (msg_id != pds_state->tx.pkt_parms.msg_id)
 			return false;
 		match_info->msg_id_match = true;
 	} else {
@@ -194,11 +255,13 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	struct uet_pds_ack_state *ack_state;
 	struct uet_pds_hdr_overlay *ack_overlay, *pkt_overlay;
 	time_t now;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	*dup_ack_state = NULL;
 	uet_gettime(&now);
 
-	head = &uet_ep->pds.ack_state_list_head;
+	head = &pds_state->ack_state_list_head;
 	dlist_foreach(head, item) {
 		ack_state = container_of(item, struct uet_pds_ack_state,
 					 list_entry);
@@ -297,6 +360,8 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	struct uet_instance *uet;
 	struct uet_pds_ack_state *ack_state;
 	struct uet_std_rsp_pkt *ack;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	uet = uet_ep->uet_domain->uet;
 	ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
@@ -319,9 +384,10 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 		uet_gettime(&now);
 		ack_state->ack_time = now;
 		dlist_insert_head(&ack_state->list_entry,
-				  &uet_ep->pds.ack_state_list_head);
+				  &pds_state->ack_state_list_head);
 	} else
 		free(ack_state);
+
 	return rc;
 }
 
@@ -380,7 +446,7 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
  *********************************************************************/
 
 /* init pds resources for uet instance */
-int uet_pds_initialize(struct uet_instance *uet)
+int uet_pds_sng_initialize(struct uet_instance *uet)
 {
 	uet->pds.tx_timeout = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
@@ -390,24 +456,36 @@ int uet_pds_initialize(struct uet_instance *uet)
 }
 
 /* free pds resources for uet instance */
-void uet_pds_finalize(struct uet_instance *uet)
+void uet_pds_sng_finalize(struct uet_instance *uet)
 {
 }
 
 /* init pds resources for endpoint */
-int uet_pds_ep_initialize(struct uet_ep *uet_ep)
+int uet_pds_sng_ep_initialize(struct uet_ep *uet_ep)
 {
-	dlist_init(&uet_ep->pds.ack_state_list_head);
+	struct uet_pds_sng_state *pds_state;
+
+	pds_state = calloc(1, sizeof(struct uet_pds_sng_state));
+	if (pds_state == NULL) {
+		UET_API_PRINT_ERRNO("calloc");
+		return -FI_ENOMEM;
+	}
+
+	uet_ep->pds = pds_state;
+
+	dlist_init(&pds_state->ack_state_list_head);
 	return FI_SUCCESS;
 }
 
 /* free pds resources for endpoint */
-void uet_pds_ep_finalize(struct uet_ep *uet_ep)
+void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 {
 	struct dlist_entry *head, *item;
 	struct uet_pds_ack_state *pds_rx;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
-	head = &uet_ep->pds.ack_state_list_head;
+	head = &pds_state->ack_state_list_head;
 	dlist_foreach(head, item) {
 		pds_rx = container_of(item, struct uet_pds_ack_state,
 				      list_entry);
@@ -415,15 +493,18 @@ void uet_pds_ep_finalize(struct uet_ep *uet_ep)
 		item = head;
 		free(pds_rx);
 	}
+
+	free(pds_state);
+	uet_ep->pds = NULL;
 }
 
 /* pds packet transmission */
-int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
-		   uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
-		   uet_pds_tx_flags_t flags, bool pds_info_valid,
-		   struct uet_pds_info pds_info, uint16_t msg_id,
-		   uet_next_hdr_t next_hdr, void *pkt, size_t pkt_len,
-		   bool dma_rdy)
+int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
+		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
+		       uet_pds_tx_flags_t flags, bool pds_info_valid,
+		       struct uet_pds_info pds_info, uint16_t msg_id,
+		       uet_next_hdr_t next_hdr, void *pkt, size_t pkt_len,
+		       bool dma_rdy)
 {
 	int rc;
 	uint8_t tos;
@@ -437,8 +518,10 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	struct uet_addr *dst_addr;
 	struct uet_pds_req *pds;
 	struct uet_pds_to_ses_funcs *ses_upcall;
-	struct uet_pds_tx_state *state;
+	struct uet_pds_sng_tx_state *state;
 	struct uet_pds_hdr_overlay *pds_overlay;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
@@ -480,7 +563,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		if (flags & UET_PDS_FLAG_RETRANSMIT)
 			pds->prlg.type_next_flags |= htons(
 				(UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT));
-		pds->psn = htonl(uet_ep->pds.tx.psn);
+		pds->psn = htonl(pds_state->tx.psn);
 		pds_overlay = (struct uet_pds_hdr_overlay *) &pds->spdcid;
 		pds_overlay->pid_on_fep = htons(uet_ep->uet_addr.pid_on_fep);
 		pds_overlay->index = htons(uet_ep->uet_addr.start_index);
@@ -510,12 +593,12 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	memcpy(payload, pkt, pkt_len);
 
 	if (!(flags & UET_PDS_FLAG_RETRANSMIT))
-		uet_ep->pds.tx.retry_cnt = 0;
+		pds_state->tx.retry_cnt = 0;
 
-	uet_gettime(&uet_ep->pds.tx.start_time);
+	uet_gettime(&pds_state->tx.start_time);
 
 	/* save parms needed for pkt retransmission */
-	state = &uet_ep->pds.tx;
+	state = &pds_state->tx;
 	state->pkt_parms.tx_pkt_handle = tx_pkt_handle;
 	state->pkt_parms.dst_addr_handle = dst_addr_handle;
 	state->pkt_parms.mode = mode;
@@ -530,18 +613,20 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 
 	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, uet_pkt_len);
 	if (rc == FI_SUCCESS)
-		uet_ep->pds.tx.tx_active = true;
+		pds_state->tx.tx_active = true;
 	free(uet_pkt);
 	return rc;
 }
 
 /* progress tx operations for endpoint */
-int uet_pds_progress_tx(struct uet_ep *uet_ep,
-			uet_pkt_handle_t *err_pkt_handle)
+int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
+			    uet_pkt_handle_t *err_pkt_handle)
 {
 	struct uet_instance *uet;
-	struct uet_pds_tx_state *pds_tx;
+	struct uet_pds_sng_tx_state *pds_tx;
 	time_t now, delta;
+	struct uet_pds_sng_state *pds_state =
+		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	uet = uet_ep->uet_domain->uet;
 
@@ -549,7 +634,7 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 	if (!uet_pds_ep_tx_active(uet_ep))
 		return -FI_ENODATA;
 
-	pds_tx = &uet_ep->pds.tx;
+	pds_tx = &pds_state->tx;
 	*err_pkt_handle = pds_tx->pkt_parms.tx_pkt_handle;
 
 	/* check if packet retransmission is needed */
@@ -560,30 +645,30 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 
 	if (pds_tx->retry_cnt >= uet->pds.max_tx_retries) {
 		/* retries exhausted */
-		uet_ep->pds.tx.tx_active = false;
+		pds_state->tx.tx_active = false;
 		return -FI_EIO;
 	}
 
 	/* retransmit the packet */
 	pds_tx->retry_cnt++;
 	uet_gettime(&pds_tx->start_time);
-	return (uet_pds_tx_pkt(pds_tx->pkt_parms.tx_pkt_handle,
-			       uet_ep,
-			       pds_tx->pkt_parms.dst_addr_handle,
-			       pds_tx->pkt_parms.mode,
-			       pds_tx->pkt_parms.flags |
-			       UET_PDS_FLAG_RETRANSMIT,
-			       pds_tx->pkt_parms.pds_info_valid,
-			       pds_tx->pkt_parms.pds_info,
-			       pds_tx->pkt_parms.msg_id,
-			       pds_tx->pkt_parms.next_hdr,
-			       pds_tx->pkt_parms.pkt,
-			       pds_tx->pkt_parms.pkt_len,
-			       pds_tx->pkt_parms.dma_rdy));
+	return uet->pds.downcall.tx_pkt(pds_tx->pkt_parms.tx_pkt_handle,
+					uet_ep,
+					pds_tx->pkt_parms.dst_addr_handle,
+					pds_tx->pkt_parms.mode,
+					(pds_tx->pkt_parms.flags |
+					 UET_PDS_FLAG_RETRANSMIT),
+					pds_tx->pkt_parms.pds_info_valid,
+					pds_tx->pkt_parms.pds_info,
+					pds_tx->pkt_parms.msg_id,
+					pds_tx->pkt_parms.next_hdr,
+					pds_tx->pkt_parms.pkt,
+					pds_tx->pkt_parms.pkt_len,
+					pds_tx->pkt_parms.dma_rdy);
 }
 
 /* progress rx operations */
-int uet_pds_progress_rx(struct uet_instance *uet)
+int uet_pds_sng_progress_rx(struct uet_instance *uet)
 {
 	int rc;
 	uet_ses_rc_t ses_rc;
@@ -593,12 +678,13 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	struct uet_ep *dst_uet_ep;
 	struct uet_msg_match_info match_info;
 	struct uet_pds_to_ses_funcs *ses_upcall;
-	struct uet_pds_tx_state *pds_tx;
+	struct uet_pds_sng_tx_state *pds_tx;
 	struct uet_pds_ack_state *ack_state;
 	struct uet_ses_rsp rsp_ses_hdr;
 	struct uet_pds_info pds_info;
 	size_t rsp_ses_hdr_len;
 	uet_next_hdr_t rsp_next_hdr;
+	struct uet_pds_sng_state *pds_state;
 
 	/* check if packet is available */
 	rc = uet_nic_rx_poll(UET_NIC(uet));
@@ -645,7 +731,9 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 		goto exit;
 	}
 
-	pds_tx = &dst_uet_ep->pds.tx;
+	pds_state = (struct uet_pds_sng_state *)dst_uet_ep->pds;
+
+	pds_tx = &pds_state->tx;
 	ses_upcall = &uet->pds.upcall;
 
 	/* process the packet */
@@ -706,7 +794,7 @@ exit:
 }
 
 /* implement endpoint close wait state */
-void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
+void uet_pds_sng_ep_close_wait(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
 	time_t start_time, now;
@@ -731,7 +819,7 @@ void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
 		}
 		if ((now - start_time) > uet->pds.msl)
 			break;
-		uet_pds_progress_rx(uet);
+		uet->pds.downcall.progress_rx(uet);
 	}
 }
 

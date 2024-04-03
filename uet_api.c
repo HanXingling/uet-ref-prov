@@ -965,6 +965,7 @@ static void uet_cq_free(struct uet_ep *uet_ep)
 static void uet_ep_free(struct uet_ep *uet_ep)
 {
 	struct dlist_entry *item;
+	struct uet_pds *pds = &uet_ep->uet_domain->uet->pds;
 
 	uet_rx_msg_hash_finalize(uet_ep);
 	uet_tag_initiator_hash_finalize(uet_ep);
@@ -973,9 +974,8 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 
 	uet_cq_free(uet_ep);
 
-	uet_pds_ep_finalize(uet_ep);
+	pds->downcall.ep_finalize(uet_ep);
 
-	uet_pds_ep_finalize(uet_ep);
 	item = &uet_ep->ep_list_entry;
 	dlist_remove(item);
 
@@ -1983,16 +1983,18 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 {
 	int rc;
 	struct uet_pds_info pds_info;
+	struct uet_pds *pds = &tx_desc->uet_ep->uet_domain->uet->pds;
 
 	if (tx_desc->remaining_bytes == 0)
 		return FI_SUCCESS;
 
 	memset(&pds_info, 0, sizeof(struct uet_pds_info));
 
-	rc = uet_pds_tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
-			    tx_desc->dst_addr_handle, tx_desc->pds_mode,
-			    UET_PDS_FLAG_NONE, false, pds_info,
-			    tx_desc->msg_id, UET_HDR_REQ_STD, NULL, 0, false);
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
+				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
+				  UET_PDS_FLAG_NONE, false, pds_info,
+				  tx_desc->msg_id, UET_HDR_REQ_STD, NULL, 0,
+				  false);
 
 	tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
 
@@ -2009,12 +2011,14 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 {
 	int rc;
 	struct uet_ep *uet_ep;
+	struct uet_pds *pds;
 	struct uet_pds_info pds_info;
 	uet_pds_tx_flags_t flags;
 	size_t max_payload_len, pkt_len;
 	void *pkt_buf;
 
 	uet_ep = tx_desc->uet_ep;
+	pds = &uet_ep->uet_domain->uet->pds;
 
 	flags = UET_PDS_FLAG_SOM;
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
@@ -2031,10 +2035,12 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 		pkt_buf = (void *) (((size_t) tx_desc->buf_desc.contig.buf) +
 				    tx_desc->buf_desc.contig.buf_off);
 		memset(&pds_info, 0, sizeof(struct uet_pds_info));
-		rc = uet_pds_tx_pkt((uet_pkt_handle_t) tx_desc, uet_ep,
-				    tx_desc->dst_addr_handle, tx_desc->pds_mode,
-				    flags, false, pds_info, tx_desc->msg_id,
-				    UET_HDR_REQ_STD, pkt_buf, pkt_len, false);
+		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, uet_ep,
+					  tx_desc->dst_addr_handle,
+					  tx_desc->pds_mode, flags, false,
+					  pds_info, tx_desc->msg_id,
+					  UET_HDR_REQ_STD, pkt_buf, pkt_len,
+					  false);
 		if (rc == FI_SUCCESS) {
 			/* TODO: add iov support */
 			tx_desc->buf_desc.contig.buf_off += pkt_len;
@@ -2365,7 +2371,10 @@ int uet_initialize(uet_handle_t *handle)
 	uet->pds.upcall.rx_req = uet_pds_to_ses_rx_req;
 	uet->pds.upcall.rx_rsp = uet_pds_to_ses_rx_rsp;
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
-	uet_pds_initialize(uet);
+
+	rc = uet_pds_init(uet);
+	if (rc != FI_SUCCESS)
+		goto err_return;
 
 	rc = uet_nic_initialize(UET_NIC(uet));
 	if (rc != FI_SUCCESS)
@@ -2570,10 +2579,12 @@ err_exit:
 int uet_domain_close(uet_domain_handle_t domain_handle)
 {
 	struct uet_domain *uet_dom;
+	struct uet_pds *pds;
 
 	uet_dom = (struct uet_domain *) domain_handle;
+	pds = &uet_dom->uet->pds;
 
-	uet_pds_finalize(uet_dom->uet);
+	pds->downcall.finalize(uet_dom->uet);
 
 	if (uet_domain_has_ep(uet_dom)) {
 		UET_API_ERR("EPs associated with domain being closed");
@@ -2592,8 +2603,10 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	size_t i;
 	struct uet_domain *uet_dom;
 	struct uet_ep *uet_ep;
+	struct uet_pds *pds;
 
 	uet_dom = (struct uet_domain *) domain_handle;
+	pds = &uet_dom->uet->pds;
 
 	/* allocate memory for ep object */
 	uet_ep = calloc(1, sizeof(struct uet_ep));
@@ -2679,7 +2692,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		break;
 	}
 
-	uet_pds_ep_initialize(uet_ep);
+	pds->downcall.ep_initialize(uet_ep);
 	uet_ep->ep_state = UET_EP_DISABLED;
 
 	/* insert object into ep list */
@@ -2801,8 +2814,11 @@ int uet_ep_enable(uet_ep_handle_t ep_handle)
 int uet_ep_close(uet_ep_handle_t ep_handle)
 {
 	struct uet_ep *uet_ep;
+	struct uet_pds *pds;
 
 	uet_ep = (struct uet_ep *) ep_handle;
+	pds = &uet_ep->uet_domain->uet->pds;
+
 	if (uet_ep_has_cq(uet_ep)) {
 		UET_API_ERR("Completion Q is associated with EP being closed");
 		return -FI_EBUSY;
@@ -2813,7 +2829,7 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	else
 		uet_mr_hash_finalize(uet_ep);
 
-	uet_pds_ep_close_wait(uet_ep);
+	pds->downcall.ep_close_wait(uet_ep);
 
 	uet_ep_free(uet_ep);
 
@@ -2826,18 +2842,20 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	uet_pkt_handle_t err_pkt_handle;
 	struct uet_cq *cq;
 	struct uet_ep *uet_ep;
+	struct uet_pds *pds;
 	struct uet_ring *ring;
 	ssize_t cq_count, rd_count, max_rd_count;
 	char *buffer = buf;
 
 	cq = (struct uet_cq *) cq_handle;
 	uet_ep = cq->uet_ep;
+	pds = &uet_ep->uet_domain->uet->pds;
 
 	uet_rx_msg_age(uet_ep);
 
-	uet_pds_progress_rx(uet_ep->uet_domain->uet);
+	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
 
-	rc = uet_pds_progress_tx(uet_ep, &err_pkt_handle);
+	rc = pds->downcall.progress_tx(uet_ep, &err_pkt_handle);
 	switch (rc) {
 	case FI_SUCCESS:
 	case -FI_EAGAIN:
