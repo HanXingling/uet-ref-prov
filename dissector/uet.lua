@@ -132,7 +132,6 @@ function p_uet.dissector(buf, pinfo, root)
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_clr, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_cc, buf(2, 2))
@@ -192,7 +191,6 @@ function p_uet.dissector(buf, pinfo, root)
 	end if h_type == TYPE_PDS_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		flags_tree:add(fld.flags, buf(2, 2)) -- FIXME? helps eyeballing the bits for now.
 		flags_tree:add(fld.flag_ack_m, buf(2, 2))
 		flags_tree:add(fld.flag_ack_ax, buf(2, 2))
 		flags_tree:add(fld.flag_ack_req, buf(2, 2))
