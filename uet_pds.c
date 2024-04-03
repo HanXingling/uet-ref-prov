@@ -260,8 +260,9 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 			   pkt->common.ipv4.daddr, tot_len,
 			   uet->pds.ack_ip_tos);
 
-	ack->pds.prlg.type_ctrl_flags = htons(
+	ack->pds.prlg.type_next_flags = htons(
 		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
+		(next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		(UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 	ack->pds.psn = pkt->common.pds.psn;
 	pkt_overlay = (struct uet_pds_hdr_overlay *) &pkt->common.pds.spdcid;
