@@ -227,7 +227,7 @@ function p_uet.dissector(buf, pinfo, root)
 
 	local pktlen = buf:len() - offset
 	local data_buf = buf(offset, pktlen)
-	dissect_data:call(data_buf:tvb(), pinfo, subtree)
+	dissect_data:call(data_buf:tvb(), pinfo, root)
 end
 
 function p_uet:init()
