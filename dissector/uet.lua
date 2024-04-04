@@ -52,6 +52,7 @@ local resp_opcodes = {
 
 local yes_no = {"Yes", "No"}
 local fld = p_uet.fields
+fld.pds		= ProtoField.none("uet.pds",		"PDS")
 fld.entropy	= ProtoField.uint16("uet.entropy",	"Entropy",				base.DEC)
 fld.type	= ProtoField.uint16("uet.type",		"Type",					base.HEX, types, 0xf000)
 fld.next_hdr	= ProtoField.uint16("uet.next_hdr",	"Next Header",				base.HEX, hdr_types, 0xf80)
@@ -117,7 +118,8 @@ local dissect_data	= Dissector.get("data")
 function p_uet.dissector(buf, pinfo, root)
 	pinfo.cols.protocol = p_uet.name
 
-	local subtree = root:add(p_uet, buf)
+	local proto_tree = root:add(p_uet, buf:range(0))
+	local subtree = proto_tree:add(fld.pds, buf:range(0))
 	subtree:add(fld.entropy, buf(0, 2))
 	subtree:add(fld.type, buf(2, 2))
 	local h_type = buf(2, 1):bitfield(0, 4)
@@ -145,6 +147,7 @@ function p_uet.dissector(buf, pinfo, root)
 		-- TODO: clear
 		subtree:add(fld.forward_psn, buf(12, 2))
 		offset = offset + 12
+		subtree:set_len(offset)
 		-- TODO: cc_state
 	end if h_type == TYPE_PDS_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
@@ -159,6 +162,7 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
 		offset = offset + 8
+		subtree:set_len(offset)
 	end
 
 	-- TODO: TYPE_CTRL
@@ -172,7 +176,7 @@ function p_uet.dissector(buf, pinfo, root)
 				summary = summary .. " " .. opcode_str
 			end
 
-			local req_tree = subtree:add(fld.ses_req, buf(offset, 44))
+			local req_tree = proto_tree:add(fld.ses_req, buf(offset, 44))
 			req_tree:add(fld.ses_req_flag_eom, buf(offset, 1))
 			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
 			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
@@ -208,7 +212,7 @@ function p_uet.dissector(buf, pinfo, root)
 			if opcode_str ~= nil then
 				summary = summary .. " " .. opcode_str
 			end
-			local resp_tree = subtree:add(fld.ses_resp, buf(offset, 12))
+			local resp_tree = proto_tree:add(fld.ses_resp, buf(offset, 12))
 			resp_tree:add(fld.ses_resp_list, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_ver, buf(offset+1, 1))
@@ -225,9 +229,10 @@ function p_uet.dissector(buf, pinfo, root)
 		pinfo.cols.info = summary
 	end
 
+	proto_tree:set_len(offset)
 	local pktlen = buf:len() - offset
 	local data_buf = buf(offset, pktlen)
-	dissect_data:call(data_buf:tvb(), pinfo, subtree)
+	dissect_data:call(data_buf:tvb(), pinfo, root)
 end
 
 function p_uet:init()
