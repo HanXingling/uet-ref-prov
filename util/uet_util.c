@@ -121,6 +121,8 @@ void uet_print_uet_hdr(union uet_pkt *pkt)
 	uint8_t opcode, gen, rc;
 	uint16_t pds_type, next_hdr, index, pid_on_fep;
 	uint32_t job_id;
+	uint64_t msg_off, payload_len;
+	bool eom, som, hd;
 
 	printf("  PDS Header\n");
 	pds_type = (ntohs(pkt->common.pds.prlg.type_next_flags) &
@@ -148,6 +150,9 @@ void uet_print_uet_hdr(union uet_pkt *pkt)
 	case UET_HDR_RSP:
 		printf("SES Response\n");
 		break;
+	case UET_HDR_RSP_DATA:
+		printf("SES Response with Data\n");
+		break;
 	default:
 		if (pds_type == UET_PDS_TYPE_ACK) {
 			printf("SES Response\n");
@@ -165,14 +170,34 @@ void uet_print_uet_hdr(union uet_pkt *pkt)
 	switch (next_hdr) {
 	case UET_HDR_REQ_STD:
 		printf("    SES Opcode:           ");
-		opcode = ((pkt->std_req.ses.cmn.rsvd_opcode &
+		opcode = ((pkt->std_req.ses.cmn.eom_opcode &
 			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
+		if (pkt->std_req.ses.cmn.eom_opcode & UET_SES_EOM_MASK)
+			eom = true;
+		else
+			eom = false;
+		if (pkt->std_req.ses.cmn.ver_flags & UET_SES_REQ_FLAG_SOM)
+			som = true;
+		else
+			som = false;
+		if (pkt->std_req.ses.cmn.ver_flags & UET_SES_REQ_FLAG_HD)
+			hd = true;
+		else
+			hd = false;
+
 		switch (opcode) {
 		case UET_SEND:
-			printf("SEND\n");
+			printf("SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_WRITE:
+			printf("WRITE, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_READ:
+			printf("READ, SOM = %d, EOM = %d\n", som, eom);
 			break;
 		default:
-			printf("Unknown (0x%x)\n", opcode);
+			printf("Unknown (0x%x), SOM = %d, EOM = %d\n",
+			       opcode, som, eom);
 			return;
 		}
 		printf("    SES Flags:            0x%x\n",
@@ -194,11 +219,29 @@ void uet_print_uet_hdr(union uet_pkt *pkt)
 			      UET_SES_REQ_PID_ON_FEP_SHIFT);
 		printf("    SES PIDonFEP:         %u\n", pid_on_fep);
 		printf("    SES Message ID:       %u\n",
-		       ntohl(pkt->std_req.ses.cmn.msg_id));
+		       ntohs(pkt->std_req.ses.cmn.msg_id));
 		printf("    SES Initiator ID:     %u\n",
 		       ntohl(pkt->std_req.ses.initiator));
 		printf("    SES Request Length:   %u\n",
 		       ntohl(pkt->std_req.ses.req_len));
+		printf("    SES Buffer Offset:    %lu\n",
+		       ntohll(pkt->std_req.ses.buf_off));
+		if (som && hd)
+			printf("    SES Header Data:      %lu\n",
+			       ntohll(pkt->std_req.ses.cmpl_data));
+		else if (!som) {
+			msg_off = (ntohll(pkt->std_req.ses.msg_off_payload_len)
+				   & UET_SES_REQ_STD_MSG_OFF_MASK) >>
+				  UET_SES_REQ_STD_MSG_OFF_SHIFT;
+			payload_len =
+				(ntohll(pkt->std_req.ses.msg_off_payload_len) &
+				 UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
+				UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT;
+			printf("    SES Message Offset:   %lu\n", msg_off);
+			printf("    SES Payload Length:   %lu\n", payload_len);
+		}
+		printf("    SES Match Bits:       0x%lx\n",
+		       ntohll(pkt->std_req.ses.match_bits));
 		break;
 	case UET_HDR_RSP:
 		printf("    SES Opcode:           ");
@@ -225,9 +268,45 @@ void uet_print_uet_hdr(union uet_pkt *pkt)
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
 		printf("    SES Message ID:       %u\n",
-		       ntohl(pkt->std_rsp.ses.cmn.msg_id));
+		       ntohs(pkt->std_rsp.ses.cmn.msg_id));
 		printf("    SES Modified Length:  %u\n",
 		       ntohl(pkt->std_rsp.ses.mod_len));
+		break;
+	case UET_HDR_RSP_DATA:
+		printf("    SES Opcode:           ");
+		opcode = ((pkt->std_rsp_d.ses.cmn.list_opcode &
+			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
+		switch (opcode) {
+		case UET_RESPONSE_W_DATA:
+			printf("RESPONSE WITH DATA\n");
+			break;
+		default:
+			printf("Unknown (0x%x)\n", opcode);
+			return;
+		}
+		rc = ((pkt->std_rsp_d.ses.cmn.ver_ret_code &
+		       UET_SES_RSP_RET_CODE_MASK) >>
+		      UET_SES_RSP_RET_CODE_SHIFT);
+		printf("    SES Return Code:      %u\n", rc);
+		gen = (uint8_t)
+			((ntohl(pkt->std_rsp_d.ses.cmn.index_gen_job_id) &
+			  UET_SES_RSP_INDEX_GEN_MASK) >>
+			 UET_SES_RSP_INDEX_GEN_SHIFT);
+		printf("    SES Generation:       %u\n", gen);
+		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.index_gen_job_id) &
+			   UET_SES_RSP_JOB_ID_MASK) >>
+			  UET_SES_RSP_JOB_ID_SHIFT);
+		printf("    SES Job ID:           %u\n", job_id);
+		printf("    SES Message ID:       %u\n",
+		       ntohs(pkt->std_rsp_d.ses.cmn.msg_id));
+		printf("    SES Modified Length:  %u\n",
+		       ntohl(pkt->std_rsp_d.ses.mod_len));
+		printf("    SES Message Offset:   %u\n",
+		       ntohl(pkt->std_rsp_d.ses.msg_off));
+		printf("    SES Payload Length:   %u\n",
+		       (ntohl(pkt->std_rsp_d.ses.rsvd_payload_len) &
+			UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
+		       UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 		break;
 	default:
 		break;
@@ -379,4 +458,3 @@ void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx)
 
 	printf("\n");
 }
-

@@ -21,6 +21,7 @@
 #define UET_DEFAULT_TX_TIMEOUT     100  /* in millisecs */
 #define UET_DEFAULT_MAX_TX_RETRIES 19
 #define UET_DEFAULT_MSL            2000 /* max seg lifetime in msecs */
+#define UET_DEFAULT_PDS_MAX_ACK_DATA	16   /* in bytes */
 
 struct uet_ep;     /* forward references */
 struct uet_instance;
@@ -138,8 +139,7 @@ struct uet_ses_to_pds_funcs {
 	 *                                  provided in build_ses_hdr upcall
 	 *                                  from pds to ses
 	 *        UET_PDS_FLAG_RETRANSMIT - this is retransmission of the packet
-	 *      pds_info_valid  - true => use contents of pds_info
-	 *      pds_info        - pds info echoed back from read request
+	 *      pds_info        - ptr to pds info echoed back from read request
 	 *      msg_id          - id of message
 	 *      next_hdr        - identifies next header following pds header
 	 *      pkt             - ptr to msg payload to be sent
@@ -153,8 +153,8 @@ struct uet_ses_to_pds_funcs {
 	 */
 	int (*tx_pkt)(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
-		      uet_pds_tx_flags_t flags, bool pds_info_valid,
-		      struct uet_pds_info pds_info, uint16_t msg_id,
+		      uet_pds_tx_flags_t flags,
+		      struct uet_pds_info *pds_info, uint16_t msg_id,
 		      uet_next_hdr_t next_hdr, void *pkt, size_t pkt_len,
 		      bool dma_rdy);
 
@@ -254,10 +254,10 @@ struct uet_pds_to_ses_funcs {
 	 *   - negative value corresponding to fabric errno on error
 	 */
 	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_ep *uet_ep,
-		      void *pkt, size_t pkt_len, struct uet_pds_info pds_info,
+		      void *pkt, size_t pkt_len, struct uet_pds_info *pds_info,
 		      uet_next_hdr_t req_next_hdr, uet_next_hdr_t *rsp_next_hdr,
 		      void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
-		      bool *gtd_del);
+		      bool *ses_nack, bool *gtd_del);
 
 	/*
 	 * pds upcall to ses when response packet is received
@@ -300,6 +300,7 @@ struct uet_pds {
 	int    max_tx_retries;             /* max tx retries before failing */
 	time_t msl;                    /* max segment lifetime in millisecs */
 	uint8_t ack_ip_tos;                             /* ip tos for ack's */
+	uint16_t max_ack_data;               /* max data carried in pds ack */
 };
 
 /* initialize the PDS and set the proper downcall function pointers */

@@ -16,6 +16,17 @@
 #include "uet_api_private.h"
 #include "uet_nic.h"
 
+#define UET_PDS_PKT_HDR_TRACE_ENABLED 0
+
+#define UET_PDS_PKT_HDR_TRACE(PKT, MSG)			\
+{							\
+	if (UET_PDS_PKT_HDR_TRACE_ENABLED) {		\
+		printf("\n%s\n\n", (MSG));		\
+		uet_print_pkt_hdrs((PKT));		\
+	}						\
+}
+
+/* determine if tx is active for an endpoint */
 /* pds transmit state */
 struct uet_pds_sng_tx_state {
 	bool tx_active;      /* transmit in progress */
@@ -72,7 +83,6 @@ struct uet_pds_ack_state {
 	struct uet_std_rsp_pkt ack;    /* ack packet that was sent */
 };
 
-/* determine if tx is active for an endpoint */
 static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
 {
 	struct uet_pds_sng_state *pds_state =
@@ -82,12 +92,14 @@ static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
 }
 
 /* determine if uet packet type is valid */
-static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack)
+static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack,
+				   bool *pkt_is_rd_rsp)
 {
 	uint16_t pds_type, next_hdr;
 	bool pds_req;
 
 	*pkt_is_ack = false;
+	*pkt_is_rd_rsp = false;
 
 	pds_type = (ntohs(pkt->common.pds.prlg.type_next_flags) &
 		    UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT;
@@ -117,6 +129,14 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack)
 			return true;
 		}
 		break;
+	case UET_HDR_RSP_DATA:
+		if (pds_req == false) {
+			*pkt_is_ack = true;
+			return true;
+		}
+		*pkt_is_rd_rsp = true;
+		return true;
+		break;
 	default:
 		break;
 	}
@@ -142,6 +162,9 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack)
  *      pkt_is_ack - ptr to location where indication of packet type
  *                   is returned, true => packet is an ack packet,
  *                   only valid when function returns true
+ *      pkt_is_rd_rsp - ptr to location where indication of packet type
+ *                      is returned, true => packet is a read response in
+ *                      a pds request, only valid when function returns true
  *
  * returns:
  *      true  => packet passed validation checks
@@ -149,7 +172,7 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack)
  */
 static bool uet_pds_rx_pkt_valid(struct uet_instance *uet,
 				 union uet_pkt *pkt, size_t pkt_size,
-				 bool *pkt_is_ack)
+				 bool *pkt_is_ack, bool *pkt_is_rd_rsp)
 {
 	if (!memcmp(pkt->common.eth.h_dest, uet->nic.mac_addr, ETH_ALEN) &&
 	    (pkt->common.eth.h_proto == htons(ETH_P_IP)) &&
@@ -160,7 +183,7 @@ static bool uet_pds_rx_pkt_valid(struct uet_instance *uet,
 	    (pkt->common.ipv4.tot_len <=
 	     htons((pkt_size - uet->nic.l2_hdr_size))) &&
 	    (uet_ipv4_csum(&pkt->common.ipv4) == 0) &&
-	    (uet_pds_pkt_type_valid(pkt, pkt_is_ack)))
+	    (uet_pds_pkt_type_valid(pkt, pkt_is_ack, pkt_is_rd_rsp)))
 		return true;
 
 	return false;
@@ -169,12 +192,13 @@ static bool uet_pds_rx_pkt_valid(struct uet_instance *uet,
 /* determine if pkt is destined for endpoint */
 static bool uet_pds_ep_addr_match(
 	struct uet_ep *uet_ep, union uet_pkt *pkt, bool pkt_is_ack,
-	struct uet_msg_match_info *match_info)
+	bool pkt_is_rd_rsp, struct uet_msg_match_info *match_info)
 {
 	uint16_t msg_id, pid_on_fep, index;
 	uint32_t job_id;
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
+	struct uet_rx_desc *rx_desc;
 
 	if (ntohl(pkt->common.ipv4.daddr) != uet_ep->ipv4_addr)
 		return false;
@@ -193,6 +217,24 @@ static bool uet_pds_ep_addr_match(
 
 		msg_id = ntohs(pkt->std_rsp.ses.cmn.msg_id);
 		if (msg_id != pds_state->tx.pkt_parms.msg_id)
+			return false;
+		match_info->msg_id_match = true;
+	} else if (pkt_is_rd_rsp) {
+		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.index_gen_job_id) &
+			   UET_SES_RSP_JOB_ID_MASK) >>
+			  UET_SES_RSP_JOB_ID_SHIFT);
+		if (job_id != uet_ep->job_id)
+			return false;
+		match_info->job_id_match = true;
+
+		match_info->pid_on_fep_match = true;
+		match_info->index_match = true;
+
+		msg_id = ntohs(pkt->std_rsp_d.ses.cmn.msg_id);
+		rx_desc = uet_ep->uet_domain->msg_id_cb.rx_desc[msg_id];
+		if (rx_desc == NULL)
+			return false;
+		if (rx_desc->uet_ep != uet_ep)
 			return false;
 		match_info->msg_id_match = true;
 	} else {
@@ -224,7 +266,7 @@ static bool uet_pds_ep_addr_match(
 /* find endpoint that packet is destined for */
 static struct uet_ep *uet_pds_find_dst_ep(
 	struct uet_instance *uet, union uet_pkt *pkt, bool pkt_is_ack,
-	struct uet_msg_match_info *match_info)
+	bool pkt_is_rd_rsp, struct uet_msg_match_info *match_info)
 {
 	struct dlist_entry *dom_head, *dom_item, *ep_head, *ep_item;
 	struct uet_domain *uet_dom;
@@ -239,7 +281,7 @@ static struct uet_ep *uet_pds_find_dst_ep(
 			uet_ep = container_of(ep_item, struct uet_ep,
 					      ep_list_entry);
 			if (uet_pds_ep_addr_match(uet_ep, pkt, pkt_is_ack,
-						  match_info))
+						  pkt_is_rd_rsp, match_info))
 				return uet_ep;
 		}
 	}
@@ -379,7 +421,9 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 			      ses_hdr_len, ses_hdr);
 
 	/* send ack packet */
-	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack, (size_t) ack_pkt_len);
+	UET_PDS_PKT_HDR_TRACE((union uet_pkt *) ack, "TX ACK PACKET");
+	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack,
+			    (size_t) ack_pkt_len);
 	if (rc == FI_SUCCESS) {
 		uet_gettime(&now);
 		ack_state->ack_time = now;
@@ -436,7 +480,9 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 			      sizeof(struct uet_ses_rsp), &ses);
 
 	/* send ack packet */
-	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack, (size_t) ack_pkt_len);
+	UET_PDS_PKT_HDR_TRACE((union uet_pkt *) ack, "TX ACK PACKET");
+	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack,
+			    (size_t) ack_pkt_len);
 	free(ack);
 	return rc;
 }
@@ -501,15 +547,14 @@ void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 /* pds packet transmission */
 int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
-		       uet_pds_tx_flags_t flags, bool pds_info_valid,
-		       struct uet_pds_info pds_info, uint16_t msg_id,
-		       uet_next_hdr_t next_hdr, void *pkt, size_t pkt_len,
-		       bool dma_rdy)
+		       uet_pds_tx_flags_t flags, struct uet_pds_info *pds_info,
+		       uint16_t msg_id, uet_next_hdr_t next_hdr, void *pkt,
+		       size_t pkt_len, bool dma_rdy)
 {
 	int rc;
 	uint8_t tos;
 	uint16_t tot_len;
-	size_t uet_pkt_len;
+	size_t uet_hdr_len, uet_pkt_len;
 	void *ses_hdr, *payload;
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_instance *uet;
@@ -545,6 +590,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 
 	switch (next_hdr) {
 	case UET_HDR_REQ_STD:
+	case UET_HDR_RSP_DATA:
 		switch (mode) {
 		case UET_PDS_MODE_ROD:
 			pds_pkt_type = UET_PDS_TYPE_ROD_REQ;
@@ -555,7 +601,17 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 			return -FI_EINVAL;
 		}
 
-		pds = &uet_pkt->std_req.pds;
+		if (next_hdr == UET_HDR_REQ_STD) {
+			pds = &uet_pkt->std_req.pds;
+			uet_hdr_len = sizeof(struct uet_std_req_pkt);
+			ses_hdr = &uet_pkt->std_req.ses;
+			payload = uet_pkt->std_req.payload;
+		} else {
+			pds = &uet_pkt->std_rsp_d.pds;
+			uet_hdr_len = sizeof(struct uet_std_rsp_d_req_pkt);
+			ses_hdr = &uet_pkt->std_rsp_d.ses;
+			payload = uet_pkt->std_rsp_d.payload;
+		}
 		pds->prlg.type_next_flags = htons(
 			(pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
 			(UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
@@ -568,16 +624,11 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		pds_overlay->pid_on_fep = htons(uet_ep->uet_addr.pid_on_fep);
 		pds_overlay->index = htons(uet_ep->uet_addr.start_index);
 
-		tot_len = (uint16_t)(pkt_len +
-				     (sizeof(struct uet_std_req_pkt) -
-				      uet->nic.l2_hdr_size));
+		tot_len = (uint16_t) (pkt_len +
+				      (uet_hdr_len - uet->nic.l2_hdr_size));
 		tos = uet_ep->msg_ip_tos;
 
-		ses_hdr = &uet_pkt->std_req.ses;
-
-		uet_pkt_len = pkt_len + sizeof(struct uet_std_req_pkt);
-
-		payload = uet_pkt->std_req.payload;
+		uet_pkt_len = pkt_len + uet_hdr_len;
 		break;
 	default:
 		UET_API_ERR("Unsupported next header type  = %d", next_hdr);
@@ -603,14 +654,18 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	state->pkt_parms.dst_addr_handle = dst_addr_handle;
 	state->pkt_parms.mode = mode;
 	state->pkt_parms.flags = flags;
-	state->pkt_parms.pds_info_valid = pds_info_valid;
-	state->pkt_parms.pds_info = pds_info;
+	if (pds_info) {
+		state->pkt_parms.pds_info_valid = true;
+		state->pkt_parms.pds_info = *pds_info;
+	} else 
+		state->pkt_parms.pds_info_valid = false;
 	state->pkt_parms.msg_id = msg_id;
 	state->pkt_parms.next_hdr = next_hdr;
 	state->pkt_parms.pkt = pkt;
 	state->pkt_parms.pkt_len = pkt_len;
 	state->pkt_parms.dma_rdy = dma_rdy;
 
+	UET_PDS_PKT_HDR_TRACE(uet_pkt, "TX PACKET");
 	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, uet_pkt_len);
 	if (rc == FI_SUCCESS)
 		pds_state->tx.tx_active = true;
@@ -624,6 +679,7 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 {
 	struct uet_instance *uet;
 	struct uet_pds_sng_tx_state *pds_tx;
+	struct uet_pds_info *pds_info;
 	time_t now, delta;
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
@@ -652,14 +708,17 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 	/* retransmit the packet */
 	pds_tx->retry_cnt++;
 	uet_gettime(&pds_tx->start_time);
+	if (pds_tx->pkt_parms.pds_info_valid)
+		pds_info = &pds_tx->pkt_parms.pds_info;
+	else
+		pds_info = NULL;
 	return uet->pds.downcall.tx_pkt(pds_tx->pkt_parms.tx_pkt_handle,
 					uet_ep,
 					pds_tx->pkt_parms.dst_addr_handle,
 					pds_tx->pkt_parms.mode,
 					(pds_tx->pkt_parms.flags |
 					 UET_PDS_FLAG_RETRANSMIT),
-					pds_tx->pkt_parms.pds_info_valid,
-					pds_tx->pkt_parms.pds_info,
+					pds_info,
 					pds_tx->pkt_parms.msg_id,
 					pds_tx->pkt_parms.next_hdr,
 					pds_tx->pkt_parms.pkt,
@@ -673,17 +732,17 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	int rc;
 	uet_ses_rc_t ses_rc;
 	size_t rx_pkt_size;
-	bool pkt_is_ack, gtd_del;
+	bool pkt_is_ack, pkt_is_rd_rsp, ses_nack, gtd_del;
 	union uet_pkt *pkt;
 	struct uet_ep *dst_uet_ep;
 	struct uet_msg_match_info match_info;
 	struct uet_pds_to_ses_funcs *ses_upcall;
 	struct uet_pds_sng_tx_state *pds_tx;
 	struct uet_pds_ack_state *ack_state;
-	struct uet_ses_rsp rsp_ses_hdr;
+	struct uet_ses_rsp_d rsp_ses_hdr;
 	struct uet_pds_info pds_info;
 	size_t rsp_ses_hdr_len;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_next_hdr_t req_next_hdr, rsp_next_hdr;
 	struct uet_pds_sng_state *pds_state;
 
 	/* check if packet is available */
@@ -694,25 +753,29 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	/* allocate temporary packet buffer                                */
 	/*  - need temp buffer to parse packet and determine what endpoint */
 	/*    the packet is destined for                                   */
-	pkt = (union uet_pkt *)malloc(uet->nic.max_pkt_size);
+	pkt = (union uet_pkt *) malloc(uet->nic.max_pkt_size);
 	if (pkt == NULL) {
 		UET_API_PRINT_ERRNO("malloc");
 		return -FI_ENOMEM;
 	}
 
 	/* receive the packet */
-	rc = uet_nic_rx_pkt(UET_NIC(uet), pkt, uet->nic.max_pkt_size, &rx_pkt_size);
+	rc = uet_nic_rx_pkt(UET_NIC(uet), pkt, uet->nic.max_pkt_size,
+			    &rx_pkt_size);
 	if (rc != 1)
 		goto exit;
 
 	/* validate the packet */
 	rc = FI_SUCCESS;
-	if (!uet_pds_rx_pkt_valid(uet, pkt, rx_pkt_size, &pkt_is_ack))
+	if (!uet_pds_rx_pkt_valid(uet, pkt, rx_pkt_size, &pkt_is_ack,
+				  &pkt_is_rd_rsp))
 		goto exit;
+
+	UET_PDS_PKT_HDR_TRACE(pkt, "RX PACKET");
 
 	/* find the endpoint the packet is for */
 	memset(&match_info, 0, sizeof(struct uet_msg_match_info));
-	dst_uet_ep = uet_pds_find_dst_ep(uet, pkt, pkt_is_ack,
+	dst_uet_ep = uet_pds_find_dst_ep(uet, pkt, pkt_is_ack, pkt_is_rd_rsp,
 					 &match_info);
 	if (dst_uet_ep == NULL) {
 		if (pkt_is_ack)
@@ -763,6 +826,9 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		/* (i.e., if ack was dropped)                        */
 		if (uet_pds_is_dup_req(dst_uet_ep, pkt, &ack_state)) {
 			/* retransmit ack */
+			UET_PDS_PKT_HDR_TRACE(
+				(union uet_pkt *) &ack_state->ack,
+				"RETRANSMIT ACK PACKET");
 			rc = uet_nic_tx_pkt(UET_NIC(uet),
 					    (union uet_pkt *) &ack_state->ack,
 					    sizeof(struct uet_std_rsp_pkt));
@@ -776,15 +842,24 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		/* upcall for ses processing */
 		memset(&pds_info, 0, sizeof(struct uet_pds_info));
 		pds_info.opsn = pkt->common.pds.psn;
+		req_next_hdr = (ntohs(pkt->common.pds.prlg.type_next_flags) &
+			        UET_PDS_NEXT_HDR_MASK) >>
+			       UET_PDS_NEXT_HDR_SHIFT;
 		rc = ses_upcall->rx_req((uet_pkt_handle_t) pkt,
 					dst_uet_ep, pkt, rx_pkt_size,
-					pds_info, UET_HDR_REQ_STD,
+					&pds_info, req_next_hdr,
 					&rsp_next_hdr, &rsp_ses_hdr,
-					&rsp_ses_hdr_len, &gtd_del);
-		if (rc == FI_SUCCESS)
-			/* transmit ack */
-			rc = uet_pds_tx_ack_pkt(dst_uet_ep, pkt, rsp_next_hdr,
+					&rsp_ses_hdr_len, &ses_nack, &gtd_del);
+		if (rc == FI_SUCCESS) {
+			/* TODO: add support for pds nack               */
+			/*   - for now, just don't send ack, which will */
+			/*     retrigger retransmit, similar to nack    */
+			if (!ses_nack)
+				/* transmit ack */
+				rc = uet_pds_tx_ack_pkt(
+						dst_uet_ep, pkt, rsp_next_hdr,
 						rsp_ses_hdr_len, &rsp_ses_hdr);
+		}
 	}
 
 exit:

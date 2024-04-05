@@ -11,6 +11,7 @@
 #include <netinet/if_ether.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <arpa/inet.h>
 
 #define UET_IPV4_IHL_NO_OPTIONS 5
 #define UET_IPV4_FRAG_OFF_DF    0x4000 /* don't fragment */
@@ -292,6 +293,8 @@ struct UET_PACKED uet_pds_def_rsp {
 /*                              SEMANTIC (SES)                              */
 /****************************************************************************/
 
+#define UET_SES_CRC_SIZE	8	/* in bytes */
+
 /* uet ses request opcodes */
 typedef enum {
 	UET_NO_OP              = 0x00,
@@ -310,10 +313,13 @@ typedef enum {
 	UET_TSEND_ATOMIC       = 0x0d,
 	UET_TSEND_FETCH_ATOMIC = 0x0e,
 	UET_MSG_ERR            = 0x0f,
-} uet_ses_opcode_t;
+} uet_ses_req_opcode_t;
 
-#define UET_SES_OPCODE_MASK  0x3f
-#define UET_SES_OPCODE_SHIFT 0
+#define UET_SES_EOM_MASK	0x80
+#define UET_SES_EOM_SHIFT	7
+#define UET_SES_EOM_FLAG        (UET_SES_EOM_MASK >> UET_SES_EOM_SHIFT)
+#define UET_SES_OPCODE_MASK	0x3f
+#define UET_SES_OPCODE_SHIFT	0
 
 #define UET_SES_VER_MASK  0xc0
 #define UET_SES_VER_SHIFT 6
@@ -321,8 +327,9 @@ typedef enum {
 
 /* uet ses request common header fields */
 struct UET_PACKED uet_ses_req_cmn {
-	/* see UET_SES_OPCODE_MASK|SHIFT */
-	uint8_t  rsvd_opcode;
+	/* see UET_SES_EOM_MASK|SHIFT and */
+	/* UET_SES_OPCODE_MASK|SHIFT      */
+	uint8_t  eom_opcode;
 	/* see UET_SES_VER_MASK|SHIFT */
 	/* flags:
 	 *   UET_HDR_REQ_SMALL  - [DC|IE|REL|CRC]
@@ -539,9 +546,9 @@ struct UET_PACKED uet_ses_rsp_cmn {
 		uint16_t msg_id;
 #define UET_SES_RSP_DS_PAYLOAD_LEN_MASK  0x3fff
 #define UET_SES_RSP_DS_PAYLOAD_LEN_SHIFT 0
-		uint16_t rsvd_payload_len; /* valid for UET_HDR_RSP_DATA_SMALL */
+		uint16_t rsvd_payload_len; /* valid for UET_HDR_RSP_DATA_SMALL*/
 	};
-#define UET_SES_RSP_INDEX_GEN_MASK  0xff00000000 /* valud for UET_HDR_RSP */
+#define UET_SES_RSP_INDEX_GEN_MASK  0xff00000000 /* valid for UET_HDR_RSP */
 #define UET_SES_RSP_INDEX_GEN_SHIFT 24
 #define UET_SES_RSP_JOB_ID_MASK     0x00ffffffff
 #define UET_SES_RSP_JOB_ID_SHIFT    0
@@ -591,6 +598,24 @@ struct UET_PACKED uet_std_rsp_pkt {
 	uint8_t            payload[];
 };
 
+/* uet standard response with data ack packet format */
+struct UET_PACKED uet_std_rsp_d_ack_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_pds_ack   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+/* uet standard response with data request packet format */
+struct UET_PACKED uet_std_rsp_d_req_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_pds_req   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
 #define UET_MIN_PKT_SIZE sizeof(struct uet_std_rsp_pkt)
 
 /* uet packet (union used to represent any packet type) */
@@ -605,8 +630,27 @@ union UET_PACKED uet_pkt {
 			uint16_t            dpdcid;
 		} pds;
 	} common;
-	struct uet_std_req_pkt std_req;
-	struct uet_std_rsp_pkt std_rsp;
+	struct uet_std_req_pkt	     std_req;
+	struct uet_std_rsp_pkt       std_rsp;
+	struct uet_std_rsp_d_req_pkt std_rsp_d;
+	struct uet_std_rsp_d_ack_pkt std_rsp_d_ack;
 };
+
+/* get job id from standard request packet */
+static inline uint32_t uet_get_std_req_job_id(union uet_pkt *pkt)
+{
+	uint32_t index_gen_job_id;
+
+	index_gen_job_id = ntohl(pkt->std_req.ses.cmn.index_gen_job_id);
+
+	return ((index_gen_job_id & UET_SES_REQ_JOB_ID_MASK) <<
+		UET_SES_REQ_JOB_ID_SHIFT);
+}
+
+/* get msg id from standard request packet */
+static inline uint16_t uet_get_std_req_msg_id(union uet_pkt *pkt)
+{
+	return (ntohs(pkt->std_req.ses.cmn.msg_id));
+}
 
 #endif /* _UET_PKT_HDR_H_ */
