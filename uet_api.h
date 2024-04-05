@@ -1161,12 +1161,10 @@ ssize_t uet_writemsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - can be used to implement the following libfabric fi_rma api’s:
  *     - fi_read
  */
-ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id,
-		 const void *buf, size_t len,
-		 uet_mr_handle_t mr_handle,
+ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		 size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t uet_addr_handle,
-		 uint64_t remote_mem_addr, uint64_t remote_key,
-		 void *context);
+		 uint64_t remote_mem_addr, uint64_t remote_key, void *context);
 
 /*
  * flexible api for rma read

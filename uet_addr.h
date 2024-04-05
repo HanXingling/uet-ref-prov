@@ -18,19 +18,12 @@
 	/* addr format, should be added to enum in <rdma/fabric.h> */
 #define FI_ADDR_UET (FI_ADDR_EFA + 1)
 
-#define UET_ADDR_MAJOR_VERSION 1
-#define UET_ADDR_MINOR_VERSION 0
+#define UET_ADDR_VERSION	0
 
-#define UET_ADDR_MAJOR_VER_MASK		0xf0
-#define UET_ADDR_MAJOR_VER_SHIFT	4
-#define UET_ADDR_MINOR_VER_MASK		0x0f
-#define UET_ADDR_MINOR_VER_SHIFT	0
+#define UET_ADDR_VER_MASK	0xf0
+#define UET_ADDR_VER_SHIFT	4
 
-#define UET_ADDR_VERSION(MAJOR, MINOR)			\
-	((MAJOR << UET_ADDR_MAJOR_VER_SHIFT) |		\
-	 (MINOR << UET_ADDR_MINOR_VER_SHIFT))
-
-#define UET_IPV6_ADDR_OCTETS 16
+#define UET_IPV6_ADDR_OCTETS	16
 
 /* uet fabric address */
 struct uet_fa {

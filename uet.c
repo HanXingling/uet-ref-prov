@@ -278,8 +278,7 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	ctx->cfg.peer_ipv4_addr = ntohl(peer_in_addr.s_addr);
 
 	addr = &ctx->cfg.peer_uet_addr;
-	addr->ver = UET_ADDR_VERSION(UET_ADDR_MAJOR_VERSION,
-				     UET_ADDR_MINOR_VERSION);
+	addr->ver = UET_ADDR_VERSION;
 	addr->flags = UET_ADDR_FEP_CAP_V     |
 		      UET_ADDR_FA_V          |
 		      UET_ADDR_PID_ON_FEP_V  |
@@ -315,9 +314,10 @@ static uet_rc_t uet_validate_msg(struct uet_context *ctx, uint8_t *buf)
 {
 	size_t i;
 
-	for (i = 0; i < ctx->cfg.msg_size; i++)
+	for (i = 0; i < ctx->cfg.msg_size; i++) {
 		if (buf[i] != (uint8_t) i)
 			return UET_ERR_RC;
+	}
 
 	return UET_SUCCESS_RC;
 }
@@ -418,14 +418,15 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 			goto exit;
 		}
 
-		if (ctx->cfg.client)
+		if (!ctx->cfg.client)
 			uet_init_msg_buf(ctx, ctx->mr_buf);
 
 		ctx->info->domain_attr->mr_mode |= FI_MR_PROV_KEY;
 
 		ret = uet_mr_reg(ctx->domain_handle, ctx->mr_buf,
 				 ctx->cfg.msg_size,
-				 FI_WRITE | FI_REMOTE_WRITE,
+				 FI_WRITE | FI_REMOTE_WRITE |
+				 FI_READ  | FI_REMOTE_READ,
 				 UET_MR_KEY_NONE, UET_FLAGS_NONE, context,
 				 &ctx->mr_handle);
 		if (ret) {
@@ -671,6 +672,8 @@ static uet_rc_t uet_rma_server_ctrl_exchange(struct uet_context *ctx)
 
 /*
  * perform client RMA data transfer exchange as follows:
+ *   - read data from server RMA buffer 
+ *   - eait for read completion
  *   - write to server RMA buffer
  *     - include immediate data to generate completion at server
  *   - wait for write completion
@@ -687,6 +690,20 @@ static uet_rc_t uet_rma_client(struct uet_context *ctx)
 	void *context = NULL;
 	uint64_t imm_data = UET_WRITE_IMM_DATA;
 	struct fi_cq_data_entry cq_entry;
+
+	ret = uet_read(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
+			ctx->cfg.msg_size, ctx->mr_handle,
+			ctx->peer_addr_handle, ctx->remote_mr.rma_buf_addr,
+			ctx->remote_mr.key, context);
+	if (ret < 0) {
+		UET_ERR("uet_read: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
 
 	ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
 			ctx->cfg.msg_size, &imm_data, ctx->mr_handle,
