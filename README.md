@@ -110,6 +110,17 @@ libfabric v1.20.1 and uses a symlink for the common name.
 % sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet client 192.168.1.1
 ```
 
+#### Containerized
+
+Run `scripts/build` to build `uet` et al into an OCI (docker) image.  Run
+`scripts/run [<flavor>]` to run said image in a container pair, writing
+out a .pcap of the packets into the current directory.  The `<flavor>` is
+passed to `uet` (and is used to name the .pcap file), and could be e.g.
+`tag`, `rma`, or none.
+
+The tools currently require [`buildah`](https://buildah.io/) to build and
+[`podman`](https://podman.io/) (and `tcpdump` on host) to run.
+
 ### xdp
 
 > The `uet_xdp` program has both `rawsock` and `xdp` build into it and the
