@@ -75,10 +75,19 @@ struct uet_parsed_pkt {
 	uint16_t pds_len;
 	uint16_t entropy;             /* from udp source port or pds_prologue */
 	uint8_t pds_type;
+	uint8_t pds_flags;
+	uint32_t pds_psn;
+	uint16_t pds_spdcid;
+	uint16_t pds_dpdcid;
+	uint8_t pds_syn_off;
+	uint32_t pds_clear_fwd_psn;
+	uint8_t pds_nack_code;
+	uint8_t pds_ctrl_payload;
 	uint8_t next_hdr;        /* identifies format of header following pds */
 	void *ses;
 	uint16_t ses_len;
 	uint8_t ses_opcode;
+	uint8_t ses_msg_id;
 	uint16_t hdr_len;                              /* total header length */
 	uint16_t trailer_len;           /* total trailer length (crc and icv) */
 	void *payload;                                         /* ses payload */
@@ -86,6 +95,30 @@ struct uet_parsed_pkt {
 	uint16_t pkt_payload_len;        /* pkt_len - (hdr_len + trailer_len) */
 	void *ses_crc;
 };
+
+//#define UET_PDS_PKT_HDR_TRACE_ENABLED
+
+#ifdef UET_PDS_PKT_HDR_TRACE_ENABLED
+#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)     \
+	do {                                                  \
+		struct uet_parsed_pkt _pp;                    \
+		if ((PP) == NULL) {                           \
+			if (uet_parse_pkt((UET), (PKT),       \
+					  (PKT_LEN), &_pp) == \
+			    FI_SUCCESS) {                     \
+				printf("\n%s\n\n", (MSG));    \
+				uet_print_pkt_hdrs((&_pp));   \
+				printf("\n");                 \
+			}                                     \
+		} else {                                      \
+			printf("\n%s\n\n", (MSG));            \
+			uet_print_pkt_hdrs((PP));             \
+			printf("\n");                         \
+		}                                             \
+	} while (0)
+#else
+#define UET_PDS_PKT_HDR_TRACE(...)
+#endif
 
 struct uet_instance; /* forward reference */
 

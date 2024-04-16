@@ -19,10 +19,10 @@
 
 #define UET_PDS "UET_PDS"
 
-#define UET_DEFAULT_TX_TIMEOUT		100  /* in millisecs */
-#define UET_DEFAULT_MAX_TX_RETRIES	19
-#define UET_DEFAULT_MSL			2000 /* max seg lifetime in msecs */
-#define UET_DEFAULT_PDS_MAX_ACK_DATA	16   /* in bytes */
+#define UET_DEFAULT_TX_TIMEOUT       100  /* in millisecs */
+#define UET_DEFAULT_MAX_TX_RETRIES   4
+#define UET_DEFAULT_MSL              2000 /* max seg lifetime in msecs */
+#define UET_DEFAULT_PDS_MAX_ACK_DATA 16   /* in bytes */
 
 struct uet_ep;     /* forward references */
 struct uet_instance;
@@ -157,7 +157,7 @@ struct uet_ses_to_pds_funcs {
 		      bool dma_rdy);
 
 	/*
-	 * indicate message completion 
+	 * indicate message completion
 	 *   - called for messages where UET_PDS_FLAG_MAINTAIN_PDC was set
 	 *     when message transmission was initiated
 	 *
@@ -165,7 +165,7 @@ struct uet_ses_to_pds_funcs {
 	 *      ep              - ptr to uet endpoint struct that message is
 	 *                        associated with
 	 *      dst_addr_handle - handle of uet addr that msg was destined for
-	 *      mode            - packet delivery mode used for message 
+	 *      mode            - packet delivery mode used for message
 	 *      msg_id          - id of message that has completed
 	 *
 	 * returns:
@@ -256,6 +256,11 @@ struct uet_pds_to_ses_funcs {
 	 *                        header for response is to be returned, return
 	 *                        contents are only valid when function returns
 	 *                        FI_SUCCESS
+	 *      ses_nack        - ptr to location where ses indicates whether
+	 *                        pds should send pds nack instead of pds ack,
+	 *                        return contents are only valid when function
+	 *                        returns FI_SUCCESS, true => pds must send
+	 *                        nack ses response state
 	 *      gtd_del         - ptr to location where ses indicates whether
 	 *                        pds needs to maintain ses response state,
 	 *                        return contents are only valid when function

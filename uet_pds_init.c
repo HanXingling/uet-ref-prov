@@ -71,6 +71,16 @@ int uet_pds_init(struct uet_instance *uet)
 		downcall->progress_tx   = uet_pds_sng_progress_tx;
 		downcall->progress_rx   = uet_pds_sng_progress_rx;
 		downcall->ep_close_wait = uet_pds_sng_ep_close_wait;
+	} else if (strcmp(pds, "pds") == 0) {
+		downcall->initialize    = uet_pds_initialize;
+		downcall->finalize      = uet_pds_finalize;
+		downcall->ep_initialize = uet_pds_ep_initialize;
+		downcall->ep_finalize   = uet_pds_ep_finalize;
+		downcall->msg_cmpl_ind  = uet_pds_msg_cmpl_ind;
+		downcall->tx_pkt        = uet_pds_tx_pkt;
+		downcall->progress_tx   = uet_pds_progress_tx;
+		downcall->progress_rx   = uet_pds_progress_rx;
+		downcall->ep_close_wait = uet_pds_ep_close_wait;
 	} else {
 		UET_API_ERR("invalid UET_PDS environment variable");
 		return -FI_ENODEV;
