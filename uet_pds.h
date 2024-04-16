@@ -15,12 +15,13 @@
 
 #include "uet_pkt_hdr.h"
 #include "uet_api.h"
+#include "uet_util.h"
 
 #define UET_PDS "UET_PDS"
 
-#define UET_DEFAULT_TX_TIMEOUT     100  /* in millisecs */
-#define UET_DEFAULT_MAX_TX_RETRIES 19
-#define UET_DEFAULT_MSL            2000 /* max seg lifetime in msecs */
+#define UET_DEFAULT_TX_TIMEOUT		100  /* in millisecs */
+#define UET_DEFAULT_MAX_TX_RETRIES	19
+#define UET_DEFAULT_MSL			2000 /* max seg lifetime in msecs */
 #define UET_DEFAULT_PDS_MAX_ACK_DATA	16   /* in bytes */
 
 struct uet_ep;     /* forward references */
@@ -102,10 +103,6 @@ struct uet_ses_to_pds_funcs {
 	 * returns:
 	 *      FI_SUCCESS on success
 	 *      negative value corresponding to fabric errno on error
-	 *
-	 * NOTE: this function will be removed when real pds is implemented,
-	 *       since pds resources will no longer be associated with
-	 *       endpoints
 	 */
 	int (*ep_initialize)(struct uet_ep *uet_ep);
 
@@ -115,10 +112,6 @@ struct uet_ses_to_pds_funcs {
 	 * parms:
 	 *      uet_ep - ptr to uet endpoint struct that pds resources are
 	 *               associated with
-	 *
-	 * NOTE: this function will be removed when real pds is implemented,
-	 *       since pds resources will no longer be associated with
-	 *       endpoints
 	 */
 	void (*ep_finalize)(struct uet_ep *uet_ep);
 
@@ -223,12 +216,9 @@ struct uet_pds_to_ses_funcs {
 	 *      rx_pkt_handle   - handle assigned to received packet by pds
 	 *      uet_ep          - ptr to uet endpoint struct that request
 	 *                        is destined for
-	 *      pkt             - ptr to message packet
-	 *      pkt_len         - packet length in bytes
+	 *      pp              - ptr to parsed packet struct
 	 *      pds_info        - info that needs to be echoed back to pds when
 	 *                        read data is transmitted
-	 *      req_next_hdr    - identifies header that follows pds header in
-	 *                        request
 	 *      req_ses_hdr     - ptr to ses header in request packet
 	 *      rsp_next_hdr    - address of location where identifer of ses
 	 *                        header format for response is to be returned,
@@ -254,10 +244,9 @@ struct uet_pds_to_ses_funcs {
 	 *   - negative value corresponding to fabric errno on error
 	 */
 	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_ep *uet_ep,
-		      void *pkt, size_t pkt_len, struct uet_pds_info *pds_info,
-		      uet_next_hdr_t req_next_hdr, uet_next_hdr_t *rsp_next_hdr,
-		      void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
-		      bool *ses_nack, bool *gtd_del);
+		      struct uet_parsed_pkt *pp, struct uet_pds_info *pds_info,
+		      uet_next_hdr_t *rsp_next_hdr, void *rsp_ses_hdr,
+		      size_t *rsp_ses_hdr_len, bool *ses_nack, bool *gtd_del);
 
 	/*
 	 * pds upcall to ses when response packet is received
@@ -265,15 +254,14 @@ struct uet_pds_to_ses_funcs {
 	 * parms:
 	 *      tx_pkt_handle - handle assigned to packet by ses when associated
 	 *                      request packet transmission was initiated
-	 *      rsp           - ptr to response packet
-	 *      rsp_len       - length of response packet in bytes
+	 *      rsp_pp        - ptr to parsed packet struct for response
 	 *
 	 * returns:
 	 *      FI_SUCCESS when ack processed
 	 *      negative value corresponding to fabric errno on error
 	 */
-	int (*rx_rsp)(uet_pkt_handle_t tx_pkt_handle, void *rsp,
-		      size_t rsp_len);
+	int (*rx_rsp)(uet_pkt_handle_t tx_pkt_handle,
+		      struct uet_parsed_pkt *rsp_pp);
 
 	/*
 	 * pds upcall to ses when unrecoverable error occurs

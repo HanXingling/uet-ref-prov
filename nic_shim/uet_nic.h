@@ -53,6 +53,8 @@ struct uet_nic {
 	size_t min_ip_pkt_size;       /* min ip packet size in bytes */
 	size_t max_pkt_size;             /* max packet size in bytes */
 
+	uint8_t uet_ipproto;           /* ip protocol number for uet */
+
 	struct fi_ops nic_ops;     /* libfabric nic operation struct */
 
 	void *nic_priv_data;
@@ -64,10 +66,11 @@ struct uet_nic {
 			       uint32_t dst_ip,
 			       uint8_t *mac);
 	int (*nic_tx_pkt)(struct uet_nic *nic,
-			  union uet_pkt *pkt,
+			  void *pkt,
+			  void *iphdr,
 			  size_t pkt_size);
 	int (*nic_rx_pkt)(struct uet_nic *nic,
-			  union uet_pkt *pkt,
+			  void *pkt,
 			  size_t pkt_buf_size,
 			  size_t *rx_pkt_size);
 	int (*nic_mr_reg)(struct uet_nic *nic,
@@ -88,7 +91,7 @@ struct uet_nic {
  * initialize nic resources
  *
  * parms:
- *      uet - ptr to uet instance struct
+ *      uet - ptr to uet nic struct
  *
  * returns:
  *      FI_SUCCESS on success
@@ -100,7 +103,7 @@ int uet_nic_initialize(struct uet_nic *nic);
  * free nic resources
  *
  * parms:
- *      uet - ptr to uet instance struct
+ *      uet - ptr to uet nic struct
  */
 static inline void uet_nic_finalize(struct uet_nic *nic)
 {
@@ -114,7 +117,7 @@ static inline void uet_nic_finalize(struct uet_nic *nic)
  * get nic info for libfabric fid_nic struct
  *
  * parms:
- *      uet - ptr to uet instance struct
+ *      uet - ptr to uet nic struct
  *      nic - ptr to nic info struct to be init
  *
  * returns:
@@ -134,7 +137,7 @@ static inline int uet_nic_getinfo(struct uet_nic *nic,
  * get next-hop info for ipv4 destination address
  *
  * parms:
- *      uet    - ptr to uet instance struct
+ *      uet    - ptr to uet nic struct
  *      dst_ip - destination IPv4 address for which info is requested
  *      mac    - ptr to location where mac address is to be returned
  *
@@ -156,8 +159,9 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
  * transmit a packet
  *
  * parms:
- *      uet      - ptr to uet instance struct
+ *      uet      - ptr to uet nic struct
  *      pkt      - ptr to packet to send
+ *      iphdr    - ptr to ip header in packet to send
  *      pkt_size - size of packet to send in bytes
  *
  * returns:
@@ -165,20 +169,21 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
  *      negative value corresponding to fabric errno on error
  */
 static inline int uet_nic_tx_pkt(struct uet_nic *nic,
-				 union uet_pkt *pkt,
+				 void *pkt,
+				 void *iphdr,
 				 size_t pkt_size)
 {
 	if (!nic || !pkt || !pkt_size)
 		assert(0);
 
-	return nic->nic_tx_pkt(nic, pkt, pkt_size);
+	return nic->nic_tx_pkt(nic, pkt, iphdr, pkt_size);
 }
 
 /*
  * receive a packet
  *
  * parms:
- *      uet - ptr to uet instance struct
+ *      uet - ptr to uet nic struct
  *      pkt - ptr to receive packet buffer
  *      pkt_buf_size - size of receive packet buffer in bytes
  *      rx_pkt_size  - ptr to location where size of received packet
@@ -190,7 +195,7 @@ static inline int uet_nic_tx_pkt(struct uet_nic *nic,
  *      negative value corresponding to fabric errno, err reading packet
  */
 static inline int uet_nic_rx_pkt(struct uet_nic *nic,
-				 union uet_pkt *pkt,
+				 void *pkt,
 				 size_t pkt_buf_size,
 				 size_t *rx_pkt_size)
 {
@@ -204,7 +209,7 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
  * poll to determine if rx packet is available
  *
  * parms:
- *      ctx - ptr to uet instance struct
+ *      ctx - ptr to uet nic struct
  *
  * returns:
  *      0, no packet is available
@@ -223,7 +228,7 @@ static inline int uet_nic_rx_poll(struct uet_nic *nic)
  * register a memory region with nic
  *
  * parms:
- *      uet    - ptr to uet instance struct
+ *      uet    - ptr to uet nic struct
  *      desc   - ptr to buffer info struct for memory region
  *      handle - ptr to location where nic handle for registered
  *               memory region is to be returned
@@ -246,7 +251,7 @@ static inline int uet_nic_mr_reg(struct uet_nic *nic,
  * deregister memory region that was registered with nic
  *
  * parms:
- *      uet    - ptr to uet instance struct
+ *      uet    - ptr to uet nic struct
  *      handle - nic handle for registered memory region
  *
  * returns:

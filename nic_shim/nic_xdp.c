@@ -229,7 +229,7 @@ int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 	memset(&areq, 0, sizeof(areq));
 	sin = (struct sockaddr_in *)&areq.arp_pa;
 	sin->sin_family = AF_INET;
-	sin->sin_port = UET_IPPROTO;
+	sin->sin_port = nic->uet_ipproto;
 	sin->sin_addr = nh_ipv4;
 	sin = (struct sockaddr_in *)&areq.arp_ha;
 	sin->sin_family = ARPHRD_ETHER;
@@ -294,7 +294,8 @@ static inline void nic_xdp_tx_complete(struct xsk_socket_info *xsk,
 
 /* transmit a packet */
 int nic_xdp_tx_pkt(struct uet_nic *nic,
-		   union uet_pkt *pkt,
+		   void *pkt,
+		   void *iphdr,
 		   size_t pkt_size)
 {
 	struct xdp_data *xdata = (struct xdp_data *)nic->nic_priv_data;
@@ -347,7 +348,7 @@ int nic_xdp_tx_pkt(struct uet_nic *nic,
 
 /* receive a packet */
 int nic_xdp_rx_pkt(struct uet_nic *nic,
-		   union uet_pkt *pkt,
+		   void *pkt,
 		   size_t pkt_buf_size,
 		   size_t *rx_pkt_size)
 {
@@ -473,7 +474,7 @@ int nic_xdp_mr_reg(struct uet_nic *nic,
 		return -FI_EINVAL;
 	}
 
-	desc->contig.dma_addr = desc->contig.buf;
+	desc->contig.dma_addr = desc->buf;
 	return FI_SUCCESS;
 }
 

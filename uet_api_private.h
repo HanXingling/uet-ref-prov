@@ -15,6 +15,7 @@
 #include "uet_api.h"
 #include "uet_pds.h"
 #include "uet_nic.h"
+#include "uet_util.h"
 
 #ifndef _UET_API_PRIVATE_H_
 #define _UET_API_PRIVATE_H_
@@ -99,9 +100,7 @@ typedef enum {
 
 /* descriptor for contiguous mr */
 struct uet_mr_desc_contig {
-	void *buf;                    /* ptr to start of memory region buffer */
 	uet_dma_addr_t dma_addr;        /* base dma address for memory region */
-	size_t len;                /* length of memory region buffer in bytes */
 };
 
 /* descriptor for iov mr */
@@ -121,6 +120,8 @@ struct uet_mr_desc_regattr {
 
 /* memory region buffer descriptor */
 struct uet_mr_buf_desc {
+	void *buf;                    /* ptr to start of memory region buffer */
+	size_t len;                /* length of memory region buffer in bytes */
 	uet_mr_buf_type_t type;
 	union {
 		struct uet_mr_desc_contig contig;
@@ -165,10 +166,7 @@ typedef enum {
 
 /* descriptor for contiguous message buffer */
 struct uet_msg_desc_contig {
-	void *buf;                                  /* ptr to start of buffer */
 	uet_dma_addr_t dma_addr;               /* base dma address for buffer */
-	size_t len;                              /* length of buffer in bytes */
-	size_t buf_off;                /* buffer offset for next pkt, tx only */
 };
 
 /* descriptor for iov message buffer */
@@ -181,6 +179,9 @@ struct uet_msg_desc_iov {
 
 /* message buffer descriptor */
 struct uet_msg_buf_desc {
+	void *buf;                                  /* ptr to start of buffer */
+	size_t len;                              /* length of buffer in bytes */
+	size_t buf_off;                /* buffer offset for next pkt, tx only */
 	uet_msg_buf_type_t type;
 	union {
 		struct uet_msg_desc_contig contig;
@@ -197,10 +198,10 @@ struct uet_rx_desc {
 #define UET_RX_DESC_FLAG_ACTIVE		(1 << 0)            /* in active list */
 #define UET_RX_DESC_FLAG_IN_HASH_TBL	(1 << 1)           /* in msg hash tbl */
 #define UET_RX_DESC_FLAG_POST_CQ	(1 << 2)
-#define UET_RX_DESC_FLAG_WRITE		(1 << 3) 
+#define UET_RX_DESC_FLAG_WRITE		(1 << 3)
 #define UET_RX_DESC_FLAG_WRITE_IMM	(1 << 4)
-#define UET_RX_DESC_FLAG_READ_RSP	(1 << 5) 
-#define UET_RX_DESC_FLAG_AGED_OUT	(1 << 6)   /* used with READ_RSP flag */
+#define UET_RX_DESC_FLAG_READ_RSP	(1 << 5)
+#define UET_RX_DESC_FLAG_CANCELLED	(1 << 6)
 #define UET_RX_DESC_FLAG_ERR_TRACK	(1 << 7)
 	int desc_flags;                          /* flags for this descriptor */
 	uet_ses_rc_t ses_rc;    /* ses return code, for marking errored msg's */
@@ -276,7 +277,7 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_IMM_DATA_VALID   (1 << 2)
 #define UET_TX_DESC_FLAG_READ_REQ	  (1 << 3)
 #define UET_TX_DESC_FLAG_READ_RSP	  (1 << 4)
-#define UET_TX_DESC_FLAG_CANCEL_PENDING	  (1 << 5) 
+#define UET_TX_DESC_FLAG_CANCEL_PENDING	  (1 << 5)
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t tag_or_immdata;           /* tag or immediate data for write */
@@ -285,6 +286,7 @@ struct uet_tx_desc {
 	uint64_t remote_mem_addr;     /* remote mem addr for write, net order */
 	uint64_t remote_key;                       /* remote mr key for write */
 	void *context;                                      /* for completion */
+	uint64_t op_flags;                     /* libfabric operational flags */
 	uint64_t cq_flags;                   /* for flags field of completion */
 	uet_addr_handle_t dst_addr_handle;     /* destination address for msg */
 	uint32_t job_id;                        /* job id associated with msg */
@@ -313,8 +315,11 @@ struct uet_tx_desc_ring_entry {
 struct uet_instance {
 	struct dlist_entry domain_list_head;          /* domain obj list head */
 	struct uet_nic nic;                              /* nic control block */
+	uint8_t uet_ipproto;                    /* ip protocol number for uet */
+	uint16_t uet_udp_port;                     /* udp port number for uet */
 	size_t max_payload_len;                   /* max payload for a packet */
 	struct uet_pds pds;			  /* pds control block struct */
+	uint8_t default_msg_ip_tos;               /* default ip tos for msg's */
 	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
 };
@@ -354,6 +359,7 @@ struct uet_domain {
 	struct dlist_entry domain_list_entry;      /* domain list entry */
 	struct dlist_entry ep_list_head;      /* endpoint obj list head */
 	struct dlist_entry av_list_head;      /* av entry obj list head */
+	struct uet_rw_lock ep_lock;      /* lock for accessing ep obj's */
 	struct fid_fabric *fabric;          /* fabric struct for domain */
 	struct fi_info *info;       /* libfabric info struct for domain */
 	struct fid_domain *domain;    /* ptr to libfabric domain struct */
@@ -439,6 +445,14 @@ struct uet_ep {
 	uint8_t tagged_gen;                /* ses generation for tagged msg's */
 	bool tagged_gen_disabled;    /* true => gen disabled for tagged msg's */
 	size_t num_active_sends;          /* number of active send operations */
+};
+
+/* info associated with data to be carried in pds ack */
+struct uet_ack_d_info {
+	bool valid;                         /* true => data is carried in ack */
+	uint32_t payload_len;                        /* size of data in bytes */
+	uint32_t msg_off;                               /* msg offset of data */
+	void *buf;                                             /* ptr to data */
 };
 
 #endif /* _UET_API_PRIVATE_H_ */

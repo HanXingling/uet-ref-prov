@@ -147,7 +147,7 @@ int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 	memset(&areq, 0, sizeof(areq));
 	sin = (struct sockaddr_in *) &areq.arp_pa;
 	sin->sin_family = AF_INET;
-	sin->sin_port = UET_IPPROTO;
+	sin->sin_port = nic->uet_ipproto;
 	sin->sin_addr = nh_ipv4;
 	sin = (struct sockaddr_in *) &areq.arp_ha;
 	sin->sin_family = ARPHRD_ETHER;
@@ -177,20 +177,23 @@ int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 
 /* transmit a packet */
 int nic_rawsock_tx_pkt(struct uet_nic *nic,
-		       union uet_pkt *pkt,
+		       void *pkt,
+		       void *iphdr,
 		       size_t pkt_size)
 {
+	struct ethhdr *eth = (struct ethhdr *) pkt;
+	struct iphdr *ipv4 = (struct iphdr *) iphdr;
 	struct rawsock_data *rdata =
 		(struct rawsock_data *)nic->nic_priv_data;
 	size_t len;
 
-	memcpy(rdata->sadr.sll_addr, pkt->common.eth.h_dest, ETH_ALEN);
+	memcpy(rdata->sadr.sll_addr, eth->h_dest, ETH_ALEN);
 
-	pkt->common.ipv4.check = 0;
-	pkt->common.ipv4.check = uet_ipv4_csum(&pkt->common.ipv4);
+	ipv4->check = 0;
+	ipv4->check = uet_ipv4_csum(ipv4);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-	uet_pkt_hex_dump((void *)pkt, pkt_size, 0, true);
+	uet_pkt_hex_dump(pkt, pkt_size, 0, true);
 #endif
 
 	len = sendto(rdata->sock_fd.fd, pkt, pkt_size, 0,
@@ -211,7 +214,7 @@ int nic_rawsock_tx_pkt(struct uet_nic *nic,
 
 /* receive a packet */
 int nic_rawsock_rx_pkt(struct uet_nic *nic,
-		       union uet_pkt *pkt,
+		       void *pkt,
 		       size_t pkt_buf_size,
 		       size_t *rx_pkt_size)
 {
@@ -234,7 +237,7 @@ int nic_rawsock_rx_pkt(struct uet_nic *nic,
 	}
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-	uet_pkt_hex_dump((void *)pkt, len, 0, false);
+	uet_pkt_hex_dump(pkt, len, 0, false);
 #endif
 
 	*rx_pkt_size = len;
@@ -278,7 +281,7 @@ int nic_rawsock_mr_reg(struct uet_nic *nic,
 		return -FI_EINVAL;
 	}
 
-	desc->contig.dma_addr = desc->contig.buf;
+	desc->contig.dma_addr = desc->buf;
 	return FI_SUCCESS;
 }
 
