@@ -1,0 +1,5 @@
+#!/bin/sh
+
+set -ex
+cd "$(dirname "$0")/.."
+buildah bud --layers --tag "${UETREF_OCI_IMAGE:-uet-ref}" .
