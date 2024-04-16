@@ -377,7 +377,7 @@ int uet_scalable_ep(uet_domain_handle_t domain_handle,
  *   attr         - ptr to libfabric attributes struct associated with
  *                  the transmit context
  *   context      - user specified context associated with the
- *                  transmit context endpoint
+ *                  transmit endpoint
  *   tx_ep_handle - ptr to location where uet endpoint handle for the
  *                  transmit context is returned
  *                  - this handle is used to transmit on the context
@@ -399,7 +399,7 @@ int uet_tx_context(uet_ep_handle_t sep_handle, int index,
  *   attr         - ptr to libfabric attributes struct associated
  *                  with receive context
  *   context      - user specified context associated with the
- *                  receive context endpoint
+ *                  receive endpoint
  *   rx_ep_handle - ptr to location where uet endpoint handle for the
  *                  receive context is returned
  *                  - this handle is used to receive on the context

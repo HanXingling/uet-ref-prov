@@ -42,10 +42,11 @@ extern int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 				   uint32_t dst_ip,
 				   uint8_t *mac);
 extern int nic_rawsock_tx_pkt(struct uet_nic *nic,
-			      union uet_pkt *pkt,
+			      void *pkt,
+			      void *iphdr,
 			      size_t pkt_size);
 extern int nic_rawsock_rx_pkt(struct uet_nic *nic,
-			      union uet_pkt *pkt,
+			      void *pkt,
 			      size_t pkt_buf_size,
 			      size_t *rx_pkt_size);
 extern int nic_rawsock_rx_poll(struct uet_nic *nic);
@@ -65,10 +66,11 @@ extern int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 			       uint32_t dst_ip,
 			       uint8_t *mac);
 extern int nic_xdp_tx_pkt(struct uet_nic *nic,
-			  union uet_pkt *pkt,
+			  void *pkt,
+			  void *iphdr,
 			  size_t pkt_size);
 extern int nic_xdp_rx_pkt(struct uet_nic *nic,
-			  union uet_pkt *pkt,
+			  void *pkt,
 			  size_t pkt_buf_size,
 			  size_t *rx_pkt_size);
 extern int nic_xdp_rx_poll(struct uet_nic *nic);

@@ -13,13 +13,32 @@
 #include <linux/ip.h>
 #include <arpa/inet.h>
 
+#define UET_MAX_VLAN_TAGS	2
+
+#define UET_IP_VER_MASK		0xf0
+#define UET_IP_VER_SHIFT	4
+#define UET_IPV4_VER		4
+#define UET_IPV6_VER		6
 #define UET_IPV4_IHL_NO_OPTIONS 5
 #define UET_IPV4_FRAG_OFF_DF    0x4000 /* don't fragment */
 #define UET_DSCP_CS0            0
 #define UET_DSCP_EF             46
 #define UET_IP_DEFAULT_MSG_DSCP UET_DSCP_CS0
 #define UET_IP_DEFAULT_ACK_DSCP UET_DSCP_EF
-#define UET_IPPROTO             253
+#define UET_IPPROTO             253    /* for UET over IP encap */
+
+#define UET_IPPROTO_EXT_HDR_HOP_BY_HOP	0
+#define UET_IPPROTO_EXT_HDR_ROUTING     43
+#define UET_IPPROTO_EXT_HDR_FRAG	44
+#define UET_IPPROTO_EXT_HDR_ESP		50
+#define UET_IPPROTO_EXT_HDR_AUTH	51
+#define UET_IPPROTO_EXT_HDR_NONE	55
+#define UET_IPPROTO_EXT_HDR_DEST_OPTS   60
+#define UET_IPPROTO_EXT_HDR_MOBILITY	135
+
+#define UET_UDP_PORT	49150	/* for UET over UDP encap */
+
+#define UET_DEFAULT_MAX_PAYLOAD_LEN	1024
 
 #define UET_PACKED __attribute__((__packed__))
 
@@ -47,6 +66,12 @@ typedef enum {
 	UET_HDR_RSP_DATA_SMALL = 0x05, /* SES tiny response header with data */
 	UET_HDR_PDS            = 0x1f, /* PDS Prologue (security header) */
 } uet_next_hdr_t;
+
+/* vlan tag */
+struct uet_vlan_tag {
+	uint16_t ethertype;
+	uint16_t tag;
+};
 
 /****************************************************************************/
 /*                              SECURITY                                    */
@@ -263,6 +288,9 @@ struct UET_PACKED uet_pds_rudi_req {
 	struct uet_pds_prlg prlg;
 	uint32_t            rudi_id;
 };
+
+/* uet pds rudi response header */
+#define uet_pds_rudi_rsp uet_pds_rudi_req
 
 /* uet pds uud request header */
 struct UET_PACKED uet_pds_uud_req {
@@ -518,13 +546,15 @@ typedef enum {
 	UET_RC_BAD_INDEX            = 0x19,
 	UET_RC_BAD_PID              = 0x1a,
 	UET_RC_BAD_JOB_ID           = 0x1b,
-	UET_RC_BAD_ADDR             = 0x1c,
-	UET_RC_CANCELLED            = 0x1d,
-	UET_RC_UNDELIVERABLE        = 0x1e,
-	UET_RC_DROPPED              = 0x1f,
-	UET_RC_UNCOR                = 0x21,
-	UET_RC_UNCOR_TRNSNT         = 0x22,
-	UET_RC_TOOL_LONG            = 0x23,
+	UET_RC_BAD_MKEY             = 0x1c,
+	UET_RC_BAD_ADDR             = 0x1d,
+	UET_RC_CANCELLED            = 0x1e,
+	UET_RC_UNDELIVERABLE        = 0x1f,
+	UET_RC_UNCOR                = 0x20,
+	UET_RC_UNCOR_TRNSNT         = 0x21,
+	UET_RC_TOO_LONG             = 0x22,
+	UET_RC_INITIATOR_ERR        = 0x23,
+	UET_RC_DROPPED              = 0x24,
 } uet_ses_rc_t;
 
 typedef enum {
@@ -566,9 +596,16 @@ struct UET_PACKED uet_ses_rsp_d {
 	struct uet_ses_rsp_cmn cmn;
 #define UET_SES_RSP_D_PAYLOAD_LEN_MASK  0x0000003fff
 #define UET_SES_RSP_D_PAYLOAD_LEN_SHIFT 0
-	uint32_t rsvd_payload_len;
+	union UET_PACKED {
+		uint32_t rsvd_payload_len;
+		struct UET_PACKED {
+			uint16_t rsvd;
+			uint16_t payload_len;
+		};
+	};
 	uint32_t mod_len;
 	uint32_t msg_off;
+	uint8_t payload[];
 };
 
 /* uet ses small response header w/ data (UET_HDR_RSP_DATA_SMALL) */
@@ -637,20 +674,14 @@ union UET_PACKED uet_pkt {
 };
 
 /* get job id from standard request packet */
-static inline uint32_t uet_get_std_req_job_id(union uet_pkt *pkt)
+static inline uint32_t uet_get_std_req_job_id(struct uet_ses_req_std *ses)
 {
 	uint32_t index_gen_job_id;
 
-	index_gen_job_id = ntohl(pkt->std_req.ses.cmn.index_gen_job_id);
+	index_gen_job_id = ntohl(ses->cmn.index_gen_job_id);
 
 	return ((index_gen_job_id & UET_SES_REQ_JOB_ID_MASK) <<
 		UET_SES_REQ_JOB_ID_SHIFT);
-}
-
-/* get msg id from standard request packet */
-static inline uint16_t uet_get_std_req_msg_id(union uet_pkt *pkt)
-{
-	return (ntohs(pkt->std_req.ses.cmn.msg_id));
 }
 
 #endif /* _UET_PKT_HDR_H_ */

@@ -18,12 +18,22 @@
 
 #define UET_PDS_PKT_HDR_TRACE_ENABLED 0
 
-#define UET_PDS_PKT_HDR_TRACE(PKT, MSG)			\
-{							\
-	if (UET_PDS_PKT_HDR_TRACE_ENABLED) {		\
-		printf("\n%s\n\n", (MSG));		\
-		uet_print_pkt_hdrs((PKT));		\
-	}						\
+#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)		       \
+{									       \
+	if (UET_PDS_PKT_HDR_TRACE_ENABLED) {				       \
+		struct uet_parsed_pkt _pp;				       \
+									       \
+		if ((PP) == NULL) {					       \
+			if (uet_parse_pkt((UET), (PKT), (PKT_LEN), &_pp) ==    \
+			    FI_SUCCESS) {				       \
+				printf("\n%s\n\n", (MSG));		       \
+				uet_print_pkt_hdrs((&_pp));		       \
+			}						       \
+		} else {						       \
+			printf("\n%s\n\n", (MSG));			       \
+			uet_print_pkt_hdrs((PP));			       \
+		}							       \
+	}								       \
 }
 
 /* determine if tx is active for an endpoint */
@@ -80,7 +90,8 @@ struct UET_PACKED uet_pds_hdr_overlay {
 struct uet_pds_ack_state {
 	struct dlist_entry list_entry; /* for list of ack's sent */
 	time_t ack_time;               /* time ack was sent */
-	struct uet_std_rsp_pkt ack;    /* ack packet that was sent */
+	size_t ack_len;                /* length of ack pkt in bytes */
+	uint8_t ack[];                 /* ack packet that was sent */
 };
 
 static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
@@ -136,7 +147,6 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack,
 		}
 		*pkt_is_rd_rsp = true;
 		return true;
-		break;
 	default:
 		break;
 	}
@@ -178,7 +188,7 @@ static bool uet_pds_rx_pkt_valid(struct uet_instance *uet,
 	    (pkt->common.eth.h_proto == htons(ETH_P_IP)) &&
 	    (pkt->common.ipv4.version == IPVERSION) &&
 	    (pkt->common.ipv4.ihl == UET_IPV4_IHL_NO_OPTIONS) &&
-	    (pkt->common.ipv4.protocol == UET_IPPROTO) &&
+	    (pkt->common.ipv4.protocol == uet->uet_ipproto) &&
 	    (pkt->common.ipv4.tot_len >= htons(uet->nic.min_ip_pkt_size)) &&
 	    (pkt->common.ipv4.tot_len <=
 	     htons((pkt_size - uet->nic.l2_hdr_size))) &&
@@ -276,14 +286,19 @@ static struct uet_ep *uet_pds_find_dst_ep(
 	dlist_foreach(dom_head, dom_item) {
 		uet_dom = container_of(dom_item, struct uet_domain,
 				       domain_list_entry);
+		uet_rw_lock(&uet_dom->ep_lock, UET_RW_LOCK_RD_ACCESS);
 		ep_head = &uet_dom->ep_list_head;
 		dlist_foreach(ep_head, ep_item) {
 			uet_ep = container_of(ep_item, struct uet_ep,
 					      ep_list_entry);
 			if (uet_pds_ep_addr_match(uet_ep, pkt, pkt_is_ack,
-						  pkt_is_rd_rsp, match_info))
+						  pkt_is_rd_rsp, match_info)) {
+				uet_rw_unlock(&uet_dom->ep_lock,
+					      UET_RW_LOCK_RD_ACCESS);
 				return uet_ep;
+			}
 		}
+		uet_rw_unlock(&uet_dom->ep_lock, UET_RW_LOCK_RD_ACCESS);
 	}
 
 	return NULL;
@@ -298,7 +313,8 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	struct uet_pds_hdr_overlay *ack_overlay, *pkt_overlay;
 	time_t now;
 	struct uet_pds_sng_state *pds_state =
-		(struct uet_pds_sng_state *)uet_ep->pds;
+		(struct uet_pds_sng_state *) uet_ep->pds;
+	union uet_pkt *ack;
 
 	*dup_ack_state = NULL;
 	uet_gettime(&now);
@@ -307,14 +323,15 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	dlist_foreach(head, item) {
 		ack_state = container_of(item, struct uet_pds_ack_state,
 					 list_entry);
+		ack = (union uet_pkt *) ack_state->ack;
 		ack_overlay = (struct uet_pds_hdr_overlay *)
-					&ack_state->ack.pds.spdcid;
+					&ack->common.pds.spdcid;
 		pkt_overlay = (struct uet_pds_hdr_overlay *)
 					&pkt->common.pds.spdcid;
-		if ((ack_state->ack.ipv4.daddr == pkt->common.ipv4.saddr) &&
+		if ((ack->common.ipv4.daddr == pkt->common.ipv4.saddr) &&
 		    (ack_overlay->pid_on_fep == pkt_overlay->pid_on_fep)  &&
 		    (ack_overlay->index == pkt_overlay->index)) {
-			if (ack_state->ack.pds.psn == pkt->common.pds.psn) {
+			if (ack->common.pds.psn == pkt->common.pds.psn) {
 				*dup_ack_state = ack_state;
 				return true;
 			}
@@ -350,32 +367,40 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
  *      ses_hdr     - ptr to ses header
  */
 static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
-				  struct uet_std_rsp_pkt *ack,
-				  uint16_t ack_pkt_len, uet_next_hdr_t next_hdr,
-				  size_t ses_hdr_len, void *ses_hdr)
+				  union uet_pkt *ack, uint16_t ack_pkt_len,
+				  uet_next_hdr_t next_hdr, size_t ses_hdr_len,
+				  void *ses_hdr)
 {
-	struct uet_pds_hdr_overlay *pkt_overlay, *ack_overlay;
 	uint16_t tot_len;
+	void *ack_ses;
+	struct uet_std_rsp_pkt *ack_rsp;
+	struct uet_std_rsp_d_ack_pkt *ack_rsp_d;
+	struct uet_pds_hdr_overlay *pkt_overlay, *ack_overlay;
 
-	uet_build_eth_hdr(&ack->eth, pkt->common.eth.h_source,
+	if (next_hdr == UET_HDR_RSP)
+		ack_ses = &ack->std_rsp.ses;
+	else
+		ack_ses = &ack->std_rsp_d_ack.ses;
+
+	uet_build_eth_hdr(&ack->common.eth, pkt->common.eth.h_source,
 			  pkt->common.eth.h_dest);
 
 	tot_len = ack_pkt_len - ((uint16_t) uet->nic.l2_hdr_size);
-	uet_build_ipv4_hdr(&ack->ipv4, pkt->common.ipv4.saddr,
+	uet_build_ipv4_hdr(uet, &ack->common.ipv4, pkt->common.ipv4.saddr,
 			   pkt->common.ipv4.daddr, tot_len,
 			   uet->pds.ack_ip_tos);
 
-	ack->pds.prlg.type_next_flags = htons(
+	ack->common.pds.prlg.type_next_flags = htons(
 		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
 		(next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		(UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
-	ack->pds.psn = pkt->common.pds.psn;
+	ack->common.pds.psn = pkt->common.pds.psn;
 	pkt_overlay = (struct uet_pds_hdr_overlay *) &pkt->common.pds.spdcid;
-	ack_overlay = (struct uet_pds_hdr_overlay *) &ack->pds.spdcid;
+	ack_overlay = (struct uet_pds_hdr_overlay *) &ack->common.pds.spdcid;
 	ack_overlay->pid_on_fep = pkt_overlay->pid_on_fep;
 	ack_overlay->index = pkt_overlay->index;
 
-	memcpy(&ack->ses, ses_hdr, ses_hdr_len);
+	memcpy(ack_ses, ses_hdr, ses_hdr_len);
 }
 
 /*
@@ -397,32 +422,40 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 			      void *ses_hdr)
 {
 	int rc;
-	uint16_t ack_pkt_len;
+	uint16_t ack_pkt_len, ack_data_len;
 	time_t now;
 	struct uet_instance *uet;
 	struct uet_pds_ack_state *ack_state;
-	struct uet_std_rsp_pkt *ack;
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
+	union uet_pkt *ack;
 
 	uet = uet_ep->uet_domain->uet;
-	ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
+
+	if (next_hdr == UET_HDR_RSP)
+		ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
+	else {
+		ack_data_len = ses_hdr_len - sizeof(struct uet_ses_rsp_d);
+		ack_pkt_len = sizeof(struct uet_std_rsp_d_ack_pkt) +
+			      ack_data_len;
+	}
 
 	/* allocate buffer for ack packet */
-	ack_state = calloc(1, sizeof(struct uet_pds_ack_state));
+	ack_state = calloc(1, sizeof(struct uet_pds_ack_state) + ack_pkt_len);
 	if (ack_state == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
 		return -FI_ENOMEM;
 	}
-	ack = &ack_state->ack;
+	ack = (union uet_pkt *) ack_state->ack;
+	ack_state->ack_len = ack_pkt_len;
 
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, ack, ack_pkt_len, next_hdr,
 			      ses_hdr_len, ses_hdr);
 
 	/* send ack packet */
-	UET_PDS_PKT_HDR_TRACE((union uet_pkt *) ack, "TX ACK PACKET");
-	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack,
+	UET_PDS_PKT_HDR_TRACE(uet, NULL, ack, ack_pkt_len, "TX ACK PACKET");
+	rc = uet_nic_tx_pkt(UET_NIC(uet), ack, &ack->common.ipv4,
 			    (size_t) ack_pkt_len);
 	if (rc == FI_SUCCESS) {
 		uet_gettime(&now);
@@ -476,13 +509,13 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	ses.cmn.index_gen_job_id = pkt->std_req.ses.cmn.index_gen_job_id;
 
 	/* build ack packet */
-	uet_pds_build_ack_pkt(uet, pkt, ack, ack_pkt_len, UET_HDR_RSP,
-			      sizeof(struct uet_ses_rsp), &ses);
+	uet_pds_build_ack_pkt(uet, pkt, (union uet_pkt *) ack, ack_pkt_len,
+			      UET_HDR_RSP, sizeof(struct uet_ses_rsp), &ses);
 
 	/* send ack packet */
-	UET_PDS_PKT_HDR_TRACE((union uet_pkt *) ack, "TX ACK PACKET");
-	rc = uet_nic_tx_pkt(UET_NIC(uet), (union uet_pkt *) ack,
-			    (size_t) ack_pkt_len);
+	UET_PDS_PKT_HDR_TRACE(uet, NULL, (union uet_pkt *) ack, ack_pkt_len,
+			      "TX ACK PACKET");
+	rc = uet_nic_tx_pkt(UET_NIC(uet), ack, &ack->ipv4, (size_t)ack_pkt_len);
 	free(ack);
 	return rc;
 }
@@ -498,6 +531,7 @@ int uet_pds_sng_initialize(struct uet_instance *uet)
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
 	uet->pds.msl = UET_DEFAULT_MSL;
 	uet->pds.ack_ip_tos = uet_dscp_to_tos(UET_IP_DEFAULT_ACK_DSCP);
+	uet->pds.max_ack_data = UET_DEFAULT_PDS_MAX_ACK_DATA;
 	return FI_SUCCESS;
 }
 
@@ -635,7 +669,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		return -FI_EINVAL;
 	};
 
-	uet_build_ipv4_hdr(&uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
+	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
 			   htonl(uet_ep->ipv4_addr), tot_len, tos);
 
 	ses_upcall = &uet->pds.upcall;
@@ -657,7 +691,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	if (pds_info) {
 		state->pkt_parms.pds_info_valid = true;
 		state->pkt_parms.pds_info = *pds_info;
-	} else 
+	} else
 		state->pkt_parms.pds_info_valid = false;
 	state->pkt_parms.msg_id = msg_id;
 	state->pkt_parms.next_hdr = next_hdr;
@@ -665,8 +699,9 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	state->pkt_parms.pkt_len = pkt_len;
 	state->pkt_parms.dma_rdy = dma_rdy;
 
-	UET_PDS_PKT_HDR_TRACE(uet_pkt, "TX PACKET");
-	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, uet_pkt_len);
+	UET_PDS_PKT_HDR_TRACE(uet, NULL, uet_pkt, uet_pkt_len, "TX PACKET");
+	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, &uet_pkt->common.ipv4,
+			    uet_pkt_len);
 	if (rc == FI_SUCCESS)
 		pds_state->tx.tx_active = true;
 	free(uet_pkt);
@@ -734,15 +769,16 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	size_t rx_pkt_size;
 	bool pkt_is_ack, pkt_is_rd_rsp, ses_nack, gtd_del;
 	union uet_pkt *pkt;
+	struct uet_parsed_pkt pp;
 	struct uet_ep *dst_uet_ep;
 	struct uet_msg_match_info match_info;
 	struct uet_pds_to_ses_funcs *ses_upcall;
 	struct uet_pds_sng_tx_state *pds_tx;
 	struct uet_pds_ack_state *ack_state;
-	struct uet_ses_rsp_d rsp_ses_hdr;
 	struct uet_pds_info pds_info;
+	void *rsp_ses_hdr;
 	size_t rsp_ses_hdr_len;
-	uet_next_hdr_t req_next_hdr, rsp_next_hdr;
+	uet_next_hdr_t rsp_next_hdr;
 	struct uet_pds_sng_state *pds_state;
 
 	/* check if packet is available */
@@ -759,19 +795,35 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		return -FI_ENOMEM;
 	}
 
+	/* allocate space for ses response header + ack data for read */
+	rsp_ses_hdr = malloc(sizeof(struct uet_ses_rsp_d) +
+			     uet->pds.max_ack_data);
+	if (rsp_ses_hdr == NULL) {
+		UET_API_PRINT_ERRNO("malloc");
+		rc = -FI_ENOMEM;
+		goto exit;
+	}
+
 	/* receive the packet */
 	rc = uet_nic_rx_pkt(UET_NIC(uet), pkt, uet->nic.max_pkt_size,
 			    &rx_pkt_size);
 	if (rc != 1)
 		goto exit;
 
+	/* parse the packet */
+	rc = uet_parse_pkt(uet, pkt, rx_pkt_size, &pp);
+	if (rc != FI_SUCCESS) {
+		if (rc == -FI_EFAULT)
+			UET_API_ERR("RX of malformed UET packet");
+		goto exit;
+	}
+
 	/* validate the packet */
-	rc = FI_SUCCESS;
 	if (!uet_pds_rx_pkt_valid(uet, pkt, rx_pkt_size, &pkt_is_ack,
 				  &pkt_is_rd_rsp))
 		goto exit;
 
-	UET_PDS_PKT_HDR_TRACE(pkt, "RX PACKET");
+	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");
 
 	/* find the endpoint the packet is for */
 	memset(&match_info, 0, sizeof(struct uet_msg_match_info));
@@ -794,7 +846,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		goto exit;
 	}
 
-	pds_state = (struct uet_pds_sng_state *)dst_uet_ep->pds;
+	pds_state = (struct uet_pds_sng_state *) dst_uet_ep->pds;
 
 	pds_tx = &pds_state->tx;
 	ses_upcall = &uet->pds.upcall;
@@ -813,8 +865,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 			goto exit;
 
 		/* upcall for ses processing */
-		rc = ses_upcall->rx_rsp(pds_tx->pkt_parms.tx_pkt_handle,
-					pkt, rx_pkt_size);
+		rc = ses_upcall->rx_rsp(pds_tx->pkt_parms.tx_pkt_handle, &pp);
 		if (rc == FI_SUCCESS) {
 			/* update seq num for transmission of next packet */
 			pds_tx->psn++;
@@ -827,11 +878,13 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		if (uet_pds_is_dup_req(dst_uet_ep, pkt, &ack_state)) {
 			/* retransmit ack */
 			UET_PDS_PKT_HDR_TRACE(
-				(union uet_pkt *) &ack_state->ack,
-				"RETRANSMIT ACK PACKET");
-			rc = uet_nic_tx_pkt(UET_NIC(uet),
-					    (union uet_pkt *) &ack_state->ack,
-					    sizeof(struct uet_std_rsp_pkt));
+				uet, NULL, (union uet_pkt *) &ack_state->ack,
+				ack_state->ack_len, "RETRANSMIT ACK PACKET");
+			rc = uet_nic_tx_pkt(
+				UET_NIC(uet),
+				ack_state->ack,
+				&((union uet_pkt *)ack_state->ack)->common.ipv4,
+				ack_state->ack_len);
 			goto exit;
 		}
 
@@ -842,13 +895,9 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		/* upcall for ses processing */
 		memset(&pds_info, 0, sizeof(struct uet_pds_info));
 		pds_info.opsn = pkt->common.pds.psn;
-		req_next_hdr = (ntohs(pkt->common.pds.prlg.type_next_flags) &
-			        UET_PDS_NEXT_HDR_MASK) >>
-			       UET_PDS_NEXT_HDR_SHIFT;
 		rc = ses_upcall->rx_req((uet_pkt_handle_t) pkt,
-					dst_uet_ep, pkt, rx_pkt_size,
-					&pds_info, req_next_hdr,
-					&rsp_next_hdr, &rsp_ses_hdr,
+					dst_uet_ep, &pp, &pds_info,
+					&rsp_next_hdr, rsp_ses_hdr,
 					&rsp_ses_hdr_len, &ses_nack, &gtd_del);
 		if (rc == FI_SUCCESS) {
 			/* TODO: add support for pds nack               */
@@ -858,12 +907,13 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 				/* transmit ack */
 				rc = uet_pds_tx_ack_pkt(
 						dst_uet_ep, pkt, rsp_next_hdr,
-						rsp_ses_hdr_len, &rsp_ses_hdr);
+						rsp_ses_hdr_len, rsp_ses_hdr);
 		}
 	}
 
 exit:
-	/* free temp packet buffer and return */
+	if (rsp_ses_hdr)
+		free(rsp_ses_hdr);
 	free(pkt);
 	return rc;
 }

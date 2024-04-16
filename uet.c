@@ -672,7 +672,7 @@ static uet_rc_t uet_rma_server_ctrl_exchange(struct uet_context *ctx)
 
 /*
  * perform client RMA data transfer exchange as follows:
- *   - read data from server RMA buffer 
+ *   - read data from server RMA buffer
  *   - eait for read completion
  *   - write to server RMA buffer
  *     - include immediate data to generate completion at server
