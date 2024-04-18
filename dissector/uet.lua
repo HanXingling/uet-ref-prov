@@ -32,15 +32,18 @@ local types = {
 
 local
 	HDR_REQ_STD,
-	HDR_RSP = 2, 3
+	HDR_RSP,
+	HDR_RSP_DATA = 2, 3, 4
 local hdr_types = {
 	[HDR_REQ_STD]		= "Standard SES request",
 	[HDR_RSP]		= "SES response",
+	[HDR_RSP_DATA]		= "SES response w/ data",
 }
 
 local req_opcodes = {
 	[0]			= "UET_NO_OP",
 	[0x01]			= "UET_WRITE - RMA Write",
+	[0x02]			= "UET_READ - RMA Read",
 	[0x05]			= "UET_SEND - (non-matching) send operation",
 	[0x09]			= "UET_TAGGED_SEND",
 }
@@ -104,6 +107,7 @@ fld.ses_req_payload_offs	= ProtoField.uint32("uet.ses.req.packet_offset",	"Packe
 fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet length",		base.DEC)
 
 fld.ses_resp			= ProtoField.none("uet.ses.resp",			"SES response") -- FIXME: Proto()?
+fld.ses_resp_data		= ProtoField.none("uet.ses.resp_data",			"SES response w/ data") -- FIXME: Proto()?
 fld.ses_resp_list		= ProtoField.uint16("uet.ses.resp.list",		"List",				base.DEC, nil, 0xc000)
 fld.ses_resp_opcode		= ProtoField.uint16("uet.ses.resp.opcode",		"Opcode",			base.HEX, resp_opcodes, 0x3fff)
 fld.ses_resp_ver		= ProtoField.uint8("uet.ses.resp.version",		"Version",			base.DEC, nil, 0xc)
@@ -112,6 +116,11 @@ fld.ses_resp_retcode		= ProtoField.uint8("uet.ses.resp.retcode",		"Return code",
 -- index_gen
 -- job_id
 fld.ses_resp_mod_len		= ProtoField.uint32("uet.ses.resp.mod_length",		"Modified length",		base.DEC)
+fld.ses_resp_msg_offset		= ProtoField.uint32("uet.ses.resp.msg_offset",		"Message offset",		base.DEC)
+-- TODO?
+fld.ses_resp_rsvd		= ProtoField.uint16("uet.ses.resp.reserved",		"Reserved",			base.HEX)
+-- FIXME: unify with req_
+fld.ses_resp_payload_len	= ProtoField.uint32("uet.ses.resp.payload_len",		"Payload length",		base.DEC)
 
 local dissect_data	= Dissector.get("data")
 
@@ -222,6 +231,25 @@ function p_uet.dissector(buf, pinfo, root)
 			resp_tree:add(fld.ses_job_id, buf(offset+5, 3))
 			resp_tree:add(fld.ses_resp_mod_len, buf(offset+8, 4))
 			offset = offset + 12
+		end if h_next == HDR_RSP_DATA then
+			local opcode = buf(offset, 1):bitfield(2, 6)
+			local opcode_str = resp_opcodes[opcode]
+			if opcode_str ~= nil then
+				summary = summary .. " " .. opcode_str
+			end
+			local resp_tree = proto_tree:add(fld.ses_resp_data, buf(offset, 20))
+			resp_tree:add(fld.ses_resp_list, buf(offset, 1))
+			resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
+			resp_tree:add(fld.ses_resp_ver, buf(offset+1, 1))
+			resp_tree:add(fld.ses_resp_retcode, buf(offset+1, 1))
+			resp_tree:add(fld.ses_msgid, buf(offset+2, 2))
+			resp_tree:add(fld.ses_index_gen, buf(offset+4, 1)) -- FIXME: reserved in HDR_RSP_DATA
+			resp_tree:add(fld.ses_job_id, buf(offset+5, 3))
+			resp_tree:add(fld.ses_resp_rsvd, buf(offset+8, 2))
+			resp_tree:add(fld.ses_resp_payload_len, buf(offset+10, 2))
+			resp_tree:add(fld.ses_resp_mod_len, buf(offset+12, 4))
+			resp_tree:add(fld.ses_resp_msg_offset, buf(offset+16, 4))
+			offset = offset + 20
 		end
 	end
 
