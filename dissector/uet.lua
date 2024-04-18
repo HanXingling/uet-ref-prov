@@ -237,5 +237,7 @@ end
 
 function p_uet:init()
 	local ip_table = DissectorTable.get("ip.proto")
+	local udp_table = DissectorTable.get("udp.port")
 	ip_table:add(p_uet.prefs["ip_proto"], p_uet)
+	udp_table:add_for_decode_as(p_uet)
 end
