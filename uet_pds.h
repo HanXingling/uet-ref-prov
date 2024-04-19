@@ -214,8 +214,7 @@ struct uet_pds_to_ses_funcs {
 	 *
 	 * parms:
 	 *      rx_pkt_handle   - handle assigned to received packet by pds
-	 *      uet_ep          - ptr to uet endpoint struct that request
-	 *                        is destined for
+	 *      uet             - ptr to uet instance struct
 	 *      pp              - ptr to parsed packet struct
 	 *      pds_info        - info that needs to be echoed back to pds when
 	 *                        read data is transmitted
@@ -243,7 +242,7 @@ struct uet_pds_to_ses_funcs {
 	 *   - FI_SUCCESS when ses response is to be returned to initiator
 	 *   - negative value corresponding to fabric errno on error
 	 */
-	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_ep *uet_ep,
+	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_instance *uet,
 		      struct uet_parsed_pkt *pp, struct uet_pds_info *pds_info,
 		      uet_next_hdr_t *rsp_next_hdr, void *rsp_ses_hdr,
 		      size_t *rsp_ses_hdr_len, bool *ses_nack, bool *gtd_del);

@@ -29,6 +29,7 @@ static int uet_nic_close(struct fid *fid)
 			free(fnic->link_attr);
 			fnic->link_attr = NULL;
 		}
+
 		free(fnic);
 	}
 
