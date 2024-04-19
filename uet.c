@@ -203,6 +203,11 @@ static void uet_free_res(struct uet_context *ctx)
 		ctx->domain_handle = UET_NULL_HANDLE;
 	}
 
+	if (ctx->info) {
+		fi_freeinfo(ctx->info);
+		ctx->info = NULL;
+	}
+
 	if (ctx->uet_handle != UET_NULL_HANDLE) {
 		rc = uet_finalize(ctx->uet_handle);
 		if (rc)
@@ -673,12 +678,13 @@ static uet_rc_t uet_rma_server_ctrl_exchange(struct uet_context *ctx)
 /*
  * perform client RMA data transfer exchange as follows:
  *   - read data from server RMA buffer
- *   - eait for read completion
+ *   - wait for read completion
  *   - write to server RMA buffer
  *     - include immediate data to generate completion at server
  *   - wait for write completion
  *   - wait for remote write completion to indicate data has been written
  *     back to client's RMA buffer by server
+ *   - validate data is correct
  *
  * returns:
  *   UET_SUCCESS_RC
@@ -724,6 +730,11 @@ static uet_rc_t uet_rma_client(struct uet_context *ctx)
 		return UET_ERR_RC;
 	}
 
+	if (uet_validate_msg(ctx, ctx->mr_buf) != UET_SUCCESS_RC) {
+		UET_ERR("Invalid buffer contents");
+		return UET_ERR_RC;
+	}
+
 	return UET_SUCCESS_RC;
 }
 
@@ -731,6 +742,7 @@ static uet_rc_t uet_rma_client(struct uet_context *ctx)
  * perform server RMA data transfer exchange as follows:
  *   - wait for remote write completion to indicate data has been written to
  *     the server RMA buffer by the client
+ *   - validate data is correct
  *   - write data back to client RMA buffer
  *     - include immediate data to generate completion at client
  *   - wait for write completion
@@ -847,6 +859,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 /*
  * perform server message data transfer as follows:
  *   - wait for message from client
+ *   - validate data is correct
  *   - echo message back to server
  */
 static uet_rc_t uet_msg_server(struct uet_context *ctx)
@@ -867,8 +880,8 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	} else {
 		/* post rx buffer */
 		ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
-			       ctx->cfg.msg_size, UET_NULL_HANDLE, UET_NULL_HANDLE,
-			       NULL);
+			       ctx->cfg.msg_size, UET_NULL_HANDLE,
+			       UET_NULL_HANDLE, NULL);
 		if (ret < 0) {
 			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
 			return UET_ERR_RC;
@@ -890,8 +903,8 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	if (ctx->cfg.tag) {
 		/* echo tagged message back to client */
 		ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_msg,
-				cq_entry.len, UET_NULL_HANDLE, ctx->peer_addr_handle,
-				UET_DEFAULT_TAG, NULL);
+				cq_entry.len, UET_NULL_HANDLE,
+				ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
 		if (ret < 0) {
 			UET_ERR("uet_send: %s", fi_strerror(-ret));
 			return UET_ERR_RC;

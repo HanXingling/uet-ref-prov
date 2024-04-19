@@ -204,29 +204,34 @@ static void uet_dealloc_mr_desc(struct uet_domain *uet_dom,
  * allocate message id
  *
  * parms:
- *      uet_dom - ptr to uet domain struct
- *      msg_id  - ptr to location where allocated message id is returned
+ *      uet    - ptr to uet instance struct
+ *      msg_id - ptr to location where allocated message id is returned
  *
  * returns:
  *      FI_SUCCESS on success
  *      negative value corresponding to fabric errno on error
  */
-static int uet_alloc_msg_id(struct uet_domain *uet_dom, uint16_t *msg_id)
+static int uet_alloc_msg_id(struct uet_instance *uet, uint16_t *msg_id)
 {
 	int cnt;
 	uint16_t next_msg_id;
 	uint8_t *state, prev_state;
 
-	next_msg_id = uet_dom->msg_id_cb.next_msg_id;
-	for (cnt = 0, state = &uet_dom->msg_id_cb.state[next_msg_id];
-	     cnt <= UET_MAX_MSG_ID; cnt++, state++) {
+	next_msg_id = uet->msg_id_cb.next_msg_id;
+	for (cnt = 0, state = &uet->msg_id_cb.state[next_msg_id];
+	     cnt <= UET_MAX_MSG_ID; cnt++) {
 		prev_state = __atomic_exchange_n(
 				state, UET_MSG_ID_ALLOCATED, __ATOMIC_SEQ_CST);
 		if (prev_state == UET_MSG_ID_AVAILABLE) {
-			*msg_id = next_msg_id + cnt;
-			uet_dom->msg_id_cb.next_msg_id = *msg_id + 1;
+			*msg_id = next_msg_id;
+			uet->msg_id_cb.next_msg_id = next_msg_id + 1;
+			if (uet->msg_id_cb.next_msg_id > UET_MAX_MSG_ID)
+				uet->msg_id_cb.next_msg_id = 0;
 			return FI_SUCCESS;
 		}
+		if (++next_msg_id > UET_MAX_MSG_ID)
+			next_msg_id = 0;
+		state = &uet->msg_id_cb.state[next_msg_id];
 	}
 
 	UET_API_ERR("No Msg ID Available");
@@ -237,43 +242,43 @@ static int uet_alloc_msg_id(struct uet_domain *uet_dom, uint16_t *msg_id)
  * set rx descriptor associated with message id
  *
  * parms:
- *      uet_dom - ptr to uet domain struct
+ *      uet     - ptr to uet instance struct
  *      msg_id  - message id
  *      rx_desc - ptr to rx descriptor
  */
-static void uet_set_msg_id_rx_desc(struct uet_domain *uet_dom, uint16_t msg_id,
+static void uet_set_msg_id_rx_desc(struct uet_instance *uet, uint16_t msg_id,
 				   struct uet_rx_desc *rx_desc)
 {
-	uet_dom->msg_id_cb.rx_desc[msg_id] = rx_desc;
+	uet->msg_id_cb.rx_desc[msg_id] = rx_desc;
 }
 
 /*
  * get rx descriptor associated with message id
  *
  * parms:
- *      uet_dom - ptr to uet domain struct
- *      msg_id  - message id
+ *      uet    - ptr to uet instance struct
+ *      msg_id - message id
  *
  * returns:
  *      ptr to rx descriptor
  */
-static struct uet_rx_desc *uet_get_msg_id_rx_desc(struct uet_domain *uet_dom,
+static struct uet_rx_desc *uet_get_msg_id_rx_desc(struct uet_instance *uet,
 						  uint16_t msg_id)
 {
-	return uet_dom->msg_id_cb.rx_desc[msg_id];
+	return uet->msg_id_cb.rx_desc[msg_id];
 }
 
 /*
  * deallocate message id
  *
  * parms:
- *      uet_dom - ptr to uet domain struct
- *      msg_id  - message id to be deallocated
+ *      uet    - ptr to uet instance struct
+ *      msg_id - message id to be deallocated
  */
-static void uet_dealloc_msg_id(struct uet_domain *uet_dom, uint16_t msg_id)
+static void uet_dealloc_msg_id(struct uet_instance *uet, uint16_t msg_id)
 {
-	uet_dom->msg_id_cb.state[msg_id] = UET_MSG_ID_AVAILABLE;
-	uet_dom->msg_id_cb.rx_desc[msg_id] = NULL;
+	uet->msg_id_cb.state[msg_id] = UET_MSG_ID_AVAILABLE;
+	uet->msg_id_cb.rx_desc[msg_id] = NULL;
 }
 
 /* allocate next msg sequence number for address vector */
@@ -317,7 +322,74 @@ static void uet_set_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 	}
 }
 
-/* init key for rx msg lookup */
+/* init key for ipv4 endpoint lookup from packet contents */
+static void uet_ipv4_ep_key_init(struct uet_ipv4_ep_key *key,
+				 struct uet_parsed_pkt *pp)
+{
+	struct iphdr *ipv4;
+	struct uet_ses_req_std *ses;
+
+	ipv4 = (struct iphdr *) pp->ip;
+	ses = (struct uet_ses_req_std *) pp->ses;
+
+	memset(key, 0, sizeof(struct uet_ipv4_ep_key));
+	key->ipv4_addr = ntohl(ipv4->daddr);
+	key->pid_on_fep =
+		(ntohs(ses->cmn.rsvd_pid_on_fep) & UET_SES_REQ_PID_ON_FEP_MASK)
+		>> UET_SES_REQ_PID_ON_FEP_SHIFT;
+	key->index =
+		(ntohs(ses->cmn.rsvd_res_index) & UET_SES_REQ_RES_INDEX_MASK) >>
+		UET_SES_REQ_RES_INDEX_SHIFT;
+}
+
+/* insert entry into ipv4 endpoint hash table */
+static void uet_ipv4_ep_hash_insert(struct uet_ep *uet_ep)
+{
+	struct uet_instance *uet;
+
+	uet = uet_ep->uet_domain->uet;
+
+	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_ADD(ipv4_ep_hh, uet->ipv4_ep_hash_table, ipv4_ep_key,
+		 sizeof(struct uet_ipv4_ep_key), uet_ep);
+	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+}
+
+/* remove entry from ipv4 endpoint hash table */
+static void uet_ipv4_ep_hash_remove(struct uet_ep *uet_ep)
+{
+	struct uet_instance *uet;
+
+	uet = uet_ep->uet_domain->uet;
+
+	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_DELETE(ipv4_ep_hh, uet->ipv4_ep_hash_table, uet_ep);
+	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+}
+
+/* remove all entries from ipv4 endpoint hash table and free associated mem */
+static void uet_ipv4_ep_hash_finalize(struct uet_instance *uet)
+{
+	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_CLEAR(ipv4_ep_hh, uet->ipv4_ep_hash_table);
+	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+}
+
+/* ipv4 endpoint hash table lookup */
+static struct uet_ep *uet_ipv4_ep_hash_lookup(struct uet_instance *uet,
+					      struct uet_ipv4_ep_key *key)
+{
+	struct uet_ep *uet_ep;
+
+	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
+	HASH_FIND(ipv4_ep_hh, uet->ipv4_ep_hash_table, key,
+		  sizeof(struct uet_ipv4_ep_key), uet_ep);
+	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
+
+	return uet_ep;
+}
+
+/* init key for rx msg lookup from packet contents */
 static void uet_rx_msg_key_init(struct uet_rx_msg_key *key,
 				struct uet_parsed_pkt *pp)
 {
@@ -366,7 +438,7 @@ static struct uet_rx_desc *uet_rx_msg_hash_lookup(struct uet_ep *uet_ep,
 	return rx_desc;
 }
 
-/* init key for hash lookup with {tag, initiator} key */
+/* init key for hash lookup with {tag, initiator} key from packet contents */
 static void uet_tag_initiator_key_init(struct uet_tag_initiator_key *key,
 				       struct uet_parsed_pkt *pp)
 {
@@ -412,7 +484,7 @@ static struct uet_rx_desc *uet_tag_initiator_hash_lookup(
 	return rx_desc;
 }
 
-/* init key for mr lookup */
+/* init key for mr lookup from packet contents */
 static void uet_mr_key_init(struct uet_mr_key *key, struct uet_parsed_pkt *pp)
 {
 	struct uet_ses_req_std *ses;
@@ -667,7 +739,7 @@ static void uet_tx_desc_recycle(struct uet_tx_desc *tx_desc,
 	/* deallocate msg id associated with descriptor */
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_MSG_ID_ALLOCATED) {
 		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_MSG_ID_ALLOCATED;
-		uet_dealloc_msg_id(tx_desc->uet_ep->uet_domain,
+		uet_dealloc_msg_id(tx_desc->uet_ep->uet_domain->uet,
 				   &tx_desc->msg_id);
 	}
 
@@ -730,7 +802,7 @@ static void uet_desc_free(struct uet_ep *uet_ep)
 		for (i = 0; i < uet_ep->num_tx_desc; i++) {
 			if (uet_ep->tx_desc[i].desc_flags &
 			    UET_TX_DESC_FLAG_MSG_ID_ALLOCATED)
-				uet_dealloc_msg_id(uet_ep->uet_domain,
+				uet_dealloc_msg_id(uet_ep->uet_domain->uet,
 						   uet_ep->tx_desc[i].msg_id);
 		}
 		free(uet_ep->tx_desc);
@@ -1210,6 +1282,7 @@ static void uet_domain_free_all(struct uet_instance *uet)
 /* free most resources associated with uet instance */
 static void uet_finalize_core(struct uet_instance *uet)
 {
+	uet_ipv4_ep_hash_finalize(uet);
 	uet_nic_finalize(UET_NIC(uet));
 	uet_domain_free_all(uet);
 }
@@ -1633,7 +1706,10 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
 	pkt_payload_len = pp->pkt_len - pp->hdr_len;
 	req_len = ntohl(ses->req_len);
-	start_off = ntohll(ses->buf_off);
+	if (write)
+		start_off = ntohll(ses->buf_off);
+	else
+		start_off = 0;
 
 	/* get rx descriptor for message */
 	ses_rc = uet_get_rx_desc(uet_ep, pp, write, UET_RC_OK, &msg_key,
@@ -1934,28 +2010,12 @@ err_exit:
 
 /* process received read response data */
 static uet_ses_rc_t uet_rx_read_data(
-	    struct uet_ep *uet_ep, struct uet_tx_desc *tx_desc,
-	    struct uet_ses_rsp_d *ses, size_t pkt_payload_len,
-	    struct uet_rx_desc **ret_rx_desc)
+	    struct uet_ep *uet_ep, struct uet_rx_desc *rx_desc,
+	    struct uet_ses_rsp_d *ses, size_t pkt_payload_len)
 {
-	uint16_t msg_id, payload_len;
+	uint16_t payload_len;
 	uint32_t msg_off;
 	void *buf_ptr;
-	struct uet_rx_desc *rx_desc;
-
-	/* get rx descriptor */
-	if (tx_desc) {
-		rx_desc = tx_desc->rx_desc;
-		*ret_rx_desc = rx_desc;
-	} else {
-		msg_id = ntohs(ses->cmn.msg_id);
-		rx_desc = uet_get_msg_id_rx_desc(uet_ep->uet_domain, msg_id);
-		*ret_rx_desc = rx_desc;
-		if (rx_desc == NULL) {
-			UET_API_ERR("Read Rsp: Bad Msg ID");
-			return UET_RC_OP_VIOLATION;
-		}
-	}
 
 	/* check payload length */
 	payload_len = (ntohl(ses->rsvd_payload_len) &
@@ -1987,8 +2047,7 @@ static uet_ses_rc_t uet_rx_read_data(
  *
  * parms:
  *      rx_pkt_handle   - handle assigned to received packet by pds
- *      uet_ep          - ptr to uet endpoint struct that request
- *                        is destined for
+ *      uet              - ptr to uet instance struct
  *      pp              - ptr to parsed packet struct
  *      pds_info        - ptr to info that needs to be echoed back to pds when
  *                        read data is transmitted
@@ -2019,7 +2078,7 @@ static uet_ses_rc_t uet_rx_read_data(
  *   - negative value corresponding to fabric errno on error
  */
 static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
-				 struct uet_ep *uet_ep,
+				 struct uet_instance *uet,
 				 struct uet_parsed_pkt *pp,
 				 struct uet_pds_info *pds_info,
 				 uet_next_hdr_t *rsp_next_hdr,
@@ -2033,9 +2092,11 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	bool first_msg_pkt;
 	size_t pkt_payload_len;
 	uet_ses_list_t list;
+	struct uet_ep *uet_ep;
 	struct uet_ses_req_std *ses_std_req;
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *rx_ses_rsp_d, *ses_rsp_d;
+	struct uet_ipv4_ep_key ipv4_ep_key;
 	struct uet_rx_msg_key msg_key;
 	struct uet_rx_desc *rx_desc;
 	struct uet_ack_d_info ack_d_info;
@@ -2048,29 +2109,54 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 
 	list = UET_EXPECTED;
 	ses_nack = false;
-	ep_gen = (uint32_t) uet_ep->untagged_gen;
+	ep_gen = 0;
+
+	ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
+	ses_rsp->cmn.index_gen_job_id = ses_std_req->cmn.index_gen_job_id;
 
 	switch (pp->next_hdr) {
 	case UET_HDR_REQ_STD:
-		ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
 		ses_rsp->mod_len = ses_std_req->req_len;
 		job_id = uet_get_std_req_job_id(ses_std_req);
-		ses_rsp->cmn.index_gen_job_id =
-			ses_std_req->cmn.index_gen_job_id;
+		uet_ipv4_ep_key_init(&ipv4_ep_key, pp);
+		uet_ep = uet_ipv4_ep_hash_lookup(uet, &ipv4_ep_key);
+		if (uet_ep == NULL) {
+			UET_API_ERR("RX: Unknown Endpoint");
+			ses_rc = UET_RC_UNDELIVERABLE;
+			*gtd_del = true;
+			goto build_response;
+		}
+		if (uet_ep->job_id != job_id) {
+			UET_API_ERR("RX: Bad Job ID");
+			ses_rc = UET_RC_BAD_JOB_ID;
+			*gtd_del = true;
+			goto build_response;
+		}
 		break;
 	case UET_HDR_RSP_DATA:
-		ses_rsp_d->cmn.msg_id = rx_ses_rsp_d->cmn.msg_id;
+		rx_desc = uet_get_msg_id_rx_desc(
+				uet, ntohs(rx_ses_rsp_d->cmn.msg_id));
+		if (rx_desc == NULL) {
+			UET_API_ERR("Read Rsp: Unknown Message ID");
+			ses_rc = UET_RC_UNDELIVERABLE;
+			*gtd_del = true;
+			goto build_response;
+		}
+		uet_ep = rx_desc->uet_ep;
 		job_id = (ntohl(rx_ses_rsp_d->cmn.index_gen_job_id) &
-			  UET_SES_RSP_JOB_ID_MASK) << UET_SES_RSP_JOB_ID_SHIFT;
-		ses_rsp_d->cmn.index_gen_job_id = htonl(
-			(ep_gen << UET_SES_REQ_INDEX_GEN_SHIFT) | job_id);
+			  UET_SES_RSP_JOB_ID_MASK) >> UET_SES_RSP_JOB_ID_SHIFT;
+		if (uet_ep->job_id != job_id) {
+			UET_API_ERR("RX: Bad Job ID");
+			ses_rc = UET_RC_BAD_JOB_ID;
+			*gtd_del = true;
+			goto build_response;
+		}
+		rx_desc->expected_rd_rsp--;
 		pkt_payload_len = pp->pkt_len - pp->hdr_len;
-		ses_rc = uet_rx_read_data(uet_ep, NULL, rx_ses_rsp_d,
-					  pkt_payload_len, &rx_desc);
+		ses_rc = uet_rx_read_data(uet_ep, rx_desc, rx_ses_rsp_d,
+					  pkt_payload_len);
 		if (ses_rc == UET_RC_OK)
-			ses_rsp_d->mod_len = htonl(rx_desc->msg_len);
-		if (rx_desc)
-			rx_desc->expected_rd_rsp--;
+			ses_rsp->mod_len = htonl(rx_desc->msg_len);
 		goto build_response;
 	default:
 		UET_API_ERR("RX: Unsupported Next Hdr Type = 0x%x",
@@ -2332,14 +2418,13 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 {
 	int rc;
 	uint8_t opcode;
-	uint32_t rx_gen;
+	uint32_t mod_len, rx_gen;
 	size_t msg_len, expected_rd_rsp, max_payload_len;
 	uet_ses_rc_t ses_rc;
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
 	struct uet_ep *ep;
 	struct uet_tx_desc *tx_desc;
-	struct uet_rx_desc *rx_desc;
 	struct uet_av_entry *av_entry;
 	union uet_pkt *pkt;
 
@@ -2370,7 +2455,10 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	/* check opcode */
 	switch (opcode) {
 	case UET_RESPONSE:
+		mod_len = ntohl(ses_rsp->mod_len);
+		break;
 	case UET_RESPONSE_W_DATA:
+		mod_len = ntohl(ses_rsp_d->mod_len);
 		break;
 	case UET_NO_RESPONSE:
 	case UET_DEFAULT_RESPONSE:
@@ -2384,10 +2472,24 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	switch (ses_rc) {
 	case UET_RC_OK:
 		if (opcode == UET_RESPONSE_W_DATA) {
-			if (uet_rx_read_data(
-				tx_desc->uet_ep, tx_desc, ses_rsp_d,
-				rsp_pp->payload_len, &rx_desc) != UET_RC_OK)
+			if (mod_len != tx_desc->buf_desc.len) {
+				UET_API_ERR("Read Rsp: "
+					    "Truncated Message Length");
 				goto err_exit;
+			}
+			if (uet_rx_read_data(
+				tx_desc->uet_ep, tx_desc->rx_desc, ses_rsp_d,
+				rsp_pp->payload_len) != UET_RC_OK)
+				goto err_exit;
+		} else if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) {
+			if (mod_len != tx_desc->rd_rsp.mod_len) {
+				UET_API_ERR("Msg Rsp: Ack of Read Rsp: "
+					    "Truncated Message Length");
+				goto err_exit;
+			}
+		} else if (mod_len != tx_desc->buf_desc.len) {
+			UET_API_ERR("Msg Rsp: Truncated Message Length");
+			goto err_exit;
 		}
 		break;
 	case UET_RC_BAD_GENERATION:
@@ -2828,14 +2930,14 @@ static ssize_t uet_send_req_api_common(
 	}
 
 	/* allocate msg id */
-	rc = uet_alloc_msg_id(uet_ep->uet_domain, &msg_id);
+	rc = uet_alloc_msg_id(uet, &msg_id);
 	if (rc != FI_SUCCESS)
 		return rc;
 
 	/* allocate tx descriptor */
 	tx_desc = uet_tx_desc_list_pop(uet_ep);
 	if (tx_desc == NULL) {
-		uet_dealloc_msg_id(uet_ep->uet_domain, msg_id);
+		uet_dealloc_msg_id(uet, msg_id);
 		return -FI_EAGAIN;
 	}
 
@@ -2843,7 +2945,7 @@ static ssize_t uet_send_req_api_common(
 	if (send_req_api == UET_READ_API) {
 		rx_desc = uet_rx_desc_list_pop(uet_ep);
 		if (rx_desc == NULL) {
-			uet_dealloc_msg_id(uet_ep->uet_domain, msg_id);
+			uet_dealloc_msg_id(uet, msg_id);
 			uet_tx_desc_list_insert(tx_desc);
 			return -FI_EAGAIN;
 		}
@@ -2861,7 +2963,7 @@ static ssize_t uet_send_req_api_common(
 		rx_desc->uet_ep = uet_ep;
 		rx_desc->tx_desc = tx_desc;
 		rx_desc->msg_key.msg_id = msg_id;
-		uet_set_msg_id_rx_desc(uet_ep->uet_domain, msg_id, rx_desc);
+		uet_set_msg_id_rx_desc(uet, msg_id, rx_desc);
 		uet_rx_desc_active_list_insert(rx_desc);
 	}
 
@@ -2957,6 +3059,8 @@ int uet_initialize(uet_handle_t *handle)
 	uet->pds.upcall.rx_req = uet_pds_to_ses_rx_req;
 	uet->pds.upcall.rx_rsp = uet_pds_to_ses_rx_rsp;
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
+
+	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
 
 	rc = uet_pds_init(uet);
 	if (rc != FI_SUCCESS)
@@ -3262,6 +3366,11 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
 
+	uet_ep->ipv4_ep_key.ipv4_addr = uet_ep->ipv4_addr;
+	uet_ep->ipv4_ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
+	uet_ep->ipv4_ep_key.index = uet_ep->uet_addr.start_index;
+	uet_ipv4_ep_hash_insert(uet_ep);
+
 	switch (info->tx_attr->tclass) {
 	case FI_TC_BEST_EFFORT:
 	case FI_TC_UNSPEC:
@@ -3410,6 +3519,8 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 		uet_mr_hash_finalize(uet_ep);
 
 	pds->downcall.ep_close_wait(uet_ep);
+
+	uet_ipv4_ep_hash_remove(uet_ep);
 
 	uet_ep_free(uet_ep);
 

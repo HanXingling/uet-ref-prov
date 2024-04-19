@@ -106,7 +106,6 @@ void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 			uint8_t tos);
 void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
 void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
-void uet_rw_lock_wr(struct uet_rw_lock *lock);
 void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);
 void uet_rw_unlock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);
 uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,

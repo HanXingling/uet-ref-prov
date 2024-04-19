@@ -241,7 +241,7 @@ static bool uet_pds_ep_addr_match(
 		match_info->index_match = true;
 
 		msg_id = ntohs(pkt->std_rsp_d.ses.cmn.msg_id);
-		rx_desc = uet_ep->uet_domain->msg_id_cb.rx_desc[msg_id];
+		rx_desc = uet_ep->uet_domain->uet->msg_id_cb.rx_desc[msg_id];
 		if (rx_desc == NULL)
 			return false;
 		if (rx_desc->uet_ep != uet_ep)
@@ -896,7 +896,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 		memset(&pds_info, 0, sizeof(struct uet_pds_info));
 		pds_info.opsn = pkt->common.pds.psn;
 		rc = ses_upcall->rx_req((uet_pkt_handle_t) pkt,
-					dst_uet_ep, &pp, &pds_info,
+					uet, &pp, &pds_info,
 					&rsp_next_hdr, rsp_ses_hdr,
 					&rsp_ses_hdr_len, &ses_nack, &gtd_del);
 		if (rc == FI_SUCCESS) {

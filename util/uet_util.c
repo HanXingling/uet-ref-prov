@@ -478,7 +478,7 @@ void uet_rw_lock_init(struct uet_rw_lock *lock)
 }
 
 /* get read access to read-write lock */
-void uet_rw_lock_rd(struct uet_rw_lock *lock)
+static void uet_rw_lock_rd(struct uet_rw_lock *lock)
 {
 	uet_rw_lock_val_t expected, new;
 
@@ -498,7 +498,7 @@ void uet_rw_lock_rd(struct uet_rw_lock *lock)
 }
 
 /* get write access to read-write lock */
-void uet_rw_lock_wr(struct uet_rw_lock *lock)
+static void uet_rw_lock_wr(struct uet_rw_lock *lock)
 {
 	uet_rw_lock_val_t expected, new;
 

@@ -311,19 +311,6 @@ struct uet_tx_desc_ring_entry {
 	struct uet_tx_desc *tx_desc;
 };
 
-/* control block for uet instance */
-struct uet_instance {
-	struct dlist_entry domain_list_head;          /* domain obj list head */
-	struct uet_nic nic;                              /* nic control block */
-	uint8_t uet_ipproto;                    /* ip protocol number for uet */
-	uint16_t uet_udp_port;                     /* udp port number for uet */
-	size_t max_payload_len;                   /* max payload for a packet */
-	struct uet_pds pds;			  /* pds control block struct */
-	uint8_t default_msg_ip_tos;               /* default ip tos for msg's */
-	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
-	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
-};
-
 /* message match info */
 struct uet_msg_match_info {
 	bool ip_addr_match;
@@ -341,6 +328,31 @@ struct uet_msg_id_cb {
 	uint8_t state[UET_MAX_MSG_ID+1];
 	       /* used to lookup rx desc with msg id index for read responses */
 	struct uet_rx_desc *rx_desc[UET_MAX_MSG_ID+1];
+};
+
+/* key for ipv4 endpoint lookup */
+struct uet_ipv4_ep_key {
+	uint32_t ipv4_addr;
+	uint16_t pid_on_fep;
+	uint32_t index;
+};
+
+struct uet_ep; /* forward reference */
+
+/* control block for uet instance */
+struct uet_instance {
+	struct dlist_entry domain_list_head;          /* domain obj list head */
+	struct uet_nic nic;                              /* nic control block */
+	uint8_t uet_ipproto;                    /* ip protocol number for uet */
+	uint16_t uet_udp_port;                     /* udp port number for uet */
+	size_t max_payload_len;                   /* max payload for a packet */
+	struct uet_pds pds;			  /* pds control block struct */
+	uint8_t default_msg_ip_tos;               /* default ip tos for msg's */
+	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
+	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
+	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
+	struct uet_rw_lock ipv4_ep_lkup_lock;  /* lock for ipv4 ep lookup tbl */
+	struct uet_ep *ipv4_ep_hash_table;        /* ipv4 endpoint hash table */
 };
 
 /* memory region descriptor allocation control block struct */
@@ -366,7 +378,6 @@ struct uet_domain {
 	void *context;           /* user context associated with domain */
 	uet_eq_callback_t eq_callback;          /* async event callback */
 	uet_eq_err_callback_t eq_err_callback;    /* err event callback */
-	struct uet_msg_id_cb msg_id_cb;  /* used for assigning msg id's */
 	size_t num_mr;            /* number of memory regions supported */
 	struct uet_mr_desc *mr_desc;  /* ptr to array of mr descriptors */
 	   /* used for managing allocation of memory region descriptors */
@@ -412,12 +423,14 @@ struct uet_cq {
 struct uet_ep {
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */
+	UT_hash_handle ipv4_ep_hh;  /* handle for ipv4 endpoint hash function */
 	struct uet_domain *uet_domain;                /* ptr to domain struct */
 	struct fi_info *info;                 /* ptr to libfabric info struct */
 	struct fid_ep *ep;                /* ptr to libfabric endpoint struct */
 	void *context;               /* user context associated with endpoint */
 	struct uet_addr uet_addr;               /* uet addr of ep, host order */
 	uint32_t ipv4_addr;                    /* ipv4 addr of ep, host order */
+	struct uet_ipv4_ep_key ipv4_ep_key;   /* key for ipv4 endpoint lookup */
 	uint8_t msg_ip_tos;                            /* ip tos for messages */
 	struct uet_cq send_cq;                       /* send completion queue */
 	struct uet_cq recv_cq;                    /* receive completion queue */
