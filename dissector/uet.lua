@@ -98,13 +98,13 @@ fld.ses_index			= ProtoField.uint16("uet.ses.index",			"Index",			base.DEC, nil,
 fld.ses_req_rsv3		= ProtoField.uint16("uet.ses.req.rsv3",			"Reserved",			base.HEX, nil, 0xf000)
 fld.ses_req_pidonfep		= ProtoField.uint16("uet.ses.req.pid_on_fep",		"PID on FEP",			base.DEC, nil, 0x0fff)
 fld.ses_msgid			= ProtoField.uint16("uet.ses.message_id",		"Message ID",			base.DEC, nil, 0xfe00000000000000)
-fld.ses_req_buff_offs		= ProtoField.uint64("uet.ses.req.buffer_offset",	"Buffer offset",		base.HEX)
+fld.ses_req_buff_offs		= ProtoField.uint64("uet.ses.req.buffer_offset",	"Buffer offset",		base.DEC_HEX)
 fld.ses_req_initiator		= ProtoField.uint32("uet.ses.req.initiator",		"Initiator",			base.HEX)
 fld.ses_req_match_bits		= ProtoField.uint64("uet.ses.req.match_bits",		"Match bits",			base.HEX)
 fld.ses_req_hdr_data		= ProtoField.uint64("uet.ses.req.header_data",		"Header data",			base.HEX)
-fld.ses_req_len			= ProtoField.uint64("uet.ses.req.len",			"Request length",		base.DEC)
-fld.ses_req_payload_offs	= ProtoField.uint32("uet.ses.req.packet_offset",	"Packet offset",		base.DEC)
-fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet length",		base.DEC)
+fld.ses_req_len			= ProtoField.uint64("uet.ses.req.len",			"Request length",		base.DEC_HEX)
+fld.ses_req_payload_offs	= ProtoField.uint32("uet.ses.req.packet_offset",	"Packet offset",		base.DEC_HEX)
+fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet length",		base.DEC_HEX)
 
 fld.ses_resp			= ProtoField.none("uet.ses.resp",			"SES response") -- FIXME: Proto()?
 fld.ses_resp_data		= ProtoField.none("uet.ses.resp_data",			"SES response w/ data") -- FIXME: Proto()?
@@ -115,12 +115,12 @@ fld.ses_resp_retcode		= ProtoField.uint8("uet.ses.resp.retcode",		"Return code",
 -- ses_msgid
 -- index_gen
 -- job_id
-fld.ses_resp_mod_len		= ProtoField.uint32("uet.ses.resp.mod_length",		"Modified length",		base.DEC)
-fld.ses_resp_msg_offset		= ProtoField.uint32("uet.ses.resp.msg_offset",		"Message offset",		base.DEC)
+fld.ses_resp_mod_len		= ProtoField.uint32("uet.ses.resp.mod_length",		"Modified length",		base.DEC_HEX)
+fld.ses_resp_msg_offset		= ProtoField.uint32("uet.ses.resp.msg_offset",		"Message offset",		base.DEC_HEX)
 -- TODO?
 fld.ses_resp_rsvd		= ProtoField.uint16("uet.ses.resp.reserved",		"Reserved",			base.HEX)
 -- FIXME: unify with req_
-fld.ses_resp_payload_len	= ProtoField.uint32("uet.ses.resp.payload_len",		"Payload length",		base.DEC)
+fld.ses_resp_payload_len	= ProtoField.uint32("uet.ses.resp.payload_len",		"Payload length",		base.DEC_HEX)
 
 local dissect_data	= Dissector.get("data")
 
