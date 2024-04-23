@@ -154,8 +154,8 @@ function p_uet.dissector(buf, pinfo, root)
 		-- TODO: mode&offset for SYN
 		subtree:add(fld.dpdcid, buf(10, 2))
 		-- TODO: clear
-		subtree:add(fld.forward_psn, buf(12, 2))
-		offset = offset + 12
+		subtree:add(fld.forward_psn, buf(12, 4))
+		offset = 16
 		subtree:set_len(offset)
 		-- TODO: cc_state
 	end if h_type == TYPE_PDS_ACK then
@@ -170,7 +170,7 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
-		offset = offset + 8
+		offset = 12
 		subtree:set_len(offset)
 	end
 
