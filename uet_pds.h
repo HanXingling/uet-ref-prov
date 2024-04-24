@@ -46,10 +46,11 @@ typedef enum {
 
 /* pds tx flags */
 typedef enum {
-	UET_PDS_FLAG_SOM        = 0x01, /* start of message */
-	UET_PDS_FLAG_EOM        = 0x02, /* end of message */
-	UET_PDS_FLAG_EAGER_REQ  = 0x04, /* request eager length predition */
-	UET_PDS_FLAG_RETRANSMIT = 0x08, /* retransmit of pkt  */
+	UET_PDS_FLAG_SOM        = 0x01,   /* start of message */
+	UET_PDS_FLAG_EOM        = 0x02,   /* end of message */
+	UET_PDS_FLAG_EAGER_REQ  = 0x04,   /* request eager length predition */
+	UET_PDS_FLAG_RETRANSMIT = 0x08,   /* retransmit of pkt  */
+	UET_PDS_FLAG_MAINTAIN_PDC = 0x10, /* don't allow PDC teardown */ 
 } uet_pds_tx_flags_t;
 
 /* pds tx som flags */
@@ -128,10 +129,14 @@ struct uet_ses_to_pds_funcs {
 	 *      flags           - flags for tx operation
 	 *        UET_PDS_FLAG_SOM - pkt is start of message
 	 *        UET_PDS_FLAG_EOM - pkt is end of message
-	 *        UET_PDS_FLAG_EAGER_REQ  - request eager length predition,
-	 *                                  provided in build_ses_hdr upcall
-	 *                                  from pds to ses
-	 *        UET_PDS_FLAG_RETRANSMIT - this is retransmission of the packet
+	 *        UET_PDS_FLAG_EAGER_REQ - request eager length predition,
+	 *                                 provided in build_ses_hdr upcall
+	 *                                 from pds to ses
+	 *        UET_PDS_FLAG_RETRANSMIT - this is retransmit of the packet
+	 *        UET_PDS_FLAG_MAINTAIN_PDC - don't allow the pdc selected for
+	 *                                    this message to be torn down
+	 *                                    until ses indicates all responses
+	 *                                    have been received
 	 *      pds_info        - ptr to pds info echoed back from read request
 	 *      msg_id          - id of message
 	 *      next_hdr        - identifies next header following pds header
@@ -152,6 +157,26 @@ struct uet_ses_to_pds_funcs {
 		      bool dma_rdy);
 
 	/*
+	 * indicate message completion 
+	 *   - called for messages where UET_PDS_FLAG_MAINTAIN_PDC was set
+	 *     when message transmission was initiated
+	 *
+	 * parms:
+	 *      ep              - ptr to uet endpoint struct that message is
+	 *                        associated with
+	 *      dst_addr_handle - handle of uet addr that msg was destined for
+	 *      mode            - packet delivery mode used for message 
+	 *      msg_id          - id of message that has completed
+	 *
+	 * returns:
+	 *      FI_SUCCESS on success
+	 *      negative value corresponding to fabric errno on error
+	 */
+	int (*msg_cmpl_ind)(struct uet_ep *uet_ep,
+			    uet_addr_handle_t dst_addr_handle,
+			    uet_pds_mode_t mode, uint16_t msg_id);
+
+	/*
 	 * progress tx operations for endpoint
 	 *
 	 * parms:
@@ -162,7 +187,6 @@ struct uet_ses_to_pds_funcs {
 	 * returns:
 	 *      FI_SUCCESS on success
 	 *      negative value corresponding to fabric errno on error
-	 *        -FI_ENODATA indicates pds can accept more packets to transmit
 	 */
 	int (*progress_tx)(struct uet_ep *uet_ep,
 			   uet_pkt_handle_t *err_pkt_handle);

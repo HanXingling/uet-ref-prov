@@ -139,9 +139,13 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	printf("    PDS Packet Type:      ");
 	switch (pds_type) {
 	case UET_PDS_TYPE_ROD_REQ:
+	case UET_PDS_TYPE_RUD_REQ:
 		pds_req = (struct uet_pds_req *) prlg;
 		psn = ntohl(pds_req->psn);
-		printf("ROD Request\n");
+		if (pds_type == UET_PDS_TYPE_ROD_REQ)
+			printf("ROD Request\n");
+		else
+			printf("RUD Request\n");
 		break;
 	case UET_PDS_TYPE_ACK:
 		pds_ack = (struct uet_pds_ack *) prlg;
@@ -197,6 +201,16 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		case UET_SEND:
 			printf("SEND, SOM = %d, EOM = %d\n", som, eom);
 			break;
+		case UET_DEFER_SEND:
+			printf("DEFERRED SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_TAGGED_SEND:
+			printf("TAGGED SEND, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_DEFER_TSEND:
+			printf("DEFERRED TAGGED SEND, SOM = %d, EOM = %d\n",
+			       som, eom);
+			break;
 		case UET_WRITE:
 			printf("WRITE, SOM = %d, EOM = %d\n", som, eom);
 			break;
@@ -232,8 +246,12 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		       ntohl(ses_req_std->initiator));
 		printf("    SES Request Length:   %u\n",
 		       ntohl(ses_req_std->req_len));
-		printf("    SES Buffer Offset:    %lu\n",
-		       ntohll(ses_req_std->buf_off));
+		if ((opcode != UET_DEFER_SEND) && (opcode != UET_DEFER_TSEND))
+			printf("    SES Buffer Offset:    %lu\n",
+			       ntohll(ses_req_std->buf_off));
+		else
+			printf("    SES Restart Token:    %lu\n",
+			       ntohll(ses_req_std->buf_off));
 		if (som && hd)
 			printf("    SES Header Data:      %lu\n",
 			       ntohll(ses_req_std->cmpl_data));
@@ -650,9 +668,7 @@ uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 		if (pp->ses_opcode == UET_READ)
 			payload_len = max_payload_len;
 		else
-			payload_len = pp->pkt_len - pp->hdr_len;
-		if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_CRC)
-			payload_len -= UET_SES_CRC_SIZE;
+			payload_len = pp->pkt_payload_len; 
 		if (payload_len > req_len)
 			payload_len = req_len;
 	} else {
@@ -817,6 +833,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			       UET_PDS_TYPE_SHIFT;
+		pp->trailer_len = UET_SEC_ICV_SIZE;
 	}
 
 	/* parse pds header */
@@ -885,14 +902,21 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->payload = p;
 		pp->hdr_len = cur_len;
 
-		pp->payload_len = uet_get_ses_req_payload_len(
+		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC)
+			pp->trailer_len += UET_SES_CRC_SIZE;
+
+		pp->pkt_payload_len =
+			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
+
+		pp->ses_payload_len = uet_get_ses_req_payload_len(
 						pp, uet->max_payload_len);
+
 		if (pp->ses_opcode != UET_READ) {
 			rc = uet_parse_chk_next_field(
-					pp, cur_len, pp->payload_len);
+					pp, cur_len, pp->ses_payload_len);
 			if (rc != FI_SUCCESS)
 				return rc;
-			cur_len += pp->payload_len;
+			cur_len += pp->ses_payload_len;
 		}
 
 		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC) {
@@ -900,8 +924,8 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 					pp, cur_len, UET_SES_CRC_SIZE);
 			if (rc != FI_SUCCESS)
 				return rc;
-			cur_len += UET_SES_CRC_SIZE;
 			pp->ses_crc = ((uint8_t *) pkt) + cur_len;
+			cur_len += UET_SES_CRC_SIZE;
 		}
 		break;
 	case UET_HDR_RSP:
@@ -927,13 +951,16 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
 		pp->ses_opcode = (ses_rsp_d->cmn.list_opcode &
 				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
-		pp->payload_len = (ntohl(ses_rsp_d->rsvd_payload_len) &
-			UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
+		pp->pkt_payload_len =
+			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
+		pp->ses_payload_len =
+			(ntohl(ses_rsp_d->rsvd_payload_len) &
+			 UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 			UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
-		rc = uet_parse_chk_next_field(pp, cur_len, pp->payload_len);
+		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);
 		if (rc != FI_SUCCESS)
 			return rc;
-		cur_len += pp->payload_len;
+		cur_len += pp->ses_payload_len;
 		break;
 	case UET_HDR_REQ_SMALL:
 	case UET_HDR_REQ_MEDIUM:
