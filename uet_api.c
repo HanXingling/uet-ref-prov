@@ -81,15 +81,10 @@ static void uet_init_uet_addr_ipv4(struct uet_addr *uet_addr,
 /* get pds mode for an endpoint */
 static uet_pds_mode_t uet_get_pds_mode(struct uet_ep *uet_ep)
 {
-	/* TODO: add support for RUD */
-#ifdef UET_RUD_SUPPORTED
 	if (uet_ep->info->tx_attr->msg_order & UET_SEND_ORDERING)
 		return UET_PDS_MODE_ROD;
 	else
 		return UET_PDS_MODE_RUD;
-#else
-	return UET_PDS_MODE_ROD;
-#endif
 }
 
 /*
@@ -963,6 +958,11 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 {
 	int rc;
+	struct uet_ep *uet_ep;
+	struct uet_pds *pds;
+
+	uet_ep = tx_desc->uet_ep;
+	pds = &uet_ep->uet_domain->uet->pds;
 
 	switch (tx_desc->state) {
 	case UET_TX_DESC_STATE_ACTIVE:
@@ -976,6 +976,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 					tx_desc->state = UET_TX_DESC_STATE_WAIT;
 					break;
 				}
+				pds->downcall.msg_cmpl_ind(
+					uet_ep, tx_desc->dst_addr_handle,
+					tx_desc->pds_mode, tx_desc->msg_id);
 			}
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
@@ -985,6 +988,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 				if (tx_desc->rx_desc->expected_rd_rsp)
 					break;
+				pds->downcall.msg_cmpl_ind(
+					uet_ep, tx_desc->dst_addr_handle,
+					tx_desc->pds_mode, tx_desc->msg_id);
 			}
 			tx_desc->state = UET_TX_DESC_STATE_COMPLETE;
 		}
@@ -995,6 +1001,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			if (tx_desc->rx_desc->expected_rd_rsp)
 				break;
+			pds->downcall.msg_cmpl_ind(
+				uet_ep, tx_desc->dst_addr_handle,
+				tx_desc->pds_mode, tx_desc->msg_id);
 		}
 		rc = uet_retx_msg(tx_desc, tx_desc->delay_retx);
 		if (rc == FI_SUCCESS)
@@ -1008,6 +1017,9 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			if (tx_desc->rx_desc->expected_rd_rsp)
 				break;
+			pds->downcall.msg_cmpl_ind(
+				uet_ep, tx_desc->dst_addr_handle,
+				tx_desc->pds_mode, tx_desc->msg_id);
 		}
 		tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
 		break;
@@ -1311,8 +1323,7 @@ static void uet_init_err_rx_desc(
 /* handle rx message error */
 static uet_ses_rc_t uet_rx_msg_err(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
-	struct uet_rx_desc *rx_desc, uint16_t payload_len,
-	uet_ses_rc_t ses_rc, bool *gtd_del)
+	struct uet_rx_desc *rx_desc, uet_ses_rc_t ses_rc, bool *gtd_del)
 {
 	if (rx_desc == NULL) {
 		*gtd_del = true;
@@ -1328,11 +1339,11 @@ static uet_ses_rc_t uet_rx_msg_err(
 		*gtd_del = true;
 	}
 
-	if (payload_len >= rx_desc->remaining_bytes) {
+	if (pp->ses_payload_len >= rx_desc->remaining_bytes) {
 		rx_desc->remaining_bytes = 0;
 		uet_rx_cq_post_err(rx_desc, FI_EIO);
 	} else
-		rx_desc->remaining_bytes -= payload_len;
+		rx_desc->remaining_bytes -= pp->ses_payload_len;
 
 	return ses_rc;
 }
@@ -1378,8 +1389,6 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
  *                    to be returned
  *      rx_desc     - ptr to location where ptr to rx descriptor is
  *                    to be returned
- *      payload_len - ptr to location where payload length in bytes is
- *                    to be returned
  *      first_msg_pkt - ptr to location where first message packet
  *                      indication is to be returned
  *      gtd_del       - ptr to location where ses indicates whether pds
@@ -1393,14 +1402,10 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 static uet_ses_rc_t uet_get_rx_desc(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, bool write,
 	uet_ses_rc_t ses_rc, struct uet_rx_msg_key *msg_key,
-	struct uet_rx_desc **rx_desc, uint16_t *payload_len,
-	bool *first_msg_pkt, bool *gtd_del)
+	struct uet_rx_desc **rx_desc, bool *first_msg_pkt, bool *gtd_del)
 {
 	struct uet_mr_key mr_key;
 	struct uet_mr_desc *mr_desc;
-
-	*payload_len = uet_get_ses_req_payload_len(
-				pp, uet_ep->uet_domain->uet->max_payload_len);
 
 	/* lookup rx descriptor for msg */
 	uet_rx_msg_key_init(msg_key, pp);
@@ -1411,8 +1416,8 @@ static uet_ses_rc_t uet_get_rx_desc(
 		if ((*rx_desc)->ses_rc != UET_RC_OK)
 			ses_rc = (*rx_desc)->ses_rc;
 		if (ses_rc != UET_RC_OK)
-			return (uet_rx_msg_err(uet_ep, pp, *rx_desc,
-					       *payload_len, ses_rc, gtd_del));
+			return (uet_rx_msg_err(
+					uet_ep, pp, *rx_desc, ses_rc, gtd_del));
 		return ses_rc;
 	}
 
@@ -1462,8 +1467,7 @@ static uet_ses_rc_t uet_get_rx_desc(
 
 err_exit:
 	uet_init_err_rx_desc(uet_ep, pp, *rx_desc, ses_rc);
-	return (uet_rx_msg_err(uet_ep, pp, *rx_desc, *payload_len,
-			       ses_rc, gtd_del));
+	return (uet_rx_msg_err(uet_ep, pp, *rx_desc, ses_rc, gtd_del));
 }
 
 /*
@@ -1472,7 +1476,6 @@ err_exit:
  * parms:
  *      uet_ep      - ptr to uet endpoint struct
  *      pp          - ptr to parsed packet struct
- *      payload_len - packet payload length in bytes
  *      req_len     - read message request length in bytes
  *      buf_off     - offset in target buffer
  *      msg_off     - offset within message
@@ -1487,7 +1490,7 @@ err_exit:
  *   - ses return code
  */
 static uet_ses_rc_t uet_get_rd_tx_desc(
-	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, uint16_t payload_len,
+	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
 	uint32_t req_len, size_t buf_off, uint32_t msg_off,
 	struct uet_mr_desc *mr_desc, struct uet_pds_info *pds_info,
 	struct uet_tx_desc **ret_tx_desc)
@@ -1517,8 +1520,8 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	tx_desc->buf_desc.type = UET_MSG_BUF_TYPE_CONTIG;
 	tx_desc->buf_desc.buf = (void *)
 		(((uint8_t *) mr_desc->buf_desc.buf) + buf_off);
-	tx_desc->buf_desc.len = payload_len;
-	tx_desc->remaining_bytes = payload_len;
+	tx_desc->buf_desc.len = pp->ses_payload_len;
+	tx_desc->remaining_bytes = pp->ses_payload_len;
 	tx_desc->remote_msg_off = msg_off;
 	tx_desc->mr_desc = mr_desc;
 
@@ -1568,7 +1571,7 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	struct uet_ack_d_info *ack_d_info)
 {
 	uet_ses_rc_t ses_rc;
-	uint16_t payload_len, max_ack_data;
+	uint16_t max_ack_data;
 	size_t start_off, buf_off;
 	uint32_t req_len, msg_off, rx_gen, ep_gen;
 	uint64_t msg_off_payload_len;
@@ -1582,8 +1585,6 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 
 	*list = UET_EXPECTED; /* overflow list not supported */
 	req_len = ntohl(ses->req_len);
-	payload_len = uet_get_ses_req_payload_len(
-				pp, uet_ep->uet_domain->uet->max_payload_len);
 	start_off = ntohll(ses->buf_off);
 
 	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM)
@@ -1597,7 +1598,7 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	buf_off = start_off + msg_off;
 
 	/* check that payload length does not exceed request length */
-	if (payload_len > req_len) {
+	if (pp->ses_payload_len > req_len) {
 		UET_API_ERR("RX: Read Req: Payload Len > Req Len");
 		return UET_RC_OP_VIOLATION;
 	}
@@ -1638,7 +1639,7 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	}
 
 	/* validate requested data is within memory region */
-	if ((buf_off + payload_len) > mr_desc->buf_desc.len) {
+	if ((buf_off + pp->ses_payload_len) > mr_desc->buf_desc.len) {
 		UET_API_ERR("RX: Read Req: Invalid Buffer Offset");
 		return UET_RC_BAD_ADDR;
 	}
@@ -1648,14 +1649,14 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	if ((uet_ep->uet_domain->uet->max_payload_len == max_ack_data) ||
 	    (req_len <= max_ack_data)) {
 		ack_d_info->valid = true;
-		ack_d_info->payload_len = payload_len;
+		ack_d_info->payload_len = pp->ses_payload_len;
 		ack_d_info->msg_off = msg_off;
 		ack_d_info->buf = ((uint8_t *) mr_desc->buf_desc.buf) + buf_off;
 	} else {
 		/* get tx descriptor for sending read response */
-		ses_rc = uet_get_rd_tx_desc(uet_ep, pp, payload_len, req_len,
-					    buf_off, msg_off, mr_desc,
-					    pds_info, &tx_desc);
+		ses_rc = uet_get_rd_tx_desc(uet_ep, pp, req_len, buf_off,
+					    msg_off, mr_desc, pds_info,
+					    &tx_desc);
 		if (ses_rc != UET_RC_OK)
 			return ses_rc;
 	}
@@ -1667,16 +1668,16 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
  * process a received message send/write request packet
  *
  * parms:
- *      uet_ep       - ptr to uet endpoint struct
- *      pp           - ptr to parsed packet structure
- *      list         - ptr to location where type of list pkt was
- *                     delivered to is to be returned
- *      tagged       - true => message is tagged message
- *      write        - true => message is write message
- *      gtd_del      - ptr to location where ses indicates whether pds
- *                     needs to maintain ses response state,
- *                     true => pds needs to guarantee delivery of ses
- *                     response state
+ *      uet_ep  - ptr to uet endpoint struct
+ *      pp      - ptr to parsed packet structure
+ *      list    - ptr to location where type of list pkt was
+ *                delivered to is to be returned
+ *      tagged  - true => message is tagged message
+ *      write   - true => message is write message
+ *      gtd_del - ptr to location where ses indicates whether pds
+ *                needs to maintain ses response state,
+ *                true => pds needs to guarantee delivery of ses
+ *                response state
  *
  * returns:
  *   - ses return code
@@ -1686,7 +1687,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	bool tagged, bool write, bool *gtd_del)
 {
 	uet_ses_rc_t ses_rc;
-	uint16_t payload_len, pkt_payload_len, max_payload_len;
+	uint16_t max_payload_len;
 	size_t start_off, buf_off;
 	uint32_t req_len, rx_gen, ep_gen;
 	uint64_t msg_off_payload_len;
@@ -1704,7 +1705,6 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	*list = UET_EXPECTED; /* overflow list not supported */
 	*gtd_del = false;
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
-	pkt_payload_len = pp->pkt_len - pp->hdr_len;
 	req_len = ntohl(ses->req_len);
 	if (write)
 		start_off = ntohll(ses->buf_off);
@@ -1713,8 +1713,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 
 	/* get rx descriptor for message */
 	ses_rc = uet_get_rx_desc(uet_ep, pp, write, UET_RC_OK, &msg_key,
-				 &rx_desc, &payload_len, &first_msg_pkt,
-				 gtd_del);
+				 &rx_desc, &first_msg_pkt, gtd_del);
 	if (ses_rc != UET_RC_OK)
 		return ses_rc;
 
@@ -1724,9 +1723,8 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		if (!(write) || (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
 			if (uet_ep->recv_cq.cq_state == UET_CQ_DOWN) {
 				UET_API_ERR("RX: Completion Q DOWN");
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_DISABLED, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_DISABLED, gtd_del));
 			}
 		}
 
@@ -1737,8 +1735,8 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			    sizeof(struct fi_cq_data_entry)) {
 				UET_API_ERR("RX: No CQ Support for Write Imm");
 				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_OP_VIOLATION, gtd_del));
+						uet_ep, pp, rx_desc,
+						UET_RC_OP_VIOLATION, gtd_del));
 			}
 			rx_desc->imm_data = ntohll(ses->cmpl_data);
 			rx_desc->desc_flags |= (UET_RX_DESC_FLAG_WRITE_IMM |
@@ -1747,9 +1745,9 @@ static uet_ses_rc_t uet_rx_req_pkt(
 
 		/* set buffer offset length and check payload length */
 		buf_off = start_off;
-		if (((payload_len != req_len) &&
-		     (payload_len != max_payload_len)) ||
-		    (payload_len > pkt_payload_len))
+		if (((pp->ses_payload_len != req_len) &&
+		     (pp->ses_payload_len != max_payload_len)) ||
+		    (pp->ses_payload_len > pp->pkt_payload_len))
 			invalid_payload_len = true;
 	} else {
 		/* set buffer offset and check payload length */
@@ -1757,14 +1755,14 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		buf_off = (start_off + ((msg_off_payload_len &
 					 UET_SES_REQ_STD_MSG_OFF_MASK) >>
 					UET_SES_REQ_STD_MSG_OFF_SHIFT));
-		if (payload_len > pkt_payload_len)
+		if (pp->ses_payload_len > pp->pkt_payload_len)
 			invalid_payload_len = true;
 	}
 
 	/* handle invalid payload length */
 	if (invalid_payload_len) {
 		UET_API_ERR("RX: Invalid Payload Len");
-		return (uet_rx_msg_err(uet_ep, pp, rx_desc, payload_len,
+		return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 				       UET_RC_OP_VIOLATION, gtd_del));
 	}
 
@@ -1775,20 +1773,20 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			if (rx_desc->mr_desc == NULL) {
 				UET_API_ERR("RX: RMA Op for Non-RMA Message");
 				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
+					uet_ep, pp, rx_desc,
 					UET_RC_OP_VIOLATION, gtd_del));
 			}
 			if (!(rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE)) {
 				UET_API_ERR("RX: Write for Non-Write Message");
 				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
+					uet_ep, pp, rx_desc,
 					UET_RC_OP_VIOLATION, gtd_del));
 			}
 			if (rx_desc->mr_desc->full_key !=
 			    ntohll(ses->match_bits)) {
 				UET_API_ERR("RX: RMA Op with Changed Key");
 				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
+					uet_ep, pp, rx_desc,
 					UET_RC_PERM_VIOLATION, gtd_del));
 			}
 		}
@@ -1804,7 +1802,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		if (ep_gen_disabled) {
 			UET_API_ERR("RX: Disabled Generation");
 			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-				payload_len, UET_RC_DISABLED_GEN, gtd_del));
+					UET_RC_DISABLED_GEN, gtd_del));
 		}
 
 		/* check for correct generation */
@@ -1814,7 +1812,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		if (rx_gen != ep_gen) {
 			UET_API_ERR("RX: Bad Generation");
 			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-				payload_len, UET_RC_BAD_GENERATION, gtd_del));
+					UET_RC_BAD_GENERATION, gtd_del));
 		}
 
 		/* find buffer */
@@ -1825,18 +1823,20 @@ static uet_ses_rc_t uet_rx_req_pkt(
 								&tag_key);
 			if (rx_desc == NULL) {
 				UET_API_ERR("RX: Unexpected Tagged Message");
-				uet_ep->tagged_gen_disabled = true;
+				if (uet_get_pds_mode(uet_ep) ==
+				    UET_PDS_MODE_ROD)
+					uet_ep->tagged_gen_disabled = true;
 				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_NO_MATCH, gtd_del));
+						uet_ep, pp, rx_desc,
+						UET_RC_NO_MATCH, gtd_del));
 			}
 
 			/* check if rx buffer is big enough for message */
 			if ((buf_off + req_len) > rx_desc->buf_desc.len) {
 				UET_API_ERR("RX: Tagged Buffer Too Small");
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_UNSUPPORTED_SIZE, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_UNSUPPORTED_SIZE,
+						gtd_del));
 			}
 
 			/* remove descriptor from tag hash table */
@@ -1846,10 +1846,11 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			ring = &uet_ep->rx_ring;
 			if (uet_ring_empty(ring)) {
 				UET_API_ERR("RX: Unexpected Message");
-				uet_ep->untagged_gen_disabled = true;
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_NO_MATCH, gtd_del));
+				if (uet_get_pds_mode(uet_ep) ==
+				    UET_PDS_MODE_ROD)
+					uet_ep->untagged_gen_disabled = true;
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_NO_MATCH, gtd_del));
 			}
 
 			/* check if rx buffer is big enough for message */
@@ -1858,9 +1859,9 @@ static uet_ses_rc_t uet_rx_req_pkt(
 				    (ring->base))[ring->tail].rx_desc);
 			if ((buf_off + req_len) > rx_desc->buf_desc.len) {
 				UET_API_ERR("RX: Buffer Too Small");
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_UNSUPPORTED_SIZE, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_UNSUPPORTED_SIZE,
+						gtd_del));
 			}
 
 			/* remove descriptor from ring */
@@ -1869,18 +1870,17 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			/* check mr permissions */
 			if (!(rx_desc->mr_desc->access & FI_REMOTE_WRITE)) {
 				UET_API_ERR("RX: No Remote Write Permission");
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_OP_VIOLATION, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_OP_VIOLATION, gtd_del));
 			}
 
 			/* check if mr buffer is big enough for message */
 			if ((buf_off + req_len) >
 			    rx_desc->mr_desc->buf_desc.len) {
 				UET_API_ERR("RX: MR Buffer Too Small");
-				return (uet_rx_msg_err(
-					uet_ep, pp, rx_desc, payload_len,
-					UET_RC_UNSUPPORTED_SIZE, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						UET_RC_UNSUPPORTED_SIZE,
+						gtd_del));
 			}
 		}
 
@@ -1893,32 +1893,32 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	}
 
 	/* validate pkt fits in buffer */
-	if ((buf_off + payload_len) > rx_desc->buf_desc.len) {
+	if ((buf_off + pp->ses_payload_len) > rx_desc->buf_desc.len) {
 		UET_API_ERR("RX: Invalid Buffer Offset");
-		return (uet_rx_msg_err(uet_ep, pp, rx_desc, payload_len,
+		return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 				       UET_RC_BAD_ADDR, gtd_del));
 	}
 
 	/* validate payload length doesn't exceed request length */
-	if (payload_len > rx_desc->remaining_bytes) {
+	if (pp->ses_payload_len > rx_desc->remaining_bytes) {
 		UET_API_ERR("RX: Payload Len Exceeds Request Len");
-		return (uet_rx_msg_err(uet_ep, pp, rx_desc, payload_len,
+		return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 				       UET_RC_OP_VIOLATION, gtd_del));
 	}
 
 	/* check for initiator error */
 	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_IE) {
 		UET_API_ERR("RX: Initiator Error");
-		return (uet_rx_msg_err(uet_ep, pp, rx_desc, payload_len,
+		return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 				       UET_RC_INITIATOR_ERR, gtd_del));
 	}
 
 	/* copy packet to rx buffer */
 	buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + buf_off);
-	memcpy(buf_ptr, pp->payload, payload_len);
+	memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
 
 	/* check for message completion */
-	rx_desc->remaining_bytes -= payload_len;
+	rx_desc->remaining_bytes -= pp->ses_payload_len;
 	if (rx_desc->remaining_bytes == 0)
 		/* post rx completion queue entry */
 		uet_rx_cq_post_entry(rx_desc);
@@ -1961,7 +1961,8 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 	uet_rx_desc_active_list_move_to_tail(uet_ep, rx_desc);
 	if (rx_desc->ses_rc == UET_RC_OK) {
 		UET_API_ERR("RX: Unexpected UET_MSG_ERR");
-		uet_rx_msg_err(uet_ep, pp, rx_desc, 0,
+		pp->ses_payload_len = 0;
+		uet_rx_msg_err(uet_ep, pp, rx_desc,
 			       UET_RC_INITIATOR_ERR, gtd_del);
 		ses_rc = UET_RC_INITIATOR_ERR;
 		*gtd_del = true;
@@ -1974,7 +1975,7 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
 		UET_API_ERR("RX: Unexpected SOM on UET_MSG_ERR");
 		goto post_err_exit;
-	} else if (ses->cmn.eom_opcode & UET_SES_EOM_MASK) {
+	} else if (!(ses->cmn.eom_opcode & UET_SES_EOM_MASK)) {
 		UET_API_ERR("RX: No EOM on UET_MSG_ERR");
 		goto post_err_exit;
 	} else {
@@ -2011,33 +2012,31 @@ err_exit:
 /* process received read response data */
 static uet_ses_rc_t uet_rx_read_data(
 	    struct uet_ep *uet_ep, struct uet_rx_desc *rx_desc,
-	    struct uet_ses_rsp_d *ses, size_t pkt_payload_len)
+	    struct uet_parsed_pkt *pp)
 {
-	uint16_t payload_len;
 	uint32_t msg_off;
 	void *buf_ptr;
+	struct uet_ses_rsp_d *ses;
+
+	ses = (struct uet_ses_rsp_d *) pp->ses;
 
 	/* check payload length */
-	payload_len = (ntohl(ses->rsvd_payload_len) &
-		UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
-		UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
-
-	if ((payload_len > rx_desc->msg_len) ||
-	    (payload_len > pkt_payload_len)) {
+	if ((pp->ses_payload_len > rx_desc->msg_len) ||
+	    (pp->ses_payload_len > pp->pkt_payload_len)) {
 		UET_API_ERR("Read Rsp: Invalid Payload Len");
 		return UET_RC_OP_VIOLATION;
 	}
 
 	/* validate pkt fits in buffer */
 	msg_off = ntohl(ses->msg_off);
-	if ((msg_off + payload_len) > rx_desc->buf_desc.len) {
+	if ((msg_off + pp->ses_payload_len) > rx_desc->buf_desc.len) {
 		UET_API_ERR("Read Rsp: Invalid Message Offset");
 		return UET_RC_BAD_ADDR;
 	}
 
 	/* copy the data */
 	buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + msg_off);
-	memcpy(buf_ptr, ses->payload, payload_len);
+	memcpy(buf_ptr, ses->payload, pp->ses_payload_len);
 
 	return UET_RC_OK;
 }
@@ -2086,11 +2085,9 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				 bool *ses_nack, bool *gtd_del)
 {
 	uet_ses_rc_t ses_rc;
-	uint8_t opcode;
 	uint16_t payload_len;
 	uint32_t gen, ep_gen, job_id, resv_payload_len;
 	bool first_msg_pkt;
-	size_t pkt_payload_len;
 	uet_ses_list_t list;
 	struct uet_ep *uet_ep;
 	struct uet_ses_req_std *ses_std_req;
@@ -2108,7 +2105,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_ses_hdr;
 
 	list = UET_EXPECTED;
-	ses_nack = false;
+	*ses_nack = false;
 	ep_gen = 0;
 
 	ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
@@ -2152,9 +2149,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 			goto build_response;
 		}
 		rx_desc->expected_rd_rsp--;
-		pkt_payload_len = pp->pkt_len - pp->hdr_len;
-		ses_rc = uet_rx_read_data(uet_ep, rx_desc, rx_ses_rsp_d,
-					  pkt_payload_len);
+		ses_rc = uet_rx_read_data(uet_ep, rx_desc, pp);
 		if (ses_rc == UET_RC_OK)
 			ses_rsp->mod_len = htonl(rx_desc->msg_len);
 		goto build_response;
@@ -2164,15 +2159,15 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		return -FI_EINVAL;
 	}
 
-	opcode = ((ses_std_req->cmn.eom_opcode &
-		   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
-	switch (opcode) {
+	switch (pp->ses_opcode) {
 	case UET_SEND:
+	case UET_DEFER_SEND:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
 					false, false, gtd_del);
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
 		break;
 	case UET_TAGGED_SEND:
+	case UET_DEFER_TSEND:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
 					true, false, gtd_del);
 		ep_gen = (uint32_t) uet_ep->tagged_gen;
@@ -2199,10 +2194,10 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rc = uet_rx_cancel_pkt(uet_ep, pp, gtd_del);
 		break;
 	default:
-		UET_API_ERR("RX: Unsupported Opcode = 0x%x", opcode);
-		ses_rc = uet_get_rx_desc(uet_ep, pp, false,
-				UET_RC_UNSUPPORTED_OP, &msg_key, &rx_desc,
-				&payload_len, &first_msg_pkt, gtd_del);
+		UET_API_ERR("RX: Unsupported Opcode = 0x%x", pp->ses_opcode);
+		ses_rc = uet_get_rx_desc(
+				uet_ep, pp, false, UET_RC_UNSUPPORTED_OP,
+				&msg_key, &rx_desc, &first_msg_pkt, gtd_del);
 		break;
 	}
 
@@ -2225,6 +2220,7 @@ build_response:
 	return FI_SUCCESS;
 
 build_response_w_data:
+	*gtd_del = true;
 	ses_rsp_d->cmn.list_opcode =
 		((list << UET_SES_RSP_LIST_SHIFT) |
 		 (UET_RESPONSE_W_DATA << UET_SES_OPCODE_SHIFT));
@@ -2385,8 +2381,10 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 		ses->match_bits = htonll(tx_desc->remote_key);
 	}
 
-	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING)
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING) {
 		opcode = UET_MSG_ERR;
+		eom = UET_SES_EOM_FLAG;
+	}
 
 	ses->cmn.eom_opcode =
 		(eom << UET_SES_EOM_SHIFT) | (opcode << UET_SES_OPCODE_SHIFT);
@@ -2477,9 +2475,8 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 					    "Truncated Message Length");
 				goto err_exit;
 			}
-			if (uet_rx_read_data(
-				tx_desc->uet_ep, tx_desc->rx_desc, ses_rsp_d,
-				rsp_pp->payload_len) != UET_RC_OK)
+			if (uet_rx_read_data(tx_desc->uet_ep, tx_desc->rx_desc,
+					     rsp_pp) != UET_RC_OK)
 				goto err_exit;
 		} else if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) {
 			if (mod_len != tx_desc->rd_rsp.mod_len) {
@@ -2629,7 +2626,7 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 
 	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
-				  UET_PDS_FLAG_NONE, NULL, tx_desc->msg_id,
+				  UET_PDS_FLAG_EOM, NULL, tx_desc->msg_id,
 				  UET_HDR_REQ_STD, NULL, 0, false);
 
 	tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
@@ -2658,7 +2655,11 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	uet_ep = tx_desc->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
 
-	flags = UET_PDS_FLAG_SOM;
+	if (tx_desc->remaining_bytes == tx_desc->buf_desc.len)
+		flags = UET_PDS_FLAG_SOM;
+	else
+		flags = UET_PDS_FLAG_NONE;
+
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
 	while (tx_desc->remaining_bytes) {
 		if (tx_desc->remaining_bytes > max_payload_len)
@@ -2668,14 +2669,17 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			flags |= UET_PDS_FLAG_EOM;
 		}
 
-		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ)
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ) {
 			pkt_len = 0;
-		else
+			if (flags & UET_PDS_FLAG_SOM)
+				flags |= UET_PDS_FLAG_MAINTAIN_PDC;
+		} else
 			pkt_len = payload_len;
 
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) {
 			pds_info = &tx_desc->rd_rsp.pds_info;
 			next_hdr = UET_HDR_RSP_DATA;
+			flags |= (UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM);
 		} else {
 			pds_info = NULL;
 			next_hdr = UET_HDR_REQ_STD;
@@ -3551,15 +3555,13 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	case FI_SUCCESS:
 	case -FI_EAGAIN:
 		break;
-	case -FI_ENODATA:
-		/* if message data is available, transmit it */
-		uet_tx_msg_try(uet_ep);
-		break;
 	default:
 		uet_tx_desc_set_err((struct uet_tx_desc *) err_pkt_handle,
 				FI_ETIMEDOUT, UET_TX_DESC_STATE_ERR_COMPLETE);
 		break;
 	}
+
+	uet_tx_msg_try(uet_ep);
 
 	ring = &cq->ring;
 	cq_count = uet_ring_entry_cnt(ring);

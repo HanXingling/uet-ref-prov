@@ -445,6 +445,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 
 	ctx->info->rx_attr->size = UET_NUM_BUFS;
 	ctx->info->tx_attr->size = UET_NUM_BUFS;
+	ctx->info->tx_attr->msg_order = FI_ORDER_SAS;
 
 	ret = uet_endpoint(ctx->domain_handle, ctx->info, &ctx->ep,
 			   context, &ctx->ep_handle);

@@ -271,13 +271,13 @@ typedef enum {
 struct uet_tx_desc {
 	struct dlist_entry list_entry;               /* for inserting in list */
 	uet_tx_desc_state_t state;                 /* state of the descriptor */
-#define UET_TX_DESC_FLAG_NONE             0
-#define UET_TX_DESC_FLAG_POST_CQ          (1 << 0)
-#define UET_TX_DESC_FLAG_MSG_ID_ALLOCATED (1 << 1)
-#define UET_TX_DESC_FLAG_IMM_DATA_VALID   (1 << 2)
-#define UET_TX_DESC_FLAG_READ_REQ	  (1 << 3)
-#define UET_TX_DESC_FLAG_READ_RSP	  (1 << 4)
-#define UET_TX_DESC_FLAG_CANCEL_PENDING	  (1 << 5)
+#define UET_TX_DESC_FLAG_NONE			0
+#define UET_TX_DESC_FLAG_POST_CQ		(1 << 0)
+#define UET_TX_DESC_FLAG_MSG_ID_ALLOCATED	(1 << 1)
+#define UET_TX_DESC_FLAG_IMM_DATA_VALID		(1 << 2)
+#define UET_TX_DESC_FLAG_READ_REQ		(1 << 3)
+#define UET_TX_DESC_FLAG_READ_RSP		(1 << 4)
+#define UET_TX_DESC_FLAG_CANCEL_PENDING		(1 << 5)
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t tag_or_immdata;           /* tag or immediate data for write */
@@ -303,7 +303,7 @@ struct uet_tx_desc {
 	bool delay_retx;          /* parm for deferred message retransmission */
 	int err_code;                                           /* error info */
 	struct uet_rx_desc *rx_desc;     /* associated rx descriptor for read */
-	struct uet_rd_rsp_info rd_rsp;        /* info for tx of read response */
+	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
 };
 
 /* tx msg descriptor ring entry */

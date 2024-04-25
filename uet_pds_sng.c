@@ -119,6 +119,7 @@ static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack,
 
 	switch (pds_type) {
 	case UET_PDS_TYPE_ROD_REQ:
+	case UET_PDS_TYPE_RUD_REQ:
 		pds_req = true;
 		break;
 	case UET_PDS_TYPE_ACK:
@@ -629,6 +630,9 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		case UET_PDS_MODE_ROD:
 			pds_pkt_type = UET_PDS_TYPE_ROD_REQ;
 			break;
+		case UET_PDS_MODE_RUD:
+			pds_pkt_type = UET_PDS_TYPE_RUD_REQ;
+			break;
 		default:
 			UET_API_ERR("Unsupported packet delivery mode = %d",
 				    mode);
@@ -708,6 +712,14 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	return rc;
 }
 
+/* indicate message completion */
+int uet_pds_sng_msg_cmpl_ind(struct uet_ep *uet_ep,
+			     uet_addr_handle_t dst_addr_handle,
+			     uet_pds_mode_t mode, uint16_t msg_id)
+{
+	return FI_SUCCESS;
+}
+
 /* progress tx operations for endpoint */
 int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 			    uet_pkt_handle_t *err_pkt_handle)
@@ -723,7 +735,7 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 
 	/* check if tx is active on endpoint */
 	if (!uet_pds_ep_tx_active(uet_ep))
-		return -FI_ENODATA;
+		return -FI_EAGAIN;
 
 	pds_tx = &pds_state->tx;
 	*err_pkt_handle = pds_tx->pkt_parms.tx_pkt_handle;

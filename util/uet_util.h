@@ -80,8 +80,10 @@ struct uet_parsed_pkt {
 	uint16_t ses_len;
 	uint8_t ses_opcode;
 	uint16_t hdr_len;                              /* total header length */
+	uint16_t trailer_len;           /* total trailer length (crc and icv) */
 	void *payload;                                         /* ses payload */
-	uint16_t payload_len;
+	uint16_t ses_payload_len;                          /* from ses header */
+	uint16_t pkt_payload_len;        /* pkt_len - (hdr_len + trailer_len) */
 	void *ses_crc;
 };
 

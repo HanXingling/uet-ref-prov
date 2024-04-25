@@ -322,6 +322,7 @@ struct UET_PACKED uet_pds_def_rsp {
 /****************************************************************************/
 
 #define UET_SES_CRC_SIZE	8	/* in bytes */
+#define UET_SEC_ICV_SIZE	16	/* in bytes */
 
 /* uet ses request opcodes */
 typedef enum {
