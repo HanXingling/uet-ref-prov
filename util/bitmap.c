@@ -54,6 +54,7 @@ void bm_destroy(struct bitmap *bm)
 void bm_clear(struct bitmap *bm)
 {
 	memset(bm->bit_arr, 0, (sizeof(uint64_t) * bm->bit_arr_len));
+	memset(bm->data_arr, 0, (sizeof(void*) * bm->bit_arr_len));
 }
 
 int bm_count(const struct bitmap *bm)
@@ -267,6 +268,5 @@ void bm_print_bits(const struct bitmap *b)
 		       (((idx + 1) * word_size) - 1),
 		       (idx * word_size));
 	}
-	printf("\n");
 }
 

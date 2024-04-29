@@ -185,7 +185,7 @@ struct UET_PACKED uet_pds_ack {
 #define UET_PDS_ACK_FLAGS_AX          0x20 /* ACK extension header present */
 #define UET_PDS_ACK_FLAGS_REQ_TGT_CLR 0x10 /* ini=0, tgt requests clear */
 #define UET_PDS_ACK_FLAGS_REQ_TGT_CLS 0x08 /* ini=0, tgt requests close */
-#define UET_PDS_ACK_P                 0x04 /* ACK to a probe (PSNignored) */
+#define UET_PDS_ACK_P                 0x04 /* ACK to a probe (PSN ignored) */
 	struct uet_pds_prlg prlg;
 	uint32_t            psn;
 	uint16_t            spdcid;
@@ -314,7 +314,7 @@ struct UET_PACKED uet_pds_def_rsp {
 #define UET_PDS_SES_DEF_RSP_RETCODE_SHIFT 0
 	uint8_t  ver_return_code;
 	uint16_t msg_id;
-	uint8_t  job_id;
+	uint32_t rsvd;
 };
 
 /****************************************************************************/
@@ -627,6 +627,14 @@ struct UET_PACKED uet_std_req_pkt {
 	uint8_t                payload[];
 };
 
+/* uet default response packet format */
+struct UET_PACKED uet_def_rsp_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_pds_ack     pds;
+	struct uet_pds_def_rsp ses;
+};
+
 /* uet standard response packet format */
 struct UET_PACKED uet_std_rsp_pkt {
 	struct ethhdr      eth;
@@ -654,7 +662,7 @@ struct UET_PACKED uet_std_rsp_d_req_pkt {
 	uint8_t              payload[];
 };
 
-#define UET_MIN_PKT_SIZE sizeof(struct uet_std_rsp_pkt)
+#define UET_MIN_PKT_SIZE sizeof(struct uet_def_rsp_pkt)
 
 /* uet packet (union used to represent any packet type) */
 union UET_PACKED uet_pkt {
@@ -669,6 +677,7 @@ union UET_PACKED uet_pkt {
 		} pds;
 	} common;
 	struct uet_std_req_pkt	     std_req;
+	struct uet_def_rsp_pkt       def_rsp;
 	struct uet_std_rsp_pkt       std_rsp;
 	struct uet_std_rsp_d_req_pkt std_rsp_d;
 	struct uet_std_rsp_d_ack_pkt std_rsp_d_ack;

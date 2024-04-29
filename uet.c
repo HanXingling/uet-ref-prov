@@ -973,14 +973,16 @@ int main(int argc, char *argv[])
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			}
-		} else if (ctx->cfg.rma) {
-			rc = uet_rma_server(ctx);
-			if (rc != UET_SUCCESS_RC)
-				goto exit;
-		} else {
-			rc = uet_msg_server(ctx);
-			if (rc != UET_SUCCESS_RC)
-				goto exit;
+		} else { /* server */
+			if (ctx->cfg.rma) {
+				rc = uet_rma_server(ctx);
+				if (rc != UET_SUCCESS_RC)
+					goto exit;
+			} else {
+				rc = uet_msg_server(ctx);
+				if (rc != UET_SUCCESS_RC)
+					goto exit;
+			}
 		}
 	}
 

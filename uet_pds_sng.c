@@ -14,27 +14,8 @@
 #include "uet_api.h"
 #include "uet_pds.h"
 #include "uet_api_private.h"
+#include "uet_pkt_chk.h"
 #include "uet_nic.h"
-
-#define UET_PDS_PKT_HDR_TRACE_ENABLED 0
-
-#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)		       \
-{									       \
-	if (UET_PDS_PKT_HDR_TRACE_ENABLED) {				       \
-		struct uet_parsed_pkt _pp;				       \
-									       \
-		if ((PP) == NULL) {					       \
-			if (uet_parse_pkt((UET), (PKT), (PKT_LEN), &_pp) ==    \
-			    FI_SUCCESS) {				       \
-				printf("\n%s\n\n", (MSG));		       \
-				uet_print_pkt_hdrs((&_pp));		       \
-			}						       \
-		} else {						       \
-			printf("\n%s\n\n", (MSG));			       \
-			uet_print_pkt_hdrs((PP));			       \
-		}							       \
-	}								       \
-}
 
 /* determine if tx is active for an endpoint */
 /* pds transmit state */
@@ -100,104 +81,6 @@ static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
 		(struct uet_pds_sng_state *)uet_ep->pds;
 
 	return pds_state->tx.tx_active;
-}
-
-/* determine if uet packet type is valid */
-static bool uet_pds_pkt_type_valid(union uet_pkt *pkt, bool *pkt_is_ack,
-				   bool *pkt_is_rd_rsp)
-{
-	uint16_t pds_type, next_hdr;
-	bool pds_req;
-
-	*pkt_is_ack = false;
-	*pkt_is_rd_rsp = false;
-
-	pds_type = (ntohs(pkt->common.pds.prlg.type_next_flags) &
-		    UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT;
-	next_hdr = (ntohs(pkt->common.pds.prlg.type_next_flags) &
-		    UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT;
-
-	switch (pds_type) {
-	case UET_PDS_TYPE_ROD_REQ:
-	case UET_PDS_TYPE_RUD_REQ:
-		pds_req = true;
-		break;
-	case UET_PDS_TYPE_ACK:
-		pds_req = false;
-		next_hdr = UET_HDR_RSP;
-		break;
-	default:
-		return false;
-	}
-
-	switch (next_hdr) {
-	case UET_HDR_REQ_STD:
-		if (pds_req)
-			return true;
-		break;
-	case UET_HDR_RSP:
-		if (pds_req == false) {
-			*pkt_is_ack = true;
-			return true;
-		}
-		break;
-	case UET_HDR_RSP_DATA:
-		if (pds_req == false) {
-			*pkt_is_ack = true;
-			return true;
-		}
-		*pkt_is_rd_rsp = true;
-		return true;
-	default:
-		break;
-	}
-
-	return false;
-}
-
-/*
- * parse and validate received packet as follows:
- *   - validate dest mac address
- *   - validate ethertype
- *   - validate ip header version
- *   - validate ip header len
- *   - validate ip header total length
- *   - validate ip header checksum
- *   - validate ip protocol
- *   - validate uet packet type
- *
- * parms:
- *      uet        - ptr to uet instance struct
- *      pkt        - ptr to received packet
- *      pkt_size   - size of received packet in bytes
- *      pkt_is_ack - ptr to location where indication of packet type
- *                   is returned, true => packet is an ack packet,
- *                   only valid when function returns true
- *      pkt_is_rd_rsp - ptr to location where indication of packet type
- *                      is returned, true => packet is a read response in
- *                      a pds request, only valid when function returns true
- *
- * returns:
- *      true  => packet passed validation checks
- *      false => packet did not pass validation checks
- */
-static bool uet_pds_rx_pkt_valid(struct uet_instance *uet,
-				 union uet_pkt *pkt, size_t pkt_size,
-				 bool *pkt_is_ack, bool *pkt_is_rd_rsp)
-{
-	if (!memcmp(pkt->common.eth.h_dest, uet->nic.mac_addr, ETH_ALEN) &&
-	    (pkt->common.eth.h_proto == htons(ETH_P_IP)) &&
-	    (pkt->common.ipv4.version == IPVERSION) &&
-	    (pkt->common.ipv4.ihl == UET_IPV4_IHL_NO_OPTIONS) &&
-	    (pkt->common.ipv4.protocol == uet->uet_ipproto) &&
-	    (pkt->common.ipv4.tot_len >= htons(uet->nic.min_ip_pkt_size)) &&
-	    (pkt->common.ipv4.tot_len <=
-	     htons((pkt_size - uet->nic.l2_hdr_size))) &&
-	    (uet_ipv4_csum(&pkt->common.ipv4) == 0) &&
-	    (uet_pds_pkt_type_valid(pkt, pkt_is_ack, pkt_is_rd_rsp)))
-		return true;
-
-	return false;
 }
 
 /* determine if pkt is destined for endpoint */
@@ -831,8 +714,8 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	}
 
 	/* validate the packet */
-	if (!uet_pds_rx_pkt_valid(uet, pkt, rx_pkt_size, &pkt_is_ack,
-				  &pkt_is_rd_rsp))
+	if (!uet_pds_rx_pkt_chk(uet, pkt, rx_pkt_size, &pkt_is_ack,
+				&pkt_is_rd_rsp))
 		goto exit;
 
 	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");
