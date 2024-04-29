@@ -35,37 +35,38 @@ The current SES implementation supports a subset of the functionality required
 for:
 - Sending and receiving both untagged and tagged messages
 - RMA write operations
- 
+
 This is a work-in-progress and additional functionality will be incrementally
 added.
 
 ## Status
 
-The current PDS implementation is a placeholder. It is not an implementation of
-the UET PDS Specification. It implements a simple stop-and-wait ROD transport
-that is sufficient to enable development of other layers. The current PDS
-implementation will be replaced with a "real" implementation of the UET PDS
-specification.
+There are two PDS implementations available which can be selected using
+the `UET_PDS` environment variable. The first PDS implementation is a simple
+stop-and-go ROD transport that is sufficient to enable development of other
+layers. The second PDS implementation is fully featured (and probably buggy)
+transport based on the UET PDS Specification.
 
 There are currently two implementations of the NIC shim interface APIs:
 - Raw Ethernet socket
 - AF_XDP
 
 Testing is performed using a simple top-level program that performs ping-pong
-message data transfer operations between a client and a server (see uet.c).
+message data transfer operations between a client and a server (see `uet.c`).
 
 ### Congestion Control
 
-A partial implementation of UET Network Signal Congestion Control (NSCC), based on the
-v0.6 specification, can be found in the `cc` subdirectory. Multi-path packet delivery
-is not fully supported.
+A partial implementation of UET Network Signal Congestion Control (NSCC), based
+on the v0.6 specification, can be found in the `cc` subdirectory. Multi-path
+packet delivery is not fully supported.
 
-The CC algorithm can be tested separately with a basic test app, which simulates multiple senders
-transmitting to a single receiver. Packets can be dropped, ECN marked or trimmed.
-The application measures the throughput achieved by each sender, to verify that the CC algorithm
-enables high bandwidth utilization and fair sharing among the senders.
-The app runs on a single machine and does not generate network traffic. The sources are
-located in the `cc_sim` subdirectory.
+The CC algorithm can be tested separately with a basic test app, which
+simulates multiple senders transmitting to a single receiver. Packets can be
+dropped, ECN marked or trimmed. The application measures the throughput
+achieved by each sender, to verify that the CC algorithm enables high bandwidth
+utilization and fair sharing among the senders. The app runs on a single
+machine and does not generate network traffic. The sources are located in the
+`cc_sim` subdirectory.
 
 ## Preparation
 
@@ -162,7 +163,7 @@ Replace `2` with the desired number of senders.
 - **LD_LIBRARY_PATH** - Needed for dynamic linking to libfabric library.
 - **UET_IFNAME** - The ifname of the interface to attach to.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
-- **UET_PDS** - [ `sng` ] (default=`sng` stop-n-go)
+- **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
 
 ## XDP
 
