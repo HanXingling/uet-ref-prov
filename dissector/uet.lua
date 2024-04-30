@@ -278,7 +278,7 @@ fld.flag_rreq_clr	= ProtoField.bool("uet.flags.rreq.clr",		"CLR (Clear)",		16, {
 fld.flag_rreq_cc	= ProtoField.bool("uet.flags.rreq.cc",		"CC state present",	16, yes_no, 0x10)
 fld.flag_rreq_ar	= ProtoField.bool("uet.flags.rreq.ar",		"AR (ACK Request)",	16, yes_no, 0x08)
 fld.flag_rreq_retx	= ProtoField.bool("uet.flags.rreq.retx",	"RETX (is retransmit)",	16, yes_no, 0x04)
-fld.flag_rreq_rsv	= ProtoField.bool("uet.flags.rreq.rsv",		"RSV",			16, nil, 0x03)
+fld.flag_rreq_rsv	= ProtoField.uint16("uet.flags.rreq.rsv",	"RSV",			base.DEC, nil, 0x03)
 
 -- ACK flags
 fld.flag_ack_m			= ProtoField.bool("uet.flags.ack.m",			"M (ECN marked)",	16, yes_no, 0x40)
