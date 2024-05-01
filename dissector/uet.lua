@@ -271,6 +271,9 @@ fld.psn		= ProtoField.uint32("uet.psn",		"Packet Sequence Number",		base.DEC)
 fld.spdcid	= ProtoField.uint16("uet.spdcid",	"Source PDC ID",			base.DEC)
 fld.dpdcid	= ProtoField.uint16("uet.dpdcid",	"Destination PDC ID",			base.DEC)
 fld.forward_psn	= ProtoField.uint32("uet.forward_psn",	"Forward Packet Sequence Number",	base.DEC)
+fld.req_in	= ProtoField.framenum("uet.request_in",	"Request in",				base.NONE, frametype.REQUEST)
+fld.ack_in	= ProtoField.framenum("uet.ack_in",	"ACK in",				base.NONE, frametype.ACK)
+fld.resp_in	= ProtoField.framenum("uet.response_in", "Response in",				base.NONE, frametype.RESPONSE)
 
 -- ROD/RUD request flags
 fld.flag_rreq_syn	= ProtoField.bool("uet.flags.rreq.syn",		"SYN",			16, yes_no, 0x40)
@@ -331,6 +334,9 @@ fld.ses_resp_payload_len	= ProtoField.uint32("uet.ses.resp.payload_len",		"Paylo
 
 local dissect_data	= Dissector.get("data")
 
+local pds_req_map = {} -- <IP, PDCID, PSN> -> framenum
+local pds_frame_info = {} -- framenum -> table
+
 function p_uet.dissector(buf, pinfo, root)
 	pinfo.cols.protocol = p_uet.name
 
@@ -344,6 +350,10 @@ function p_uet.dissector(buf, pinfo, root)
 	local offset = 4
 	if type_str ~= nil then
 		summary = type_str
+	end
+
+	if not pinfo.visited then
+		pds_frame_info[pinfo.number] = {}
 	end
 
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
@@ -365,6 +375,18 @@ function p_uet.dissector(buf, pinfo, root)
 		offset = 16
 		subtree:set_len(offset)
 		-- TODO: cc_state
+		if not pinfo.visited then
+			local key = tostring(pinfo.net_src) .. "--" .. tostring(buf(8, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
+			pds_req_map[key] = pinfo.number
+
+			-- TODO: only if "response"? how? what about Clear?
+			local fkey = tostring(pinfo.net_dst) .. "--" .. tostring(buf(10, 2):uint()) .. "--" .. tostring(buf(12, 4):uint())
+			local fw = pds_req_map[fkey]
+			if fw ~= nil then
+				pds_frame_info[pinfo.number].req_in = fw
+				pds_frame_info[fw].resp_in = pinfo.number
+			end
+		end
 	end if h_type == TYPE_PDS_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
@@ -377,8 +399,30 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
+		if not pinfo.visited then
+			local key = tostring(pinfo.net_dst) .. "--" .. tostring(buf(10, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
+			local req = pds_req_map[key]
+			if req ~= nil then
+				pds_frame_info[pinfo.number].req_in = req
+				pds_frame_info[req].ack_in = pinfo.number
+			end
+		end
+
 		offset = 12
 		subtree:set_len(offset)
+	end
+
+	local fi = pds_frame_info[pinfo.number]
+	if fi ~= nil then
+		if fi.req_in ~= nil then
+			subtree:add(fld.req_in, fi.req_in):set_generated()
+		end
+		if fi.ack_in ~= nil then
+			subtree:add(fld.ack_in, fi.ack_in):set_generated()
+		end
+		if fi.resp_in ~= nil then
+			subtree:add(fld.resp_in, fi.resp_in):set_generated()
+		end
 	end
 
 	-- TODO: TYPE_CTRL
@@ -475,4 +519,6 @@ function p_uet:init()
 	local udp_table = DissectorTable.get("udp.port")
 	ip_table:add(p_uet.prefs["ip_proto"], p_uet)
 	udp_table:add_for_decode_as(p_uet)
+	pds_req_map = {}
+	pds_frame_info = {}
 end
