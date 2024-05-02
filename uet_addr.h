@@ -15,9 +15,6 @@
 #define UET_ADDR_DEF_INDEX		15
 #define UET_ADDR_DEF_INITIATOR_ID	16
 
-	/* addr format, should be added to enum in <rdma/fabric.h> */
-#define FI_ADDR_UET (FI_ADDR_EFA + 1)
-
 #define UET_ADDR_VERSION	0
 
 #define UET_ADDR_VER_MASK	0xf0

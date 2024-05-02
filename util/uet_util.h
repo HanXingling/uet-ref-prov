@@ -17,7 +17,7 @@
 #define UET_MSEC_PER_SEC  1000
 #define UET_NSEC_PER_MSEC 1000000
 
-#if __BIG_ENDIAN__
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 # define htonll(x) (x)
 # define ntohll(x) (x)
 #else
