@@ -337,6 +337,11 @@ local dissect_data	= Dissector.get("data")
 local pds_req_map = {} -- <IP, PDCID, PSN> -> framenum
 local pds_frame_info = {} -- framenum -> table
 
+function track_key(net_addr, pdcid_tvb, psn_tvb)
+	-- TODO: anything more efficient than strings?
+	return tostring(net_addr) .. "--" .. tostring(pdcid_tvb:uint()) .. "--" .. tostring(psn_tvb:uint())
+end
+
 function p_uet.dissector(buf, pinfo, root)
 	pinfo.cols.protocol = p_uet.name
 
@@ -380,11 +385,11 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:set_len(offset)
 		-- TODO: cc_state
 		if not pinfo.visited and not pinfo.in_error_pkt then
-			local key = tostring(pinfo.net_src) .. "--" .. tostring(b_spdcid:uint()) .. "--" .. tostring(b_psn:uint())
+			local key = track_key(pinfo.net_src, b_spdcid, b_psn)
 			pds_req_map[key] = pinfo.number
 
 			-- TODO: only if "response"? how? what about Clear?
-			local fkey = tostring(pinfo.net_dst) .. "--" .. tostring(b_dpdcid:uint()) .. "--" .. tostring(b_fwd_psn:uint())
+			local fkey = track_key(pinfo.net_dst, b_dpdcid, b_fwd_psn)
 			local fw = pds_req_map[fkey]
 			if fw ~= nil then
 				pds_frame_info[pinfo.number].req_in = fw
@@ -407,7 +412,7 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.spdcid, b_spdcid)
 		subtree:add(fld.dpdcid, b_dpdcid)
 		if not pinfo.visited and not pinfo.in_error_pkt then
-			local key = tostring(pinfo.net_dst) .. "--" .. tostring(b_dpdcid:uint()) .. "--" .. tostring(b_psn:uint())
+			local key = track_key(pinfo.net_dst, b_dpdcid, b_psn)
 			local req = pds_req_map[key]
 			if req ~= nil then
 				pds_frame_info[pinfo.number].req_in = req
