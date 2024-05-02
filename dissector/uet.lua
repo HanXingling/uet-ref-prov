@@ -375,7 +375,7 @@ function p_uet.dissector(buf, pinfo, root)
 		offset = 16
 		subtree:set_len(offset)
 		-- TODO: cc_state
-		if not pinfo.visited then
+		if not pinfo.visited and not pinfo.in_error_pkt then
 			local key = tostring(pinfo.net_src) .. "--" .. tostring(buf(8, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
 			pds_req_map[key] = pinfo.number
 
@@ -399,7 +399,7 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
 		subtree:add(fld.spdcid, buf(8, 2))
 		subtree:add(fld.dpdcid, buf(10, 2))
-		if not pinfo.visited then
+		if not pinfo.visited and not pinfo.in_error_pkt then
 			local key = tostring(pinfo.net_dst) .. "--" .. tostring(buf(10, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
 			local req = pds_req_map[key]
 			if req ~= nil then
