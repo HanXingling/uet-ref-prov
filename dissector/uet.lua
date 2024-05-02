@@ -8,6 +8,8 @@
 
 p_uet = Proto("uet", "UltraEthernet Transport")
 p_uet.prefs["ip_proto"] = Pref.uint("IP protocol#", 253, "IP protocol number for UET")
+p_uet.prefs["track"] = Pref.bool("Track requests and responses", true,
+	"Enable to track request/response/ACK packet relationships (at the expense of memory and/or CPU usage)")
 
 -- LIST
 local UET_EXPECTED = 0
@@ -357,7 +359,8 @@ function p_uet.dissector(buf, pinfo, root)
 		summary = type_str
 	end
 
-	if not pinfo.visited then
+	local do_track = p_uet.prefs.track and not pinfo.visited and not pinfo.in_error_pkt
+	if do_track then
 		pds_frame_info[pinfo.number] = {}
 	end
 
@@ -384,7 +387,8 @@ function p_uet.dissector(buf, pinfo, root)
 		offset = 16
 		subtree:set_len(offset)
 		-- TODO: cc_state
-		if not pinfo.visited and not pinfo.in_error_pkt then
+
+		if do_track then
 			local key = track_key(pinfo.net_src, b_spdcid, b_psn)
 			pds_req_map[key] = pinfo.number
 
@@ -411,7 +415,10 @@ function p_uet.dissector(buf, pinfo, root)
 		subtree:add(fld.psn, b_psn) -- TODO: ack_psn?
 		subtree:add(fld.spdcid, b_spdcid)
 		subtree:add(fld.dpdcid, b_dpdcid)
-		if not pinfo.visited and not pinfo.in_error_pkt then
+		offset = 12
+		subtree:set_len(offset)
+
+		if do_track then
 			local key = track_key(pinfo.net_dst, b_dpdcid, b_psn)
 			local req = pds_req_map[key]
 			if req ~= nil then
@@ -419,9 +426,6 @@ function p_uet.dissector(buf, pinfo, root)
 				pds_frame_info[req].ack_in = pinfo.number
 			end
 		end
-
-		offset = 12
-		subtree:set_len(offset)
 	end
 
 	local fi = pds_frame_info[pinfo.number]
