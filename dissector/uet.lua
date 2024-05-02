@@ -366,21 +366,25 @@ function p_uet.dissector(buf, pinfo, root)
 		flags_tree:add(fld.flag_rreq_retx, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_rsv, buf(2, 2))
 
-		subtree:add(fld.psn, buf(4, 4))
-		subtree:add(fld.spdcid, buf(8, 2))
+		local b_psn = buf(4, 4)
+		local b_spdcid = buf(8, 2)
+		local b_dpdcid = buf(10, 2)
+		local b_fwd_psn = buf(12, 4)
+		subtree:add(fld.psn, b_psn)
+		subtree:add(fld.spdcid, b_spdcid)
 		-- TODO: mode&offset for SYN
-		subtree:add(fld.dpdcid, buf(10, 2))
+		subtree:add(fld.dpdcid, b_dpdcid)
 		-- TODO: clear
-		subtree:add(fld.forward_psn, buf(12, 4))
+		subtree:add(fld.forward_psn, b_fwd_psn)
 		offset = 16
 		subtree:set_len(offset)
 		-- TODO: cc_state
 		if not pinfo.visited and not pinfo.in_error_pkt then
-			local key = tostring(pinfo.net_src) .. "--" .. tostring(buf(8, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
+			local key = tostring(pinfo.net_src) .. "--" .. tostring(b_spdcid:uint()) .. "--" .. tostring(b_psn:uint())
 			pds_req_map[key] = pinfo.number
 
 			-- TODO: only if "response"? how? what about Clear?
-			local fkey = tostring(pinfo.net_dst) .. "--" .. tostring(buf(10, 2):uint()) .. "--" .. tostring(buf(12, 4):uint())
+			local fkey = tostring(pinfo.net_dst) .. "--" .. tostring(b_dpdcid:uint()) .. "--" .. tostring(b_fwd_psn:uint())
 			local fw = pds_req_map[fkey]
 			if fw ~= nil then
 				pds_frame_info[pinfo.number].req_in = fw
@@ -396,11 +400,14 @@ function p_uet.dissector(buf, pinfo, root)
 		flags_tree:add(fld.flag_ack_probe, buf(2, 2))
 		flags_tree:add(fld.flag_ack_rsv, buf(2, 2))
 
-		subtree:add(fld.psn, buf(4, 4)) -- TODO: ack_psn?
-		subtree:add(fld.spdcid, buf(8, 2))
-		subtree:add(fld.dpdcid, buf(10, 2))
+		local b_psn = buf(4, 4)
+		local b_spdcid = buf(8, 2)
+		local b_dpdcid = buf(10, 2)
+		subtree:add(fld.psn, b_psn) -- TODO: ack_psn?
+		subtree:add(fld.spdcid, b_spdcid)
+		subtree:add(fld.dpdcid, b_dpdcid)
 		if not pinfo.visited and not pinfo.in_error_pkt then
-			local key = tostring(pinfo.net_dst) .. "--" .. tostring(buf(10, 2):uint()) .. "--" .. tostring(buf(4, 4):uint())
+			local key = tostring(pinfo.net_dst) .. "--" .. tostring(b_dpdcid:uint()) .. "--" .. tostring(b_psn:uint())
 			local req = pds_req_map[key]
 			if req ~= nil then
 				pds_frame_info[pinfo.number].req_in = req
