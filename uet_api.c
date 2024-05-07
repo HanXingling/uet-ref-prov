@@ -3157,7 +3157,6 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	}
 	uet_init_uet_addr_ipv4(src_addr, uet->nic.ipv4_addr);
 
-	new_info->addr_format = FI_ADDR_UET;
 	new_info->dest_addrlen = 0;
 	new_info->src_addrlen = sizeof(struct uet_addr);
 	new_info->src_addr = src_addr;
