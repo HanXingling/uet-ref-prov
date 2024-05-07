@@ -80,9 +80,9 @@ Make sure the proper development libraries/headers are installed:
 
 - https://github.com/ofiwg/libfabric/releases
 
-Download and build libfabric in the parent directory. Any version can be used
-as long as the directory name is just `libfabric`. The steps below build
-libfabric v1.20.1 and uses a symlink for the common name.
+Download and build libfabric in the parent directory. Version v1.20.1 or
+later is needed. The directory name needs to be 'libfabric'. The steps
+below build libfabric v1.20.1 and use a symlink for the common name.
 
 ```
 % cd ..

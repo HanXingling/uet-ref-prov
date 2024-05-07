@@ -19,7 +19,11 @@
 
 #define UET_PDS "UET_PDS"
 
-#define UET_DEFAULT_TX_TIMEOUT       100  /* in millisecs */
+#if 1
+#define UET_DEFAULT_TX_TIMEOUT       100    /* in millisecs */
+#else
+#define UET_DEFAULT_TX_TIMEOUT       10000  /* for unexpected msg tests */
+#endif
 #define UET_DEFAULT_MAX_TX_RETRIES   4
 #define UET_DEFAULT_MSL              2000 /* max seg lifetime in msecs */
 #define UET_DEFAULT_PDS_MAX_ACK_DATA 16   /* in bytes */
@@ -50,7 +54,7 @@ typedef enum {
 	UET_PDS_FLAG_EOM        = 0x02,   /* end of message */
 	UET_PDS_FLAG_EAGER_REQ  = 0x04,   /* request eager length predition */
 	UET_PDS_FLAG_RETRANSMIT = 0x08,   /* retransmit of pkt  */
-	UET_PDS_FLAG_MAINTAIN_PDC = 0x10, /* don't allow PDC teardown */ 
+	UET_PDS_FLAG_MAINTAIN_PDC = 0x10, /* don't allow PDC teardown */
 } uet_pds_tx_flags_t;
 
 /* pds tx som flags */
