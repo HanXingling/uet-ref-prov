@@ -28,22 +28,39 @@
 	#define UET_IOV_LIMIT_MAX UET_RMA_IOV_LIMIT
 #endif
 
-#define UET_MAX_MSG_ID   0xffff
-#define UET_MAX_MSG_SIZE (0xffffffff - 1)
+#define UET_MAX_MSG_ID		0xffff
+#define UET_MAX_MSG_SIZE	(0xffffffff - 1)
+
+#define UET_MAX_RTR_TOKEN	0xffff
+#define UET_RTR_TOKEN_NONE	0
+	/* assigning fixed restart token at target */
+#define UET_TARGET_RTR_TOKEN	UET_MAX_RTR_TOKEN
+
+#define UET_RTR_Q_ENTRIES_MAX	8  /* max number of deferred send's at target */
 
 #define UET_SEND_ORDERING                                                \
 (FI_ORDER_RAS | FI_ORDER_SAR | FI_ORDER_SAS | FI_ORDER_SAW | FI_ORDER_WAS)
 
 	/* timeout for partially received messages that have gone idle */
-#define UET_IDLE_RX_MSG_TIMEOUT 5000 /* in msecs */
+#define UET_IDLE_RX_MSG_TIMEOUT		5000	/* in msecs */
+
+	/* timeout for deferred send messages that have gone idle */
+#define UET_IDLE_DSEND_MSG_TIMEOUT	5000	/* in msecs */
+
+	/* timeout for buffered rtr messages that have gone idle */
+#define UET_IDLE_RTR_MSG_TIMEOUT	5000	/* in msecs */
 
 	/* initial max backoff time for msg retransmissions, */
 	/* used by exponential backoff algorithm             */
-#define UET_INITIAL_BACKOFF_MAX 1    /* in msecs */
+#define UET_INITIAL_BACKOFF_MAX 1	/* in msecs */
 
 	/* max number of times a message can be retransmitted */
 #define UET_MSG_RETRANSMIT_MAX		10
 #define UET_MSG_RETRANSMIT_MAX_INFINITY	0
+
+	/* thresholds for rendezvous sends */
+#define UET_MSG_RENDEZVOUS_SIZE		8192
+#define UET_TAG_RENDEZVOUS_SIZE		8192
 
 #define UET_API_ERR(fmt, ...)                                         \
 	fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n", "error",  \
@@ -201,8 +218,9 @@ struct uet_rx_desc {
 #define UET_RX_DESC_FLAG_WRITE		(1 << 3)
 #define UET_RX_DESC_FLAG_WRITE_IMM	(1 << 4)
 #define UET_RX_DESC_FLAG_READ_RSP	(1 << 5)
-#define UET_RX_DESC_FLAG_CANCELLED	(1 << 6)
-#define UET_RX_DESC_FLAG_ERR_TRACK	(1 << 7)
+#define UET_RX_DESC_FLAG_DSEND		(1 << 6)       /* deferred descriptor */
+#define UET_RX_DESC_FLAG_CANCELLED	(1 << 7)
+#define UET_RX_DESC_FLAG_ERR_TRACK	(1 << 8)
 	int desc_flags;                          /* flags for this descriptor */
 	uet_ses_rc_t ses_rc;    /* ses return code, for marking errored msg's */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
@@ -248,10 +266,14 @@ struct uet_av_entry {
 	uint64_t next_tx_seq_num;             /* next msg seq num to transmit */
 };
 
-/* info associated with tx of read response */
-struct uet_rd_rsp_info {
+/* ephemeral address vector */
+struct uet_ephemeral_av {
 	struct uet_addr uet_addr;         /* dst addr info needed by tx infra */
 	struct uet_av_entry av;         /* dst addr vector needed by tx infra */
+};
+
+/* info associated with tx of read response */
+struct uet_rd_rsp_info {
 	struct uet_pds_info pds_info;     /* pds info echoed in read response */
 	uint32_t mod_len;                          /* modified message length */
 };
@@ -262,6 +284,8 @@ typedef enum {
 	UET_TX_DESC_STATE_ACTIVE,                      /* active transmission */
 	UET_TX_DESC_STATE_WAIT,                         /* waiting for ack(s) */
 	UET_TX_DESC_STATE_RETX,           /* waiting for ack(s) to retransmit */
+	UET_TX_DESC_STATE_DEFER,             /* got defer, waiting for ack(s) */
+	UET_TX_DESC_STATE_RESTART_WAIT,                /* waiting for restart */
 	UET_TX_DESC_STATE_ERR,                  /* transmit encountered error */
 	UET_TX_DESC_STATE_ERR_COMPLETE,     /* ready to post error completion */
 	UET_TX_DESC_STATE_COMPLETE,               /* ready to post completion */
@@ -275,9 +299,13 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_POST_CQ		(1 << 0)
 #define UET_TX_DESC_FLAG_MSG_ID_ALLOCATED	(1 << 1)
 #define UET_TX_DESC_FLAG_IMM_DATA_VALID		(1 << 2)
-#define UET_TX_DESC_FLAG_READ_REQ		(1 << 3)
-#define UET_TX_DESC_FLAG_READ_RSP		(1 << 4)
-#define UET_TX_DESC_FLAG_CANCEL_PENDING		(1 << 5)
+#define UET_TX_DESC_FLAG_DSEND			(1 << 3)
+#define UET_TX_DESC_FLAG_IN_DSEND_LIST		(1 << 4)
+#define UET_TX_DESC_FLAG_GOT_RTR		(1 << 5)
+#define UET_TX_DESC_FLAG_RTR_REQ		(1 << 6)     /* for tx of rtr */
+#define UET_TX_DESC_FLAG_READ_REQ		(1 << 7)
+#define UET_TX_DESC_FLAG_READ_RSP		(1 << 8)
+#define UET_TX_DESC_FLAG_CANCEL_PENDING		(1 << 9)
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t tag_or_immdata;           /* tag or immediate data for write */
@@ -302,8 +330,12 @@ struct uet_tx_desc {
 	time_t tx_time;		      /* earliest time msg can be transmitted */
 	bool delay_retx;          /* parm for deferred message retransmission */
 	int err_code;                                           /* error info */
+	uint16_t local_rtr_token;		       /* local restart token */
+	uint32_t remote_rtr_token;		      /* remote restart token */
+	time_t defer_time;			     /* time msg was deferred */
 	struct uet_rx_desc *rx_desc;     /* associated rx descriptor for read */
 	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
+	struct uet_ephemeral_av ephemeral_av;  /* av for tx of read rsp & rtr */
 };
 
 /* tx msg descriptor ring entry */
@@ -330,6 +362,18 @@ struct uet_msg_id_cb {
 	struct uet_rx_desc *rx_desc[UET_MAX_MSG_ID+1];
 };
 
+/* tx restart token control block struct */
+struct uet_tx_rtr_token_cb {
+	uint16_t next_token;                     /* used for token allocation */
+#define UET_TX_RTR_TOKEN_AVAILABLE 0x00                       /* state values */
+#define UET_TX_RTR_TOKEN_ALLOCATED 0x01
+	uint8_t state[UET_MAX_RTR_TOKEN+1];
+					 /* used to lookup tx desc with token */
+	struct uet_tx_desc *tx_desc[UET_MAX_RTR_TOKEN+1];
+	struct uet_ep *uet_ep[UET_MAX_RTR_TOKEN+1];         /* local endpoint */
+	uint32_t initiator_id[UET_MAX_RTR_TOKEN+1];    /* remote initiator id */
+};
+
 /* key for ipv4 endpoint lookup */
 struct uet_ipv4_ep_key {
 	uint32_t ipv4_addr;
@@ -348,9 +392,16 @@ struct uet_instance {
 	size_t max_payload_len;                   /* max payload for a packet */
 	struct uet_pds pds;			  /* pds control block struct */
 	uint8_t default_msg_ip_tos;               /* default ip tos for msg's */
+	uint32_t msg_rndz_size;           /* threshold for message rendezvous */
+	uint32_t tag_rndz_size;        /* threshold for tagged msg rendezvous */
 	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
+	time_t idle_dsend_msg_timeout;     /* timeout for deferred send msg's */
+	time_t idle_rtr_msg_timeout;        /* timeout for buffered rtr msg's */
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
+	uint32_t max_rtr_q_entries;         /* max num of rtr msg's to buffer */
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
+				      /* used for assigning tx restart tokens */
+	struct uet_tx_rtr_token_cb tx_rtr_token_cb;
 	struct uet_rw_lock ipv4_ep_lkup_lock;  /* lock for ipv4 ep lookup tbl */
 	struct uet_ep *ipv4_ep_hash_table;        /* ipv4 endpoint hash table */
 };
@@ -439,6 +490,13 @@ struct uet_ep {
 	struct uet_tx_desc *tx_desc;           /* array of tx msg descriptors */
 	struct uet_rx_desc *rx_desc;           /* array of rx msg descriptors */
 	struct dlist_entry tx_desc_list_head;   /* head of avail tx desc list */
+					     /* head of deferred tx desc list */
+	struct dlist_entry tx_desc_defer_list_head;
+		      /* head of list containing buffered msg restart entries */
+	struct dlist_entry tx_desc_buf_rtr_list_head;
+	       /* head of list containing buffered tagged msg restart entries */
+	struct dlist_entry tx_desc_buf_tag_rtr_list_head;
+	size_t num_buf_rtr_list_entries;     /* num entries in both rtr lists */
 	struct dlist_entry rx_desc_list_head;   /* head of avail rx desc list */
 			   /* head of active list that contains rx desc's for */
 			   /* partially received msg's                        */

@@ -276,6 +276,173 @@ static void uet_dealloc_msg_id(struct uet_instance *uet, uint16_t msg_id)
 	uet->msg_id_cb.rx_desc[msg_id] = NULL;
 }
 
+/* insert entry into list of buffered rtr tx descriptors for an endpoint */
+static void uet_tx_desc_buf_rtr_list_insert(struct uet_tx_desc *tx_desc)
+{
+	if (tx_desc->cq_flags & FI_TAGGED)
+		dlist_insert_tail(
+			&tx_desc->list_entry,
+			&tx_desc->uet_ep->tx_desc_buf_tag_rtr_list_head);
+	else
+		dlist_insert_tail(
+			&tx_desc->list_entry,
+			&tx_desc->uet_ep->tx_desc_buf_rtr_list_head);
+	tx_desc->uet_ep->num_buf_rtr_list_entries++;
+}
+
+/* remove entry from list of buffered rtr tx descriptors for an endpoint */
+static void uet_tx_desc_buf_rtr_list_remove(struct uet_tx_desc *tx_desc)
+{
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ) {
+		dlist_remove(&tx_desc->list_entry);
+		tx_desc->uet_ep->num_buf_rtr_list_entries--;
+	}
+}
+
+/* insert entry into list of deferred tx descriptors for an endpoint */
+static void uet_tx_desc_defer_list_insert(struct uet_tx_desc *tx_desc)
+{
+	tx_desc->desc_flags |= UET_TX_DESC_FLAG_IN_DSEND_LIST;
+	uet_gettime(&tx_desc->defer_time);
+	dlist_insert_tail(&tx_desc->list_entry,
+			  &tx_desc->uet_ep->tx_desc_defer_list_head);
+}
+
+/* remove entry from list of deferred tx descriptors for an endpoint */
+static void uet_tx_desc_defer_list_remove(struct uet_tx_desc *tx_desc)
+{
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_IN_DSEND_LIST) {
+		dlist_remove(&tx_desc->list_entry);
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_IN_DSEND_LIST;
+	}
+}
+
+/*
+ * allocate transmit restart token for deferred send
+ *
+ * parms:
+ *      uet   - ptr to uet instance struct
+ *      token - ptr to location where allocated token is returned
+ *
+ * returns:
+ *      FI_SUCCESS on success
+ *      negative value corresponding to fabric errno on error
+ */
+static int uet_alloc_tx_rtr_token(struct uet_instance *uet, uint16_t *token)
+{
+	int cnt;
+	uint16_t next_token;
+	uint8_t *state, prev_state;
+	struct uet_tx_rtr_token_cb *cb;
+
+	cb = &uet->tx_rtr_token_cb;
+	next_token = cb->next_token;
+	for (cnt = 0, state = &cb->state[next_token];
+	     cnt <= UET_MAX_RTR_TOKEN; cnt++) {
+		prev_state = __atomic_exchange_n(
+			state, UET_TX_RTR_TOKEN_ALLOCATED, __ATOMIC_SEQ_CST);
+		if (prev_state == UET_TX_RTR_TOKEN_AVAILABLE) {
+			*token = next_token;
+			cb->next_token = next_token + 1;
+			if (cb->next_token > UET_MAX_RTR_TOKEN)
+				cb->next_token = 0;
+			return FI_SUCCESS;
+		}
+		if (++next_token > UET_MAX_RTR_TOKEN)
+			next_token = 0;
+		state = &cb->state[next_token];
+	}
+
+	UET_API_ERR("No TX Restart Token Available");
+	return -FI_EBUSY;
+}
+
+/*
+ * init tx rtr token associated data
+ *
+ * parms:
+ *      uet     - ptr to uet instance struct
+ *      tx_desc - ptr to tx descriptor
+ */
+static void uet_init_tx_rtr_token(struct uet_instance *uet,
+				  struct uet_tx_desc *tx_desc)
+{
+	uet->tx_rtr_token_cb.tx_desc[tx_desc->local_rtr_token] = tx_desc;
+	uet->tx_rtr_token_cb.uet_ep[tx_desc->local_rtr_token] = tx_desc->uet_ep;
+	uet->tx_rtr_token_cb.initiator_id[tx_desc->local_rtr_token] =
+					tx_desc->uet_ep->uet_addr.initiator_id;
+	tx_desc->desc_flags |= UET_TX_DESC_FLAG_DSEND;
+}
+
+/*
+ * get tx descriptor associated with restart token
+ *
+ * parms:
+ *      uet   - ptr to uet instance struct
+ *      token - restart token
+ *
+ * returns:
+ *      ptr to tx descriptor
+ */
+static struct uet_tx_desc *uet_get_rtr_token_tx_desc(struct uet_instance *uet,
+						     uint16_t token)
+{
+	return uet->tx_rtr_token_cb.tx_desc[token];
+}
+
+/*
+ * get ptr to endpoint associated with restart token
+ *
+ * parms:
+ *      uet   - ptr to uet instance struct
+ *      token - restart token
+ *
+ * returns:
+ *	ptr to endpoint
+ */
+static struct uet_ep *uet_get_rtr_token_ep(struct uet_instance *uet,
+					   uint16_t token)
+{
+	return uet->tx_rtr_token_cb.uet_ep[token];
+}
+
+/*
+ * get initiator id associated with restart token
+ *
+ * parms:
+ *      uet   - ptr to uet instance struct
+ *      token - restart token
+ *
+ * returns:
+ *      initiator id
+ */
+static uint32_t uet_get_rtr_token_initiator(struct uet_instance *uet,
+					    uint16_t token)
+{
+	return uet->tx_rtr_token_cb.initiator_id[token];
+}
+
+/*
+ * deallocate restart token associated with tx descriptor
+ *
+ * parms:
+ *      tx_desc - ptr to tx descriptor
+ */
+static void uet_dealloc_tx_rtr_token(struct uet_tx_desc *tx_desc)
+{
+	struct uet_instance *uet;
+
+	uet = tx_desc->uet_ep->uet_domain->uet;
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND) {
+		uet_tx_desc_defer_list_remove(tx_desc);
+		uet->tx_rtr_token_cb.state[tx_desc->local_rtr_token] =
+						UET_TX_RTR_TOKEN_AVAILABLE;
+		uet->tx_rtr_token_cb.tx_desc[tx_desc->local_rtr_token] = NULL;
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_DSEND;
+	}
+}
+
 /* allocate next msg sequence number for address vector */
 static uint64_t uet_alloc_av_msg_seq_num(struct uet_av_entry *av_entry)
 {
@@ -738,6 +905,10 @@ static void uet_tx_desc_recycle(struct uet_tx_desc *tx_desc,
 				   &tx_desc->msg_id);
 	}
 
+	/* deallocate restart token associated with descriptor */
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND)
+		uet_dealloc_tx_rtr_token(tx_desc);
+
 	/* insert tx descriptor on available list */
 	if (make_desc_available)
 		uet_tx_desc_list_insert(tx_desc);
@@ -786,6 +957,7 @@ static void uet_desc_ring_free(struct uet_ep *uet_ep)
 static void uet_desc_free(struct uet_ep *uet_ep)
 {
 	size_t i;
+	struct uet_tx_desc *tx_desc;
 
 	if (uet_ep == NULL)
 		return;
@@ -795,10 +967,13 @@ static void uet_desc_free(struct uet_ep *uet_ep)
 
 	if (uet_ep->tx_desc) {
 		for (i = 0; i < uet_ep->num_tx_desc; i++) {
-			if (uet_ep->tx_desc[i].desc_flags &
+			tx_desc = &uet_ep->tx_desc[i];
+			if (tx_desc->desc_flags &
 			    UET_TX_DESC_FLAG_MSG_ID_ALLOCATED)
 				uet_dealloc_msg_id(uet_ep->uet_domain->uet,
-						   uet_ep->tx_desc[i].msg_id);
+						   tx_desc->msg_id);
+			uet_dealloc_tx_rtr_token(tx_desc);
+			uet_tx_desc_buf_rtr_list_remove(tx_desc);
 		}
 		free(uet_ep->tx_desc);
 	}
@@ -877,7 +1052,8 @@ static void uet_tx_cq_post_entry(struct uet_tx_desc *tx_desc)
 	cq = &uet_ep->send_cq;
 	ring = &cq->ring;
 
-	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) {
+	if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
+	    (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)) {
 		uet_tx_desc_recycle(tx_desc, true);
 		return;
 	}
@@ -1011,6 +1187,21 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 		else
 			tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
 		break;
+	case UET_TX_DESC_STATE_DEFER:
+		if (tx_desc->unack_pkts)
+			break;
+		tx_desc->state = UET_TX_DESC_STATE_RESTART_WAIT;
+		break;
+	case UET_TX_DESC_STATE_RESTART_WAIT:
+		if (!(tx_desc->desc_flags & UET_TX_DESC_FLAG_GOT_RTR))
+			break;
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_GOT_RTR;
+		rc = uet_retx_msg(tx_desc, false);
+		if (rc == FI_SUCCESS)
+			tx_desc->state = UET_TX_DESC_STATE_ACTIVE;
+		else
+			tx_desc->state = UET_TX_DESC_STATE_ERR_COMPLETE;
+		break;
 	case UET_TX_DESC_STATE_ERR:
 		if (tx_desc->unack_pkts)
 			break;
@@ -1042,7 +1233,8 @@ static void uet_tx_cq_post_err(struct uet_tx_desc *tx_desc, int err_code)
 	cq = &uet_ep->send_cq;
 	cq_ring = &cq->ring;
 
-	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) {
+	if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
+	    (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)) {
 		uet_tx_desc_recycle(tx_desc, true);
 		return;
 	}
@@ -1138,7 +1330,8 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 	struct fi_cq_err_entry *err_entry;
 
 	if ((rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE) ||
-	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_ERR_TRACK)) {
+	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_ERR_TRACK) ||
+	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_DSEND)) {
 		uet_rx_desc_recycle(rx_desc, true);
 		return;
 	}
@@ -1313,6 +1506,8 @@ static void uet_init_err_rx_desc(
 	rx_desc->uet_ep = uet_ep;
 	rx_desc->ses_rc = ses_rc;
 	rx_desc->desc_flags |= UET_RX_DESC_FLAG_ERR_TRACK;
+	if (ses_rc == UET_RC_DEFER_SEND)
+		rx_desc->desc_flags |= UET_RX_DESC_FLAG_DSEND;
 	rx_desc->msg_len = req_len;
 	rx_desc->remaining_bytes = req_len;
 	uet_rx_desc_active_list_insert(rx_desc);
@@ -1320,11 +1515,47 @@ static void uet_init_err_rx_desc(
 	uet_rx_msg_hash_insert(uet_ep, rx_desc);
 }
 
+/* truncate rx message */
+static int uet_rx_msg_truncate(struct uet_parsed_pkt *pp,
+			       struct uet_rx_desc *rx_desc,
+			       bool *msg_complete)
+{
+	size_t msg_off, truncated_bytes;
+	struct uet_ses_req_std *ses;
+
+	ses = (struct uet_ses_req_std *) pp->ses;
+
+	*msg_complete = false;
+
+	msg_off = ((ntohll(ses->msg_off_payload_len) &
+		    UET_SES_REQ_STD_MSG_OFF_MASK) >>
+		   UET_SES_REQ_STD_MSG_OFF_SHIFT);
+	if (msg_off < rx_desc->msg_len) {
+		truncated_bytes = rx_desc->msg_len - msg_off;
+		if (truncated_bytes > rx_desc->remaining_bytes)
+			return -FI_ETRUNC;
+		else if (truncated_bytes == rx_desc->remaining_bytes) {
+			rx_desc->remaining_bytes = 0;
+			*msg_complete = true;
+		} else
+			rx_desc->remaining_bytes -= truncated_bytes;
+	} else
+		return -FI_ETRUNC;
+
+	return FI_SUCCESS;
+}
+
 /* handle rx message error */
 static uet_ses_rc_t uet_rx_msg_err(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
 	struct uet_rx_desc *rx_desc, uet_ses_rc_t ses_rc, bool *gtd_del)
 {
+	int rc;
+	bool msg_complete;
+	struct uet_ses_req_std *ses;
+
+	ses = (struct uet_ses_req_std *) pp->ses;
+
 	if (rx_desc == NULL) {
 		*gtd_del = true;
 		rx_desc = uet_rx_desc_list_pop(uet_ep);
@@ -1339,12 +1570,29 @@ static uet_ses_rc_t uet_rx_msg_err(
 		*gtd_del = true;
 	}
 
+	if (rx_desc->desc_flags & UET_RX_DESC_FLAG_DSEND) {
+		if ((ses->cmn.eom_opcode & UET_SES_EOM_MASK) &&
+		    (pp->ses_payload_len == 0)) {
+			rc = uet_rx_msg_truncate(pp, rx_desc, &msg_complete);
+			if ((rc != FI_SUCCESS) || (msg_complete == true)) {
+				if (rc != FI_SUCCESS)
+					UET_API_ERR(
+					   "RX: Invalid DSEND Cancel Offset");
+				goto post_err_exit;
+			}
+		}
+	}
+
 	if (pp->ses_payload_len >= rx_desc->remaining_bytes) {
 		rx_desc->remaining_bytes = 0;
-		uet_rx_cq_post_err(rx_desc, FI_EIO);
+		goto post_err_exit;
 	} else
 		rx_desc->remaining_bytes -= pp->ses_payload_len;
 
+	return ses_rc;
+
+post_err_exit:
+	uet_rx_cq_post_err(rx_desc, FI_EIO);
 	return ses_rc;
 }
 
@@ -1467,7 +1715,27 @@ static uet_ses_rc_t uet_get_rx_desc(
 
 err_exit:
 	uet_init_err_rx_desc(uet_ep, pp, *rx_desc, ses_rc);
-	return (uet_rx_msg_err(uet_ep, pp, *rx_desc, ses_rc, gtd_del));
+	return uet_rx_msg_err(uet_ep, pp, *rx_desc, ses_rc, gtd_del);
+}
+
+/* init tx descriptor ephemeral address vector */
+static void uet_init_tx_desc_ephemeral_av(struct uet_tx_desc *tx_desc,
+					  struct uet_parsed_pkt *pp)
+{
+	struct ethhdr *eth;
+	struct iphdr *ipv4;
+	struct uet_av_entry *av;
+
+	eth = (struct ethhdr *) pp->eth;
+	ipv4 = (struct iphdr *) pp->ip;
+
+	uet_init_uet_addr_ipv4(&tx_desc->ephemeral_av.uet_addr,
+			       ntohl(ipv4->saddr));
+	av = &tx_desc->ephemeral_av.av;
+	av->addr = &tx_desc->ephemeral_av.uet_addr;
+	av->flags = UET_NH_MAC_ADDR_V;
+	memcpy(av->nh_mac_addr, eth->h_source, ETH_ALEN);
+	tx_desc->dst_addr_handle = (uet_addr_handle_t) av;
 }
 
 /*
@@ -1496,13 +1764,8 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	struct uet_tx_desc **ret_tx_desc)
 {
 	struct uet_tx_desc *tx_desc;
-	struct uet_av_entry *av;
 	struct uet_ses_req_std *ses;
-	struct ethhdr *eth;
-	struct iphdr *ipv4;
 
-	eth = (struct ethhdr *) pp->eth;
-	ipv4 = (struct iphdr *) pp->ip;
 	ses = (struct uet_ses_req_std *) pp->ses;
 
 	/* allocate tx descriptor */
@@ -1527,12 +1790,8 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 
 	tx_desc->rd_rsp.mod_len = req_len;
 	tx_desc->rd_rsp.pds_info = *pds_info;
-	uet_init_uet_addr_ipv4(&tx_desc->rd_rsp.uet_addr, ntohl(ipv4->saddr));
-	av = &tx_desc->rd_rsp.av;
-	av->addr = &tx_desc->rd_rsp.uet_addr;
-	av->flags = UET_NH_MAC_ADDR_V;
-	memcpy(av->nh_mac_addr, eth->h_source, ETH_ALEN);
-	tx_desc->dst_addr_handle = (uet_addr_handle_t) av;
+
+	uet_init_tx_desc_ephemeral_av(tx_desc, pp);
 
 	tx_desc->job_id = uet_get_std_req_job_id(ses);
 	tx_desc->msg_id = ntohs(ses->cmn.msg_id);
@@ -1540,7 +1799,8 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
 	tx_desc->pds_mode = uet_get_pds_mode(uet_ep);
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
-		tx_desc->seq_num = uet_alloc_av_msg_seq_num(av);
+		tx_desc->seq_num =
+			uet_alloc_av_msg_seq_num(&tx_desc->ephemeral_av.av);
 	uet_gettime(&tx_desc->tx_time);
 
 	/* insert descriptor in tx ring of endpoint */
@@ -1662,6 +1922,92 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	}
 
 	return UET_RC_OK;
+}
+
+/*
+ * process a received deferred send request packet when there is no buffer
+ *
+ * parms:
+ *      uet_ep  - ptr to uet endpoint struct
+ *      pp      - ptr to parsed packet structure
+ *      list    - ptr to location where type of list pkt was
+ *                delivered to is to be returned
+ *      tagged  - true => message is tagged message
+ *      tag_key - ptr to key for tag lookup, valid when 'tagged' = true
+ *
+ * returns:
+ *   - ses return code
+ *     UET_RC_DEFER_SEND if deferred
+ *     UET_RC_NO_MATCH if not deferred
+ */
+static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
+				 struct uet_parsed_pkt *pp,
+				 uet_ses_list_t *list, bool tagged,
+				 struct uet_tag_initiator_key *tag_key)
+{
+	int rc;
+	uint16_t allocated_token, msg_id;
+	uint64_t remote_token;
+	time_t now;
+	struct uet_instance *uet;
+	struct uet_ses_req_std *ses;
+	struct uet_tx_desc *tx_desc;
+
+	uet = uet_ep->uet_domain->uet;
+	ses = (struct uet_ses_req_std *) pp->ses;
+
+	/* only buffer dsend's for rud pdc's */
+	if (uet_get_pds_mode(uet_ep) != UET_PDS_MODE_RUD)
+		return UET_RC_NO_MATCH;
+
+	/* check for max buffered dsend's */
+	if (uet_ep->num_buf_rtr_list_entries == uet->max_rtr_q_entries)
+		return UET_RC_NO_MATCH;
+
+	/* allocate msg id for rtr */
+	rc = uet_alloc_msg_id(uet, &msg_id);
+	if (rc != FI_SUCCESS)
+		return UET_RC_NO_MATCH;
+
+	/* allocate tx descriptor for rtr */
+	tx_desc = uet_tx_desc_list_pop(uet_ep);
+	if (tx_desc == NULL) {
+		uet_dealloc_msg_id(uet, msg_id);
+		return UET_RC_NO_MATCH;
+	}
+
+	/* init tx descriptor */
+	memset(tx_desc, 0, sizeof(struct uet_tx_desc));
+	tx_desc->desc_flags = UET_TX_DESC_FLAG_MSG_ID_ALLOCATED |
+			      UET_TX_DESC_FLAG_RTR_REQ;
+	uet_init_tx_desc_ephemeral_av(tx_desc, pp);
+	tx_desc->job_id = uet_ep->job_id;
+	tx_desc->msg_id = msg_id;
+	tx_desc->uet_ep = uet_ep;
+	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
+	tx_desc->pds_mode = UET_PDS_MODE_RUD;
+	uet_gettime(&now);
+	tx_desc->tx_time = now;
+	tx_desc->defer_time = now;
+	tx_desc->local_rtr_token = UET_TARGET_RTR_TOKEN;
+	remote_token =
+		(ntohll(ses->restart_token) & UET_SES_REQ_STD_SRC_TOKEN_MASK) >>
+		UET_SES_REQ_STD_SRC_TOKEN_SHIFT;
+	tx_desc->remote_rtr_token = (uint32_t) remote_token;
+	if (tagged) {
+		tx_desc->cq_flags = FI_TAGGED;
+		tx_desc->ephemeral_av.uet_addr.flags |= UET_ADDR_INITIATOR_V;
+		tx_desc->ephemeral_av.uet_addr.initiator_id =
+						ntohl(tag_key->initiator);
+		tx_desc->tag_or_immdata = ntohll(tag_key->tag);
+	} else
+		tx_desc->cq_flags = FI_MSG;
+
+	/* insert tx desc in appropriate rtr list */
+	uet_tx_desc_buf_rtr_list_insert(tx_desc);
+
+	*list = UET_OVERFLOW;
+	return UET_RC_DEFER_SEND;
 }
 
 /*
@@ -1822,13 +2168,18 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			rx_desc = uet_tag_initiator_hash_lookup(uet_ep,
 								&tag_key);
 			if (rx_desc == NULL) {
-				UET_API_ERR("RX: Unexpected Tagged Message");
+				ses_rc = UET_RC_NO_MATCH;
+				if (pp->ses_opcode == UET_DEFER_TSEND)
+					ses_rc = uet_rx_dsend(uet_ep, pp, list,
+							      true, &tag_key);
+				if (ses_rc == UET_RC_NO_MATCH)
+					UET_API_ERR(
+					"RX: Unexpected Tagged Message");
 				if (uet_get_pds_mode(uet_ep) ==
 				    UET_PDS_MODE_ROD)
 					uet_ep->tagged_gen_disabled = true;
-				return (uet_rx_msg_err(
-						uet_ep, pp, rx_desc,
-						UET_RC_NO_MATCH, gtd_del));
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						       ses_rc, gtd_del));
 			}
 
 			/* check if rx buffer is big enough for message */
@@ -1845,12 +2196,17 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			/* check if there is a rx buffer available */
 			ring = &uet_ep->rx_ring;
 			if (uet_ring_empty(ring)) {
-				UET_API_ERR("RX: Unexpected Message");
+				ses_rc = UET_RC_NO_MATCH;
+				if (pp->ses_opcode == UET_DEFER_SEND)
+					ses_rc = uet_rx_dsend(uet_ep, pp, list,
+							      false, NULL);
+				if (ses_rc == UET_RC_NO_MATCH)
+					UET_API_ERR("RX: Unexpected Message");
 				if (uet_get_pds_mode(uet_ep) ==
 				    UET_PDS_MODE_ROD)
 					uet_ep->untagged_gen_disabled = true;
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-						UET_RC_NO_MATCH, gtd_del));
+						       ses_rc, gtd_del));
 			}
 
 			/* check if rx buffer is big enough for message */
@@ -1942,9 +2298,9 @@ static uet_ses_rc_t uet_rx_req_pkt(
 static uet_ses_rc_t uet_rx_cancel_pkt(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, bool *gtd_del)
 {
+	int rc;
 	uet_ses_rc_t ses_rc = UET_RC_OK;
-	size_t msg_off, truncated_bytes;
-	bool err = false;
+	bool msg_complete;
 	struct uet_ses_req_std *ses;
 	struct uet_rx_msg_key msg_key;
 	struct uet_rx_desc *rx_desc;
@@ -1979,22 +2335,10 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 		UET_API_ERR("RX: No EOM on UET_MSG_ERR");
 		goto post_err_exit;
 	} else {
-		msg_off = ((ntohll(ses->msg_off_payload_len) &
-			    UET_SES_REQ_STD_MSG_OFF_MASK) >>
-			   UET_SES_REQ_STD_MSG_OFF_SHIFT);
-		if (msg_off < rx_desc->msg_len) {
-			truncated_bytes = rx_desc->msg_len - msg_off;
-			if (truncated_bytes > rx_desc->remaining_bytes)
-				err = true;
-			else if (truncated_bytes >= rx_desc->remaining_bytes) {
-				rx_desc->remaining_bytes = 0;
-				uet_rx_cq_post_err(rx_desc, FI_EIO);
-			} else
-				rx_desc->remaining_bytes -= truncated_bytes;
-		} else
-			err = true;
-		if (err) {
-			UET_API_ERR("RX: Invalid UET_MSG_ERR Offset");
+		rc = uet_rx_msg_truncate(pp, rx_desc, &msg_complete);
+		if ((rc != FI_SUCCESS) || (msg_complete == true)) {
+			if (rc != FI_SUCCESS)
+				UET_API_ERR("RX: Invalid UET_MSG_ERR Offset");
 			goto post_err_exit;
 		}
 	}
@@ -2005,6 +2349,55 @@ post_err_exit:
 	uet_rx_cq_post_err(rx_desc, FI_EIO);
 
 err_exit:
+	*gtd_del = true;
+	return UET_RC_OP_VIOLATION;
+}
+
+/* process received ready to restart request */
+static uet_ses_rc_t uet_rx_rtr_req_pkt(
+	    struct uet_instance *uet, struct uet_parsed_pkt *pp,
+	    struct uet_ep **uet_ep, bool *gtd_del)
+{
+	uint32_t local_token, token_initiator_id, req_initiator_id;
+	uint64_t full_token;
+	struct uet_tx_desc *tx_desc;
+	struct uet_ep *token_uet_ep;
+	struct uet_ses_req_std *ses;
+
+	ses = (struct uet_ses_req_std *) pp->ses;
+
+	full_token = ntohll(ses->restart_token_rtr);
+	local_token = (full_token & UET_SES_REQ_STD_DST_TOKEN_MASK) >>
+		UET_SES_REQ_STD_DST_TOKEN_SHIFT;
+
+	if (local_token > UET_MAX_RTR_TOKEN)
+		goto err_exit;
+
+	tx_desc = uet_get_rtr_token_tx_desc(uet, (uint16_t) local_token);
+	if (tx_desc == NULL)
+		goto err_exit;
+
+	token_initiator_id =
+		uet_get_rtr_token_initiator(uet, (uint16_t) local_token);
+	req_initiator_id = ntohl(ses->initiator);
+	if (token_initiator_id != req_initiator_id)
+		goto err_exit;
+
+	token_uet_ep = uet_get_rtr_token_ep(uet, (uint16_t) local_token);
+	if (tx_desc->uet_ep != token_uet_ep)
+		return UET_RC_OP_VIOLATION;
+
+	tx_desc->remote_rtr_token =
+		(full_token & UET_SES_REQ_STD_SRC_TOKEN_MASK) >>
+		UET_SES_REQ_STD_SRC_TOKEN_SHIFT;
+	uet_tx_desc_defer_list_remove(tx_desc);
+	tx_desc->desc_flags |= UET_TX_DESC_FLAG_GOT_RTR;
+
+	*uet_ep = token_uet_ep;
+	return UET_RC_OK;
+
+err_exit:
+	UET_API_ERR("RX: Invalid Restart Token");
 	*gtd_del = true;
 	return UET_RC_OP_VIOLATION;
 }
@@ -2115,14 +2508,17 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	case UET_HDR_REQ_STD:
 		ses_rsp->mod_len = ses_std_req->req_len;
 		job_id = uet_get_std_req_job_id(ses_std_req);
-		uet_ipv4_ep_key_init(&ipv4_ep_key, pp);
-		uet_ep = uet_ipv4_ep_hash_lookup(uet, &ipv4_ep_key);
-		if (uet_ep == NULL) {
-			UET_API_ERR("RX: Unknown Endpoint");
-			ses_rc = UET_RC_UNDELIVERABLE;
-			*gtd_del = true;
-			goto build_response;
-		}
+		if (pp->ses_opcode != UET_DEFER_RTR) {
+			uet_ipv4_ep_key_init(&ipv4_ep_key, pp);
+			uet_ep = uet_ipv4_ep_hash_lookup(uet, &ipv4_ep_key);
+			if (uet_ep == NULL) {
+				UET_API_ERR("RX: Unknown Endpoint");
+				ses_rc = UET_RC_UNDELIVERABLE;
+				*gtd_del = true;
+				goto build_response;
+			}
+		} else
+			ses_rc = uet_rx_rtr_req_pkt(uet, pp, &uet_ep, gtd_del);
 		if (uet_ep->job_id != job_id) {
 			UET_API_ERR("RX: Bad Job ID");
 			ses_rc = UET_RC_BAD_JOB_ID;
@@ -2172,6 +2568,8 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 					true, false, gtd_del);
 		ep_gen = (uint32_t) uet_ep->tagged_gen;
 		break;
+	case UET_DEFER_RTR:
+		break;
 	case UET_WRITE:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
 					false, true, gtd_del);
@@ -2202,15 +2600,18 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	}
 
 build_response:
+	if (ses_rc != UET_RC_OK) {
+		ses_rsp->mod_len = 0;
+		if (ses_rc == UET_RC_DEFER_SEND)
+			ses_rc = UET_RC_OK;
+	}
 	ses_rsp->cmn.list_opcode = ((list << UET_SES_RSP_LIST_SHIFT) |
 				    (UET_RESPONSE << UET_SES_OPCODE_SHIFT));
 	ses_rsp->cmn.ver_ret_code = ((UET_SES_VER << UET_SES_VER_SHIFT) |
 				     (ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
-	if (ses_rc != UET_RC_OK)
-		ses_rsp->mod_len = 0;
 	if (ses_rc == UET_RC_BAD_GENERATION) {
 		/* return correct generation */
-		gen = (ep_gen << UET_SES_REQ_INDEX_GEN_SHIFT);
+		gen = (ep_gen << UET_SES_RSP_INDEX_GEN_SHIFT);
 		ses_rsp->cmn.index_gen_job_id = htonl(gen | job_id);
 	}
 
@@ -2283,6 +2684,51 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 	return FI_SUCCESS;
 }
 
+/* build restart token for inclusion in ses header */
+uint64_t uet_build_ses_rtr_token(uint64_t local_token, uint64_t remote_token)
+{
+	uint64_t token;
+
+	token = ((local_token << UET_SES_REQ_STD_SRC_TOKEN_SHIFT) &
+		 UET_SES_REQ_STD_SRC_TOKEN_MASK) |
+		((remote_token << UET_SES_REQ_STD_DST_TOKEN_SHIFT) &
+		 UET_SES_REQ_STD_DST_TOKEN_MASK);
+	return htonll(token);
+}
+
+/*
+ * build rtr request ses header for packet to be transmitted
+ *
+ * parms:
+ *      tx_desc - transmit descriptor for message
+ *      ses     - ptr to location where ses header is to be built
+ *
+ * returns:
+ *      FI_SUCCESS on success
+ *      negative value corresponding to fabric errno on error
+ */
+static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
+				     struct uet_ses_req_std *ses)
+{
+	uint64_t local_token, remote_token;
+
+	memset(ses, 0, sizeof(struct uet_ses_req_std));
+	ses->cmn.eom_opcode = UET_SES_EOM_MASK |
+			     (UET_DEFER_RTR << UET_SES_OPCODE_SHIFT);
+	ses->cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT) |
+		UET_SES_REQ_FLAG_REL | UET_SES_REQ_FLAG_SOM;
+	ses->cmn.msg_id = htons(tx_desc->msg_id);
+	ses->cmn.index_gen_job_id =
+		htonl(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT);
+	ses->initiator = htonl(tx_desc->uet_ep->uet_addr.initiator_id);
+	local_token = tx_desc->local_rtr_token;
+	remote_token = tx_desc->remote_rtr_token;
+	ses->restart_token_rtr = uet_build_ses_rtr_token(local_token,
+							 remote_token);
+
+	return FI_SUCCESS;
+}
+
 /*
  * pds upcall to ses to build ses header for packet to be transmitted
  *
@@ -2307,6 +2753,7 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	struct uet_av_entry *av;
 	struct uet_ep *uet_ep;
 	uint8_t opcode;
+	uint64_t local_token, remote_token;
 	int som = 0, eom = 0, dc = 0;
 	size_t req_len, payload_len, max_payload_len;
 
@@ -2318,6 +2765,9 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP)
 		return uet_build_rd_rsp_ses_hdr(tx_desc, pkt_len,
 						(struct uet_ses_rsp_d *) ses);
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)
+		return uet_build_rtr_req_ses_hdr(tx_desc, ses);
 
 	req_len = tx_desc->buf_desc.len;
 	if (tx_desc->remaining_bytes == req_len) {
@@ -2360,10 +2810,26 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	ses->buf_off = htonll(tx_desc->remote_start_off);
 
 	if (tx_desc->cq_flags & FI_MSG) {
-		opcode = UET_SEND;
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND) {
+			opcode = UET_DEFER_SEND;
+			local_token = tx_desc->local_rtr_token;
+			remote_token = tx_desc->remote_rtr_token;
+			ses->restart_token =
+				uet_build_ses_rtr_token(local_token,
+							remote_token);
+		} else
+			opcode = UET_SEND;
 		ses->match_bits = UET_NO_TAG;
 	} else if (tx_desc->cq_flags & FI_TAGGED) {
-		opcode = UET_TAGGED_SEND;
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND) {
+			opcode = UET_DEFER_TSEND;
+			local_token = tx_desc->local_rtr_token;
+			remote_token = tx_desc->remote_rtr_token;
+			ses->restart_token =
+				uet_build_ses_rtr_token(local_token,
+							remote_token);
+		} else
+			opcode = UET_TAGGED_SEND;
 		ses->match_bits = htonll(tx_desc->tag_or_immdata);
 		ses->cmn.index_gen_job_id =
 			htonl((av->tagged_gen << UET_SES_REQ_INDEX_GEN_SHIFT) |
@@ -2382,7 +2848,22 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	}
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING) {
-		opcode = UET_MSG_ERR;
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_IN_DSEND_LIST) {
+			if (tx_desc->cq_flags & FI_MSG)
+				opcode = UET_DEFER_SEND;
+			else
+				opcode = UET_DEFER_TSEND;
+			local_token = tx_desc->local_rtr_token;
+			remote_token = tx_desc->remote_rtr_token;
+			ses->restart_token =
+				uet_build_ses_rtr_token(local_token,
+							remote_token);
+		} else
+			opcode = UET_MSG_ERR;
+		ses->msg_off_payload_len =
+			htonll((tx_desc->buf_desc.buf_off <<
+				UET_SES_REQ_STD_MSG_OFF_SHIFT) &
+			       UET_SES_REQ_STD_MSG_OFF_MASK);
 		eom = UET_SES_EOM_FLAG;
 	}
 
@@ -2485,6 +2966,11 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 				goto err_exit;
 			}
 		} else if (mod_len != tx_desc->buf_desc.len) {
+			if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND) &&
+			    (mod_len == 0)) {
+				uet_tx_desc_defer_list_insert(tx_desc);
+				goto defer_exit;
+			}
 			UET_API_ERR("Msg Rsp: Truncated Message Length");
 			goto err_exit;
 		}
@@ -2551,14 +3037,23 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 
 	return FI_SUCCESS;
 
+defer_exit:
+	tx_desc->desc_flags |= UET_TX_DESC_FLAG_CANCEL_PENDING;
+	tx_desc->state = UET_TX_DESC_STATE_DEFER;
+	return FI_SUCCESS;
+
 retx_exit:
+	if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
+	    (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ))
+		goto err_exit;
 	tx_desc->desc_flags |= UET_TX_DESC_FLAG_CANCEL_PENDING;
 	tx_desc->state = UET_TX_DESC_STATE_RETX;
 	return FI_SUCCESS;
 
 err_exit:
 	tx_desc->err_code = FI_EIO;
-	if (!(tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ))
+	if (!((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
+	      (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)))
 		tx_desc->desc_flags |= UET_TX_DESC_FLAG_CANCEL_PENDING;
 	tx_desc->state = UET_TX_DESC_STATE_ERR;
 	return FI_SUCCESS;
@@ -2621,8 +3116,10 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 	size_t rx_bytes;
 	struct uet_rx_desc *rx_desc;
 
-	if (tx_desc->remaining_bytes == 0)
+	if (tx_desc->remaining_bytes == 0) {
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
 		return FI_SUCCESS;
+	}
 
 	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
@@ -2640,6 +3137,62 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 	return rc;
 }
 
+/* send ready to restart message */
+static int uet_tx_rtr(struct uet_tx_desc *tx_desc)
+{
+	int rc;
+	struct uet_pds *pds = &tx_desc->uet_ep->uet_domain->uet->pds;
+	size_t rx_bytes;
+	struct uet_rx_desc *rx_desc;
+
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
+				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
+				  UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM, NULL,
+				  tx_desc->msg_id, UET_HDR_REQ_STD, NULL,
+				  0, false);
+
+	if (rc == FI_SUCCESS) {
+		tx_desc->unack_pkts++;
+		tx_desc->state = UET_TX_DESC_STATE_WAIT;
+	} else if (rc != -FI_EAGAIN)
+		uet_tx_desc_set_err(tx_desc, -rc,
+				    UET_TX_DESC_STATE_ERR_COMPLETE);
+
+	return rc;
+}
+
+/* initialize resources for deferred send if appropriate */
+static void uet_dsend_init(struct uet_tx_desc *tx_desc)
+{
+	struct uet_instance *uet;
+	size_t req_len;
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND)
+		return;
+
+	if (uet_get_pds_mode(tx_desc->uet_ep) != UET_PDS_MODE_RUD)
+		return;
+
+	if (!((tx_desc->cq_flags & FI_MSG) || (tx_desc->cq_flags & FI_TAGGED)))
+		return;
+
+	uet = tx_desc->uet_ep->uet_domain->uet;
+	req_len = tx_desc->buf_desc.len;
+
+	if (tx_desc->cq_flags & FI_MSG) {
+		if (req_len < uet->msg_rndz_size) {
+			return;
+		}
+	} else if (req_len < uet->tag_rndz_size)
+			return;
+
+	if (uet_alloc_tx_rtr_token(uet,
+				   &tx_desc->local_rtr_token) != FI_SUCCESS)
+		return;
+
+	uet_init_tx_rtr_token(uet, tx_desc);
+}
+
 /* uet message transmission */
 static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 {
@@ -2655,9 +3208,10 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	uet_ep = tx_desc->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
 
-	if (tx_desc->remaining_bytes == tx_desc->buf_desc.len)
+	if (tx_desc->remaining_bytes == tx_desc->buf_desc.len) {
 		flags = UET_PDS_FLAG_SOM;
-	else
+		uet_dsend_init(tx_desc);
+	} else
 		flags = UET_PDS_FLAG_NONE;
 
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
@@ -2738,22 +3292,22 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 			av_entry = (struct uet_av_entry *)
 					tx_desc->dst_addr_handle;
 			if (!uet_is_next_av_msg_tx_seq_num(
-				av_entry, tx_desc->seq_num)) {
-				uet_tx_desc_ring_rotate(tx_desc);
-				continue;
-			}
+						av_entry, tx_desc->seq_num))
+				goto rotate_and_continue;
 		}
 
-		if (tx_desc->tx_time > now) {
-			uet_tx_desc_ring_rotate(tx_desc);
-			continue;
-		}
+		if (tx_desc->tx_time > now)
+			goto rotate_and_continue;
 
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_CANCEL_PENDING) {
-			if (uet_tx_cancel(tx_desc) == -FI_EAGAIN) {
-				uet_tx_desc_ring_rotate(tx_desc);
-				continue;
-			}
+			uet_tx_cancel(tx_desc);
+			goto rotate_and_continue;
+		}
+
+		if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ) &&
+		    (tx_desc->state == UET_TX_DESC_STATE_ACTIVE)) {
+			uet_tx_rtr(tx_desc);
+			goto rotate_and_continue;
 		}
 
 		uet_tx_desc_state_transition(tx_desc);
@@ -2778,6 +3332,7 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 			uet_tx_cq_post_entry(tx_desc);
 			break;
 		default:
+rotate_and_continue:
 			uet_tx_desc_ring_rotate(tx_desc);
 			break;
 		}
@@ -2785,13 +3340,10 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 }
 
 /* age out partially received messages that have gone idle */
-/*   - do this to reclaim stranded resources               */
-static void uet_rx_msg_age(struct uet_ep *uet_ep)
+static void uet_rx_msg_age(struct uet_ep *uet_ep, time_t now)
 {
 	struct uet_rx_desc *rx_desc;
-	time_t now, idle_time;
-
-	uet_gettime(&now);
+	time_t idle_time;
 
 	while (1) {
 		if (dlist_empty(&uet_ep->rx_desc_active_list_head))
@@ -2802,12 +3354,120 @@ static void uet_rx_msg_age(struct uet_ep *uet_ep)
 		if (idle_time < uet_ep->uet_domain->uet->idle_rx_msg_timeout)
 			break;
 		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_READ_RSP) {
+			UET_API_ERR("Read Response Timeout");
 			uet_rx_desc_active_list_remove(rx_desc);
 			uet_tx_desc_set_err(rx_desc->tx_desc, FI_EIO,
 					    UET_TX_DESC_STATE_ERR_COMPLETE);
-		} else
+		} else {
+			UET_API_ERR("RX Message Timeout");
 			uet_rx_cq_post_err(rx_desc, FI_EIO);
+		}
 	}
+}
+
+/* age out deferred send messages that have gone idle */
+static void uet_dsend_msg_age(struct uet_ep *uet_ep, time_t now)
+{
+	struct uet_tx_desc *tx_desc;
+	time_t idle_time;
+
+	while (1) {
+		if (dlist_empty(&uet_ep->tx_desc_defer_list_head))
+			return;
+		tx_desc = container_of(uet_ep->tx_desc_defer_list_head.next,
+				       struct uet_tx_desc, list_entry);
+		idle_time = now - tx_desc->defer_time;
+		if (idle_time < uet_ep->uet_domain->uet->idle_dsend_msg_timeout)
+			break;
+		UET_API_ERR("Deferred Send Message Timeout");
+		uet_tx_cq_post_err(tx_desc, FI_EIO);
+	}
+}
+
+/* common code for aging list of rtr messages */
+static void uet_rtr_msg_age_common(struct uet_ep *uet_ep,
+				   struct dlist_entry *list_head, time_t now)
+{
+	struct uet_instance *uet;
+	struct uet_tx_desc *tx_desc;
+	time_t idle_time, timeout;
+
+	uet = uet_ep->uet_domain->uet;
+	timeout = uet->idle_rtr_msg_timeout;
+
+	while (1) {
+		if (dlist_empty(list_head))
+			return;
+		tx_desc = container_of(list_head->next,
+				       struct uet_tx_desc, list_entry);
+		idle_time = now - tx_desc->defer_time;
+		if (idle_time < timeout)
+			break;
+		uet_tx_desc_buf_rtr_list_remove(tx_desc);
+		uet_dealloc_msg_id(uet, &tx_desc->msg_id);
+		uet_tx_desc_list_insert(tx_desc);
+		UET_API_ERR("Buffered RTR Message Timeout");
+	}
+}
+
+/* age out buffered rtr messages that have gone idle */
+static void uet_rtr_msg_age(struct uet_ep *uet_ep, time_t now)
+{
+	uet_rtr_msg_age_common(uet_ep,
+			       &uet_ep->tx_desc_buf_rtr_list_head, now);
+	uet_rtr_msg_age_common(uet_ep,
+			       &uet_ep->tx_desc_buf_tag_rtr_list_head, now);
+}
+
+/* age out messages that have gone idle to reclaim stranded resources */
+static void uet_msg_age(struct uet_ep *uet_ep)
+{
+	time_t now;
+
+	uet_gettime(&now);
+
+	uet_rx_msg_age(uet_ep, now);
+	uet_dsend_msg_age(uet_ep, now);
+	uet_rtr_msg_age(uet_ep, now);
+}
+
+/* initiate transmit of ready to restart if appropriate */
+static void uet_tx_rtr_try(struct uet_ep *uet_ep, struct uet_rx_desc *rx_desc,
+			   uet_recv_api_t recv_api)
+{
+	struct uet_tx_desc *tx_desc;
+	struct dlist_entry *head, *item;
+
+	switch (recv_api) {
+	case UET_RECV_API:
+		head = &uet_ep->tx_desc_buf_rtr_list_head;
+		if (!dlist_empty(head)) {
+			tx_desc = container_of(head->next, struct uet_tx_desc,
+					       list_entry);
+			goto initiate_rtr;
+		}
+		break;
+	case UET_TRECV_API:
+		head = &uet_ep->tx_desc_buf_tag_rtr_list_head;
+		dlist_foreach(head, item) {
+			tx_desc = container_of(item, struct uet_tx_desc,
+					       list_entry);
+			if ((tx_desc->ephemeral_av.uet_addr.initiator_id ==
+			     ntohl(rx_desc->tag_key.initiator)) &&
+			    (tx_desc->tag_or_immdata ==
+			     ntohll(rx_desc->tag_key.tag)))
+				goto initiate_rtr;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return;
+
+initiate_rtr:
+	uet_tx_desc_buf_rtr_list_remove(tx_desc);
+	uet_tx_desc_ring_insert(tx_desc);
 }
 
 /* common function for recv api's                    */
@@ -2894,6 +3554,8 @@ static ssize_t uet_recv_api_common(
 	default:
 		break;
 	}
+
+	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
 
 	return FI_SUCCESS;
 }
@@ -3056,8 +3718,13 @@ int uet_initialize(uet_handle_t *handle)
 	uet->uet_ipproto = UET_IPPROTO;
 	uet->uet_udp_port = UET_UDP_PORT;
 	uet->idle_rx_msg_timeout = UET_IDLE_RX_MSG_TIMEOUT;
+	uet->idle_dsend_msg_timeout = UET_IDLE_DSEND_MSG_TIMEOUT;
+	uet->idle_rtr_msg_timeout = UET_IDLE_RTR_MSG_TIMEOUT;
+	uet->max_rtr_q_entries = UET_RTR_Q_ENTRIES_MAX;
 	uet->max_msg_retransmits = UET_MSG_RETRANSMIT_MAX;
 	uet->default_msg_ip_tos = uet_dscp_to_tos(UET_IP_DEFAULT_MSG_DSCP);
+	uet->msg_rndz_size = UET_MSG_RENDEZVOUS_SIZE;
+	uet->tag_rndz_size = UET_TAG_RENDEZVOUS_SIZE;
 
 	uet->pds.upcall.build_ses_hdr = uet_pds_to_ses_build_ses_hdr;
 	uet->pds.upcall.rx_req = uet_pds_to_ses_rx_req;
@@ -3341,6 +4008,9 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	}
 
 	dlist_init(&uet_ep->tx_desc_list_head);
+	dlist_init(&uet_ep->tx_desc_defer_list_head);
+	dlist_init(&uet_ep->tx_desc_buf_rtr_list_head);
+	dlist_init(&uet_ep->tx_desc_buf_tag_rtr_list_head);
 
 	for (i = 0; i < uet_ep->num_tx_desc; i++) {
 		uet_ep->tx_desc[i].uet_ep = uet_ep;
@@ -3546,7 +4216,7 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	uet_ep = cq->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
 
-	uet_rx_msg_age(uet_ep);
+	uet_msg_age(uet_ep);
 
 	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
 

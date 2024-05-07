@@ -62,11 +62,13 @@
 
 #include "uet_api.h"
 
-#define UET_NUM_ITERATIONS     100
-#define UET_MSG_SIZE           4096   /* in bytes */
-#define UET_NUM_BUFS           ((size_t) 8)
-#define UET_DEFAULT_TAG        ((uint64_t) 1)
-#define UET_WRITE_IMM_DATA     ((uint64_t) 0x0CAA)
+#define UNEXPECTED_MSG_TEST	false
+
+#define UET_NUM_ITERATIONS	100
+#define UET_MSG_SIZE		4096	/* in bytes */
+#define UET_NUM_BUFS		((size_t) 8)
+#define UET_DEFAULT_TAG		((uint64_t) 1)
+#define UET_WRITE_IMM_DATA	((uint64_t) 0x0CAA)
 
 /* return codes */
 typedef enum {
@@ -141,6 +143,10 @@ struct uet_context {
 };
 
 struct uet_context uet_ctx;
+
+#if UNEXPECTED_MSG_TEST
+bool first = true;
+#endif
 
 /* callback function for successful asynchronous event completions */
 static void uet_eq_callback(uet_handle_t handle,
@@ -445,7 +451,10 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 
 	ctx->info->rx_attr->size = UET_NUM_BUFS;
 	ctx->info->tx_attr->size = UET_NUM_BUFS;
-	ctx->info->tx_attr->msg_order = FI_ORDER_SAS;
+	if (UNEXPECTED_MSG_TEST)
+		ctx->info->tx_attr->msg_order = FI_ORDER_NONE;
+	else
+		ctx->info->tx_attr->msg_order = FI_ORDER_SAS;
 
 	ret = uet_endpoint(ctx->domain_handle, ctx->info, &ctx->ep,
 			   context, &ctx->ep_handle);
@@ -791,6 +800,104 @@ static uet_rc_t uet_rma_server(struct uet_context *ctx)
  *   - send message to server
  *   - wait for message to be echoed back
  */
+#if UNEXPECTED_MSG_TEST
+static uet_rc_t uet_msg_client(struct uet_context *ctx)
+{
+	ssize_t ret;
+	struct fi_cq_data_entry cq_entry;
+
+	if (ctx->cfg.tag) {
+		if (!first) {
+			/* post tagged rx buffer */
+			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_msg, ctx->cfg.msg_size,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		}
+
+		/* transmit tagged message to server */
+		ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id,
+				ctx->tx_msg, ctx->cfg.msg_size,
+				UET_NULL_HANDLE, ctx->peer_addr_handle,
+				UET_DEFAULT_TAG, NULL);
+		if (ret < 0) {
+			UET_ERR("uet_tsend: %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+	} else {
+		if (!first) {
+			/* post rx buffer */
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY,
+				       ctx->rx_msg, ctx->cfg.msg_size,
+				       UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		}
+
+		/* transmit message to server */
+		ret = uet_send(ctx->ep_handle, ctx->cfg.job_id,
+			       ctx->tx_msg, ctx->cfg.msg_size,
+			       UET_NULL_HANDLE, ctx->peer_addr_handle,
+			       NULL);
+		if (ret < 0) {
+			UET_ERR("uet_send: %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+	}
+
+	/* wait for tx completion */
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	if (first) {
+		sleep(3);
+		uet_cq_read(ctx->tx_cq_handle, &cq_entry, 1);
+		first = false;
+
+		if (ctx->cfg.tag) {
+			/* post tagged rx buffer */
+			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_msg, ctx->cfg.msg_size,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* post rx buffer */
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY,
+				       ctx->rx_msg, ctx->cfg.msg_size,
+				       UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		}
+	}
+
+	/* wait for rx completion */
+	if (uet_compl_wait(ctx->rx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	if (cq_entry.len != ctx->cfg.msg_size) {
+		UET_ERR("Received bad message size = %lu", cq_entry.len);
+		return UET_ERR_RC;
+	}
+
+	return UET_SUCCESS_RC;
+}
+#else
 static uet_rc_t uet_msg_client(struct uet_context *ctx)
 {
 	ssize_t ret;
@@ -856,6 +963,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 
 	return UET_SUCCESS_RC;
 }
+#endif
 
 /*
  * perform server message data transfer as follows:

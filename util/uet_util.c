@@ -50,6 +50,134 @@ void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str)
 	inet_ntop(AF_INET, (char *) &net_order, ipv4_addr_str, INET_ADDRSTRLEN);
 }
 
+/* convert ses return code to string */
+char *uet_ses_rc_to_str(uet_ses_rc_t rc)
+{
+	char *s;
+
+	switch (rc) {
+	case UET_RC_NULL:
+		s = "UET_RC_NULL";
+		break;
+	case UET_RC_OK:
+		s = "UET_RC_OK";
+		break;
+	case UET_RC_BAD_GENERATION:
+		s = "UET_RC_BAD_GENERATION";
+		break;
+	case UET_RC_DISABLED:
+		s = "UET_RC_DISABLED";
+		break;
+	case UET_RC_DISABLED_GEN:
+		s = "UET_RC_DISABLED_GEN";
+		break;
+	case UET_RC_NO_MATCH:
+		s = "UET_RC_NO_MATCH";
+		break;
+	case UET_RC_UNSUPPORTED_OP:
+		s = "UET_RC_UNSUPPORTED_OP";
+		break;
+	case UET_RC_UNSUPPORTED_SIZE:
+		s = "UET_RC_UNSUPPORTED_SIZE";
+		break;
+	case UET_RC_AT_INVALID:
+		s = "UET_RC_AT_INVALID";
+		break;
+	case UET_RC_AT_PERM:
+		s = "UET_RC_AT_PERM";
+		break;
+	case UET_RC_AT_ATS_ERROR:
+		s = "UET_RC_AT_ATS_ERROR";
+		break;
+	case UET_RC_AT_NO_TRANS:
+		s = "UET_RC_AT_NO_TRANS";
+		break;
+	case UET_RC_AT_OUT_OF_RANGE:
+		s = "UET_RC_AT_OUT_OF_RANGE";
+		break;
+	case UET_RC_HOST_POISONED:
+		s = "UET_RC_HOST_POISONED";
+		break;
+	case UET_RC_HOST_UNSUCCESS_CMPL:
+		s = "UET_RC_HOST_UNSUCCESS_CMPL";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_OP:
+		s = "UET_RC_AMO_UNSUPPORTED_OP";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_DT:
+		s = "UET_RC_AMO_UNSUPPORTED_DT";
+		break;
+	case UET_RC_AMO_UNSUPPORTED_SIZE:
+		s = "UET_RC_AMO_UNSUPPORTED_SIZE";
+		break;
+	case UET_RC_AMO_UNALIGNED:
+		s = "UET_RC_AMO_UNALIGNED";
+		break;
+	case UET_RC_AMO_FP_NAN:
+		s = "UET_RC_AMO_FP_NAN";
+		break;
+	case UET_RC_AMO_FP_UNDERFLOW:
+		s = "UET_RC_AMO_FP_UNDERFLOW";
+		break;
+	case UET_RC_AMO_FP_OVERFLOW:
+		s = "UET_RC_AMO_FP_OVERFLOW";
+		break;
+	case UET_RC_AMO_FP_INEXACT:
+		s = "UET_RC_AMO_FP_INEXACT";
+		break;
+	case UET_RC_PERM_VIOLATION:
+		s = "UET_RC_PERM_VIOLATION";
+		break;
+	case UET_RC_OP_VIOLATION:
+		s = "UET_RC_OP_VIOLATION";
+		break;
+	case UET_RC_BAD_INDEX:
+		s = "UET_RC_BAD_INDEX";
+		break;
+	case UET_RC_BAD_PID:
+		s = "UET_RC_BAD_PID";
+		break;
+	case UET_RC_BAD_JOB_ID:
+		s = "UET_RC_BAD_JOB_ID";
+		break;
+	case UET_RC_BAD_MKEY:
+		s = "UET_RC_BAD_MKEY";
+		break;
+	case UET_RC_BAD_ADDR:
+		s = "UET_RC_BAD_ADDR";
+		break;
+	case UET_RC_CANCELLED:
+		s = "UET_RC_CANCELLED";
+		break;
+	case UET_RC_UNDELIVERABLE:
+		s = "UET_RC_UNDELIVERABLE";
+		break;
+	case UET_RC_UNCOR:
+		s = "UET_RC_UNCOR";
+		break;
+	case UET_RC_UNCOR_TRNSNT:
+		s = "UET_RC_UNCOR_TRNSNT";
+		break;
+	case UET_RC_TOO_LONG:
+		s = "UET_RC_TOO_LONG";
+		break;
+	case UET_RC_INITIATOR_ERR:
+		s = "UET_RC_INITIATOR_ERR";
+		break;
+	case UET_RC_DROPPED:
+		s = "UET_RC_DROPPED";
+		break;
+	case UET_RC_DEFER_SEND:
+		s = "UET_RC_DEFER_SEND";
+		break;
+	default:
+		s = "UNKNOWN";
+		break;
+	}
+
+	return s;
+}
+
 /* print mac address */
 void uet_print_mac_addr(uint8_t *mac)
 {
@@ -241,6 +369,9 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("DEFERRED TAGGED SEND, SOM = %d, EOM = %d\n",
 			       som, eom);
 			break;
+		case UET_DEFER_RTR:
+			printf("DEFERRED RTR, SOM = %d, EOM = %d\n", som, eom);
+			break;
 		case UET_WRITE:
 			printf("WRITE, SOM = %d, EOM = %d\n", som, eom);
 			break;
@@ -279,8 +410,8 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("    SES Buffer Offset:    %lu\n",
 			       ntohll(ses_req_std->buf_off));
 		else
-			printf("    SES Restart Token:    %lu\n",
-			       ntohll(ses_req_std->buf_off));
+			printf("    SES Restart Token:    0x%016lx\n",
+			       ntohll(ses_req_std->restart_token));
 		if (som && hd)
 			printf("    SES Header Data:      %lu\n",
 			       ntohll(ses_req_std->cmpl_data));
@@ -295,8 +426,12 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("    SES Message Offset:   %lu\n", msg_off);
 			printf("    SES Payload Length:   %lu\n", payload_len);
 		}
-		printf("    SES Match Bits:       0x%lx\n",
-		       ntohll(ses_req_std->match_bits));
+		if (opcode != UET_DEFER_RTR)
+			printf("    SES Match Bits:       0x%lx\n",
+			       ntohll(ses_req_std->match_bits));
+		else
+			printf("    SES RTR Token:        0x%016lx\n",
+			       ntohll(ses_req_std->restart_token_rtr));
 		break;
 	case UET_HDR_RSP:
 		printf("    SES Opcode:           ");
@@ -314,7 +449,8 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		rc = ((ses_rsp->cmn.ver_ret_code &
 		       UET_SES_RSP_RET_CODE_MASK) >>
 		      UET_SES_RSP_RET_CODE_SHIFT);
-		printf("    SES Return Code:      %u\n", rc);
+		printf("    SES Return Code:      %u (%s)\n",
+		       rc, uet_ses_rc_to_str(rc));
 		gen = (uint8_t)((ntohl(ses_rsp->cmn.index_gen_job_id) &
 				 UET_SES_RSP_INDEX_GEN_MASK) >>
 				UET_SES_RSP_INDEX_GEN_SHIFT);
@@ -695,7 +831,7 @@ uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 		if (pp->ses_opcode == UET_READ)
 			payload_len = max_payload_len;
 		else
-			payload_len = pp->pkt_payload_len; 
+			payload_len = pp->pkt_payload_len;
 		if (payload_len > req_len)
 			payload_len = req_len;
 	} else {

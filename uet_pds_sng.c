@@ -36,6 +36,8 @@ struct uet_pds_sng_tx_state {
 		void *pkt;
 		size_t pkt_len;
 		bool dma_rdy;
+		uint8_t ses_hdr[sizeof(struct uet_ses_req_std)];
+		size_t ses_hdr_len;
 	} pkt_parms;
 };
 
@@ -472,7 +474,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	int rc;
 	uint8_t tos;
 	uint16_t tot_len;
-	size_t uet_hdr_len, uet_pkt_len;
+	size_t ses_hdr_len, uet_hdr_len, uet_pkt_len;
 	void *ses_hdr, *payload;
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_instance *uet;
@@ -489,6 +491,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
 	dst_addr = av_entry->addr;
+	state = &pds_state->tx;
 
 	/* done for now if transmit in progress and not retry */
 	if (uet_pds_ep_tx_active(uet_ep) &&
@@ -526,11 +529,13 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 			pds = &uet_pkt->std_req.pds;
 			uet_hdr_len = sizeof(struct uet_std_req_pkt);
 			ses_hdr = &uet_pkt->std_req.ses;
+			ses_hdr_len = sizeof(struct uet_ses_req_std);
 			payload = uet_pkt->std_req.payload;
 		} else {
 			pds = &uet_pkt->std_rsp_d.pds;
 			uet_hdr_len = sizeof(struct uet_std_rsp_d_req_pkt);
 			ses_hdr = &uet_pkt->std_rsp_d.ses;
+			ses_hdr_len = sizeof(struct uet_ses_rsp_d);
 			payload = uet_pkt->std_rsp_d.payload;
 		}
 		pds->prlg.type_next_flags = htons(
@@ -559,8 +564,15 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
 			   htonl(uet_ep->ipv4_addr), tot_len, tos);
 
-	ses_upcall = &uet->pds.upcall;
-	ses_upcall->build_ses_hdr(tx_pkt_handle, pkt_len, ses_hdr, 0);
+	if (!(flags & UET_PDS_FLAG_RETRANSMIT)) {
+		ses_upcall = &uet->pds.upcall;
+		ses_upcall->build_ses_hdr(tx_pkt_handle, pkt_len, ses_hdr, 0);
+		memcpy(state->pkt_parms.ses_hdr, ses_hdr, ses_hdr_len);
+		state->pkt_parms.ses_hdr_len = ses_hdr_len;
+	} else
+		memcpy(ses_hdr, state->pkt_parms.ses_hdr,
+		       state->pkt_parms.ses_hdr_len);
+
 
 	memcpy(payload, pkt, pkt_len);
 
@@ -570,7 +582,6 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	uet_gettime(&pds_state->tx.start_time);
 
 	/* save parms needed for pkt retransmission */
-	state = &pds_state->tx;
 	state->pkt_parms.tx_pkt_handle = tx_pkt_handle;
 	state->pkt_parms.dst_addr_handle = dst_addr_handle;
 	state->pkt_parms.mode = mode;
@@ -656,6 +667,35 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 					pds_tx->pkt_parms.dma_rdy);
 }
 
+/* find endpoint via restart token lookup */
+static struct uet_ep *uet_pds_rtr_lookup(struct uet_instance *uet,
+					 struct uet_parsed_pkt *pp)
+{
+	uint32_t local_token;
+	uint64_t full_token;
+	struct uet_ses_req_std *ses;
+	struct uet_tx_desc *tx_desc;
+
+	ses = (struct uet_ses_req_std *) pp->ses;
+
+	full_token = ntohll(ses->restart_token_rtr);
+	local_token = (full_token & UET_SES_REQ_STD_DST_TOKEN_MASK) >>
+		UET_SES_REQ_STD_DST_TOKEN_SHIFT;
+
+	if (local_token > UET_MAX_RTR_TOKEN)
+		goto err_exit;
+
+	tx_desc = uet->tx_rtr_token_cb.tx_desc[local_token];
+	if (tx_desc == NULL)
+		goto err_exit;
+
+	return tx_desc->uet_ep;
+
+err_exit:
+	return NULL;
+
+}
+
 /* progress rx operations */
 int uet_pds_sng_progress_rx(struct uet_instance *uet)
 {
@@ -721,24 +761,33 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");
 
 	/* find the endpoint the packet is for */
-	memset(&match_info, 0, sizeof(struct uet_msg_match_info));
-	dst_uet_ep = uet_pds_find_dst_ep(uet, pkt, pkt_is_ack, pkt_is_rd_rsp,
-					 &match_info);
-	if (dst_uet_ep == NULL) {
-		if (pkt_is_ack)
+	if (pp.ses_opcode == UET_DEFER_RTR) {
+		dst_uet_ep = uet_pds_rtr_lookup(uet, &pp);
+		if (dst_uet_ep == NULL) {
+			rc = uet_pds_tx_err_ack_pkt(uet, pkt,
+						    UET_RC_UNDELIVERABLE);
 			goto exit;
-		if (!match_info.ip_addr_match)
-			ses_rc = UET_RC_UNDELIVERABLE;
-		else if (!match_info.job_id_match)
-			ses_rc = UET_RC_BAD_JOB_ID;
-		else if (!match_info.pid_on_fep_match)
-			ses_rc = UET_RC_BAD_PID;
-		else if (!match_info.index_match)
-			ses_rc = UET_RC_BAD_INDEX;
-		else
-			ses_rc = UET_RC_UNDELIVERABLE;
-		rc = uet_pds_tx_err_ack_pkt(uet, pkt, ses_rc);
-		goto exit;
+		}
+	} else {
+		memset(&match_info, 0, sizeof(struct uet_msg_match_info));
+		dst_uet_ep = uet_pds_find_dst_ep(uet, pkt, pkt_is_ack,
+						 pkt_is_rd_rsp, &match_info);
+		if (dst_uet_ep == NULL) {
+			if (pkt_is_ack)
+				goto exit;
+			if (!match_info.ip_addr_match)
+				ses_rc = UET_RC_UNDELIVERABLE;
+			else if (!match_info.job_id_match)
+				ses_rc = UET_RC_BAD_JOB_ID;
+			else if (!match_info.pid_on_fep_match)
+				ses_rc = UET_RC_BAD_PID;
+			else if (!match_info.index_match)
+				ses_rc = UET_RC_BAD_INDEX;
+			else
+				ses_rc = UET_RC_UNDELIVERABLE;
+			rc = uet_pds_tx_err_ack_pkt(uet, pkt, ses_rc);
+			goto exit;
+		}
 	}
 
 	pds_state = (struct uet_pds_sng_state *) dst_uet_ep->pds;

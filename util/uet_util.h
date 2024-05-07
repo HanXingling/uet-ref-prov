@@ -125,6 +125,7 @@ struct uet_instance; /* forward reference */
 int uet_gettime(time_t *time_ms);
 void uet_mac_addr_to_str(char *mac_addr_str, uint8_t *mac_addr);
 void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str);
+char *uet_ses_rc_to_str(uet_ses_rc_t rc);
 void uet_print_mac_addr(uint8_t *mac);
 void uet_print_ipv4_addr(uint32_t ipv4_addr);
 void uet_print_uet_addr(struct uet_addr *uet_addr);

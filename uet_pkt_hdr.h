@@ -39,6 +39,7 @@
 #define UET_UDP_PORT	49150	/* for UET over UDP encap */
 
 #define UET_DEFAULT_MAX_PAYLOAD_LEN	1024
+#define UET_MAX_PAYLOAD_LEN		8192	/* upper bound */
 
 #define UET_PACKED __attribute__((__packed__))
 
@@ -378,9 +379,9 @@ struct UET_PACKED uet_ses_req_cmn {
 #define UET_SES_REQ_LEN_SHIFT 0
 		uint16_t rsvd_req_len; /* UET_HDR_REQ_[SMALL|MEDIUM] */
 	};
-#define UET_SES_REQ_INDEX_GEN_MASK  0xff00000000
+#define UET_SES_REQ_INDEX_GEN_MASK  0xff000000
 #define UET_SES_REQ_INDEX_GEN_SHIFT 24
-#define UET_SES_REQ_JOB_ID_MASK     0x00ffffffff
+#define UET_SES_REQ_JOB_ID_MASK     0x00ffffff
 #define UET_SES_REQ_JOB_ID_SHIFT    0
 	uint32_t index_gen_job_id;
 #define UET_SES_REQ_PID_ON_FEP_MASK  0x0fff
@@ -394,6 +395,10 @@ struct UET_PACKED uet_ses_req_cmn {
 /* uet ses standard request header (UET_HDR_REQ_STD) */
 struct UET_PACKED uet_ses_req_std {
 	struct uet_ses_req_cmn cmn;
+#define UET_SES_REQ_STD_SRC_TOKEN_MASK	0xffffffff00000000ULL
+#define UET_SES_REQ_STD_SRC_TOKEN_SHIFT	32
+#define UET_SES_REQ_STD_DST_TOKEN_MASK	0x00000000ffffffffULL
+#define UET_SES_REQ_STD_DST_TOKEN_SHIFT	0
 	union {
 		uint64_t buf_off;
 		uint64_t restart_token; /* valid for UET_DEFER_SEND */
@@ -556,6 +561,7 @@ typedef enum {
 	UET_RC_TOO_LONG             = 0x22,
 	UET_RC_INITIATOR_ERR        = 0x23,
 	UET_RC_DROPPED              = 0x24,
+	UET_RC_DEFER_SEND           = 0xff  /* internal use */
 } uet_ses_rc_t;
 
 typedef enum {
@@ -579,9 +585,9 @@ struct UET_PACKED uet_ses_rsp_cmn {
 #define UET_SES_RSP_DS_PAYLOAD_LEN_SHIFT 0
 		uint16_t rsvd_payload_len; /* valid for UET_HDR_RSP_DATA_SMALL*/
 	};
-#define UET_SES_RSP_INDEX_GEN_MASK  0xff00000000 /* valid for UET_HDR_RSP */
+#define UET_SES_RSP_INDEX_GEN_MASK  0xff000000 /* valid for UET_HDR_RSP */
 #define UET_SES_RSP_INDEX_GEN_SHIFT 24
-#define UET_SES_RSP_JOB_ID_MASK     0x00ffffffff
+#define UET_SES_RSP_JOB_ID_MASK     0x00ffffff
 #define UET_SES_RSP_JOB_ID_SHIFT    0
 	uint32_t index_gen_job_id;
 };
