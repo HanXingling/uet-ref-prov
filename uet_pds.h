@@ -144,6 +144,8 @@ struct uet_ses_to_pds_funcs {
 	 *      pds_info        - ptr to pds info echoed back from read request
 	 *      msg_id          - id of message
 	 *      next_hdr        - identifies next header following pds header
+	 *      ses             - ptr to ses header for pkt
+	 *      ses_len         - length of ses header in bytes
 	 *      pkt             - ptr to msg payload to be sent
 	 *      pkt_len         - length of msg payload to be sent in bytes
 	 *      dma_rdy         - true => msg payload buffer can be DMA'ed
@@ -157,8 +159,8 @@ struct uet_ses_to_pds_funcs {
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		      uet_pds_tx_flags_t flags,
 		      struct uet_pds_info *pds_info, uint16_t msg_id,
-		      uet_next_hdr_t next_hdr, void *pkt, size_t pkt_len,
-		      bool dma_rdy);
+		      uet_next_hdr_t next_hdr, void *ses, size_t ses_len,
+		      void *pkt, size_t pkt_len, bool dma_rdy);
 
 	/*
 	 * indicate message completion
@@ -218,25 +220,6 @@ struct uet_ses_to_pds_funcs {
 };
 
 struct uet_pds_to_ses_funcs {
-	/*
-	 * pds upcall to ses to build ses header for packet to be transmitted
-	 *
-	 * parms:
-	 *      tx_pkt_handle - handle assigned to packet by ses when packet
-	 *                      transmission was initiated
-	 *      pkt_len       - ses payload length for packet in bytes
-	 *      ses_hdr       - ptr to location where ses header is to be built
-	 *                      is destined for
-	 *      eager_len     - rendezvous eager lenth prediction, only valid
-	 *                      when requested as part of packet tx initiation
-	 *
-	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
-	 */
-	int (*build_ses_hdr)(uet_pkt_handle_t tx_pkt_handle, size_t pkt_len,
-			     void *ses_hdr, uint32_t eager_len);
-
 	/*
 	 * pds upcall to ses when request packet is received
 	 *

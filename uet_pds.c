@@ -656,6 +656,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		   struct uet_pds_info *pds_info,
 		   uint16_t msg_id,
 		   uet_next_hdr_t next_hdr,
+		   void *ses,
+		   size_t ses_len,
 		   void *pkt,
 		   size_t pkt_len,
 		   bool dma_rdy)
@@ -667,7 +669,11 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_pdc *pdc;
 	struct uet_pds_req *pds_hdr;
+#if 0
 	void *ses_hdr, *payload;
+#else
+	void *payload;
+#endif
 	uint16_t pds_flags;
 	int rc, hdr_len;
 
@@ -768,12 +774,16 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		if (next_hdr == UET_HDR_REQ_STD) {
 			hdr_len = sizeof(struct uet_std_req_pkt);
 			pds_hdr = &pdc_pkt->pkt->std_req.pds;
+#if 0
 			ses_hdr = &pdc_pkt->pkt->std_req.ses;
+#endif
 			payload = pdc_pkt->pkt->std_req.payload;
 		} else { /* UET_HDR_RSP_DATA */
 			hdr_len = sizeof(struct uet_std_rsp_d_req_pkt);
 			pds_hdr = &pdc_pkt->pkt->std_rsp_d.pds;
+#if 0
 			ses_hdr = &pdc_pkt->pkt->std_rsp_d.ses;
+#endif
 			payload = pdc_pkt->pkt->std_rsp_d.payload;
 		}
 
@@ -836,7 +846,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos);
 
+#if 0
 	uet->pds.upcall.build_ses_hdr(tx_pkt_handle, pkt_len, ses_hdr, 0);
+#endif
 
 	memcpy(payload, pkt, pkt_len);
 

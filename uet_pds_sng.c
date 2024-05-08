@@ -468,13 +468,13 @@ void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		       uet_pds_tx_flags_t flags, struct uet_pds_info *pds_info,
-		       uint16_t msg_id, uet_next_hdr_t next_hdr, void *pkt,
-		       size_t pkt_len, bool dma_rdy)
+		       uint16_t msg_id, uet_next_hdr_t next_hdr, void *ses,
+		       size_t ses_len, void *pkt, size_t pkt_len, bool dma_rdy)
 {
 	int rc;
 	uint8_t tos;
 	uint16_t tot_len;
-	size_t ses_hdr_len, uet_hdr_len, uet_pkt_len;
+	size_t uet_hdr_len, uet_pkt_len;
 	void *ses_hdr, *payload;
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_instance *uet;
@@ -482,7 +482,6 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	struct uet_av_entry *av_entry;
 	struct uet_addr *dst_addr;
 	struct uet_pds_req *pds;
-	struct uet_pds_to_ses_funcs *ses_upcall;
 	struct uet_pds_sng_tx_state *state;
 	struct uet_pds_hdr_overlay *pds_overlay;
 	struct uet_pds_sng_state *pds_state =
@@ -525,17 +524,16 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 			return -FI_EINVAL;
 		}
 
+		uet_hdr_len = sizeof(struct ethhdr) + sizeof(struct iphdr) +
+			sizeof(struct uet_pds_req) + ses_len;
+
 		if (next_hdr == UET_HDR_REQ_STD) {
 			pds = &uet_pkt->std_req.pds;
-			uet_hdr_len = sizeof(struct uet_std_req_pkt);
 			ses_hdr = &uet_pkt->std_req.ses;
-			ses_hdr_len = sizeof(struct uet_ses_req_std);
 			payload = uet_pkt->std_req.payload;
 		} else {
 			pds = &uet_pkt->std_rsp_d.pds;
-			uet_hdr_len = sizeof(struct uet_std_rsp_d_req_pkt);
 			ses_hdr = &uet_pkt->std_rsp_d.ses;
-			ses_hdr_len = sizeof(struct uet_ses_rsp_d);
 			payload = uet_pkt->std_rsp_d.payload;
 		}
 		pds->prlg.type_next_flags = htons(
@@ -565,14 +563,10 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 			   htonl(uet_ep->ipv4_addr), tot_len, tos);
 
 	if (!(flags & UET_PDS_FLAG_RETRANSMIT)) {
-		ses_upcall = &uet->pds.upcall;
-		ses_upcall->build_ses_hdr(tx_pkt_handle, pkt_len, ses_hdr, 0);
-		memcpy(state->pkt_parms.ses_hdr, ses_hdr, ses_hdr_len);
-		state->pkt_parms.ses_hdr_len = ses_hdr_len;
-	} else
-		memcpy(ses_hdr, state->pkt_parms.ses_hdr,
-		       state->pkt_parms.ses_hdr_len);
-
+		memcpy(state->pkt_parms.ses_hdr, ses, ses_len);
+		state->pkt_parms.ses_hdr_len = ses_len;
+	}
+	memcpy(ses_hdr, ses, ses_len);
 
 	memcpy(payload, pkt, pkt_len);
 
@@ -662,6 +656,8 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 					pds_info,
 					pds_tx->pkt_parms.msg_id,
 					pds_tx->pkt_parms.next_hdr,
+					pds_tx->pkt_parms.ses_hdr,
+					pds_tx->pkt_parms.ses_hdr_len,
 					pds_tx->pkt_parms.pkt,
 					pds_tx->pkt_parms.pkt_len,
 					pds_tx->pkt_parms.dma_rdy);

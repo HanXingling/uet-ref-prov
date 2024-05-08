@@ -2730,25 +2730,20 @@ static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
 }
 
 /*
- * pds upcall to ses to build ses header for packet to be transmitted
+ * build ses header for packet to be transmitted
  *
  * parms:
- *      tx_pkt_handle - handle assigned to packet by ses when packet
- *                      transmission was initiated
- *      pkt_len       - ses payload length for packet in bytes
- *      ses_hdr       - ptr to location where ses header is to be built
- *      eager_len     - rendezvous eager lenth prediction, only valid
- *                      when requested as part of packet tx initiation
+ *      tx_desc - ptr to tx descriptor for message
+ *      pkt_len - ses payload length for packet in bytes
+ *      ses_hdr - ptr to location where ses header is to be built
  *
  * returns:
  *      FI_SUCCESS on success
  *      negative value corresponding to fabric errno on error
  */
-static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
-					size_t pkt_len, void *ses_hdr,
-					uint32_t eager_len)
+static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
+			     void *ses_hdr)
 {
-	struct uet_tx_desc *tx_desc;
 	struct uet_ses_req_std *ses;
 	struct uet_av_entry *av;
 	struct uet_ep *uet_ep;
@@ -2758,13 +2753,12 @@ static int uet_pds_to_ses_build_ses_hdr(uet_pkt_handle_t tx_pkt_handle,
 	size_t req_len, payload_len, max_payload_len;
 
 	ses =  (struct uet_ses_req_std *) ses_hdr;
-	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
 	av = (struct uet_av_entry *) tx_desc->dst_addr_handle;
 	uet_ep = tx_desc->uet_ep;
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP)
-		return uet_build_rd_rsp_ses_hdr(tx_desc, pkt_len,
-						(struct uet_ses_rsp_d *) ses);
+		return uet_build_rd_rsp_ses_hdr(
+			tx_desc, pkt_len, (struct uet_ses_rsp_d *) ses_hdr);
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)
 		return uet_build_rtr_req_ses_hdr(tx_desc, ses);
@@ -3112,27 +3106,32 @@ static int uet_addr_resolution(struct uet_addr *uet_addr, uint32_t *job_id)
 static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 {
 	int rc;
+	struct uet_ses_req_std ses;
 	struct uet_pds *pds = &tx_desc->uet_ep->uet_domain->uet->pds;
-	size_t rx_bytes;
-	struct uet_rx_desc *rx_desc;
 
 	if (tx_desc->remaining_bytes == 0) {
 		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
 		return FI_SUCCESS;
 	}
 
+	uet_build_ses_hdr(tx_desc, 0, &ses);
+
 	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_EOM, NULL, tx_desc->msg_id,
-				  UET_HDR_REQ_STD, NULL, 0, false);
+				  UET_HDR_REQ_STD, &ses,
+				  sizeof(struct uet_ses_req_std),
+				  NULL, 0, false);
 
-	tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
-
-	if (rc == FI_SUCCESS)
+	if (rc == FI_SUCCESS) {
 		tx_desc->unack_pkts++;
-	else if (rc != -FI_EAGAIN)
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
+
+	} else if (rc != -FI_EAGAIN) {
+		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_CANCEL_PENDING;
 		uet_tx_desc_set_err(tx_desc, -rc,
 				    UET_TX_DESC_STATE_ERR_COMPLETE);
+	}
 
 	return rc;
 }
@@ -3141,15 +3140,17 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 static int uet_tx_rtr(struct uet_tx_desc *tx_desc)
 {
 	int rc;
+	struct uet_ses_req_std ses;
 	struct uet_pds *pds = &tx_desc->uet_ep->uet_domain->uet->pds;
-	size_t rx_bytes;
-	struct uet_rx_desc *rx_desc;
+
+	uet_build_ses_hdr(tx_desc, 0, &ses);
 
 	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM, NULL,
-				  tx_desc->msg_id, UET_HDR_REQ_STD, NULL,
-				  0, false);
+				  tx_desc->msg_id, UET_HDR_REQ_STD, &ses,
+				  sizeof(struct uet_ses_req_std),
+				  NULL, 0, false);
 
 	if (rc == FI_SUCCESS) {
 		tx_desc->unack_pkts++;
@@ -3180,11 +3181,12 @@ static void uet_dsend_init(struct uet_tx_desc *tx_desc)
 	req_len = tx_desc->buf_desc.len;
 
 	if (tx_desc->cq_flags & FI_MSG) {
-		if (req_len < uet->msg_rndz_size) {
+		if (req_len < uet->msg_rndz_size)
 			return;
-		}
-	} else if (req_len < uet->tag_rndz_size)
+	} else {
+		if (req_len < uet->tag_rndz_size)
 			return;
+	}
 
 	if (uet_alloc_tx_rtr_token(uet,
 				   &tx_desc->local_rtr_token) != FI_SUCCESS)
@@ -3199,9 +3201,11 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	int rc;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
+	struct uet_ses_req_std ses_req;
+	struct uet_ses_rsp_d ses_rsp_d;
 	uet_pds_tx_flags_t flags;
-	size_t payload_len, max_payload_len, pkt_len;
-	void *pkt_buf;
+	size_t payload_len, max_payload_len, ses_len, pkt_len;
+	void *ses, *pkt_buf;
 	uet_next_hdr_t next_hdr;
 	struct uet_pds_info *pds_info;
 
@@ -3234,19 +3238,25 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			pds_info = &tx_desc->rd_rsp.pds_info;
 			next_hdr = UET_HDR_RSP_DATA;
 			flags |= (UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM);
+			ses = &ses_rsp_d;
+			ses_len = sizeof(struct uet_ses_rsp_d);
 		} else {
 			pds_info = NULL;
 			next_hdr = UET_HDR_REQ_STD;
+			ses = &ses_req;
+			ses_len = sizeof(struct uet_ses_req_std);
 		}
 
 		/* TODO: add support for iov and dma'able buffers */
 		pkt_buf = (void *) (((size_t) tx_desc->buf_desc.buf) +
 				    tx_desc->buf_desc.buf_off);
+		uet_build_ses_hdr(tx_desc, pkt_len, ses);
 		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, uet_ep,
 					  tx_desc->dst_addr_handle,
 					  tx_desc->pds_mode,
 					  flags, pds_info, tx_desc->msg_id,
-					  next_hdr, pkt_buf, pkt_len, false);
+					  next_hdr, ses, ses_len,
+					  pkt_buf, pkt_len, false);
 		if (rc == FI_SUCCESS) {
 			tx_desc->unack_pkts++;
 			/* TODO: add iov support */
@@ -3726,7 +3736,6 @@ int uet_initialize(uet_handle_t *handle)
 	uet->msg_rndz_size = UET_MSG_RENDEZVOUS_SIZE;
 	uet->tag_rndz_size = UET_TAG_RENDEZVOUS_SIZE;
 
-	uet->pds.upcall.build_ses_hdr = uet_pds_to_ses_build_ses_hdr;
 	uet->pds.upcall.rx_req = uet_pds_to_ses_rx_req;
 	uet->pds.upcall.rx_rsp = uet_pds_to_ses_rx_rsp;
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
