@@ -320,8 +320,8 @@ fld.ses_req_payload_len		= ProtoField.uint32("uet.ses.req.packet_len",		"Packet 
 
 fld.ses_resp			= ProtoField.none("uet.ses.resp",			"SES response") -- FIXME: Proto()?
 fld.ses_resp_data		= ProtoField.none("uet.ses.resp_data",			"SES response w/ data") -- FIXME: Proto()?
-fld.ses_resp_list		= ProtoField.uint16("uet.ses.resp.list",		"List",				base.DEC, LIST_DESC_MAP, 0xc000)
-fld.ses_resp_opcode		= ProtoField.uint16("uet.ses.resp.opcode",		"Opcode",			base.HEX, RSP_OPCODE_DESC_MAP, 0x3fff)
+fld.ses_resp_list		= ProtoField.uint8("uet.ses.resp.list",			"List",				base.DEC, LIST_DESC_MAP, 0xc0)
+fld.ses_resp_opcode		= ProtoField.uint8("uet.ses.resp.opcode",		"Opcode",			base.HEX, RSP_OPCODE_DESC_MAP, 0x3f)
 fld.ses_resp_ver		= ProtoField.uint8("uet.ses.resp.version",		"Version",			base.DEC, nil, 0xc0)
 fld.ses_resp_retcode		= ProtoField.uint8("uet.ses.resp.retcode",		"Return code",			base.HEX, RET_CODE_DESC_MAP, 0x3f)
 -- ses_msgid
