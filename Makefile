@@ -4,25 +4,34 @@ CLANG=clang
 
 LIBFABRIC=../libfabric
 
-INCS=-I. -I./util -I./nic_shim -I$(LIBFABRIC) -I$(LIBFABRIC)/include
-CFLAGS=-Wall \
-       -Wno-unused-variable \
+INCS=-I. -I./util -I./nic_shim -I./crypto \
+     -I$(LIBFABRIC) -I$(LIBFABRIC)/include
+CFLAGS=-Wall                              \
+       -Wno-unused-variable               \
        -Wno-implicit-function-declaration \
-       -Wno-int-conversion \
+       -Wno-int-conversion                \
        -Wno-address-of-packed-member
 LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
 
-HDRS=$(wildcard *.h util/*.h nic_shim/*.h)
+HDRS=$(wildcard *.h util/*.h nic_shim/*.h crypto/*.h)
 
 BIN=uet
-SRC=$(filter-out $(wildcard nic_shim/*xdp*), $(wildcard *.c util/*.c nic_shim/*.c))
+SRC=$(filter-out $(wildcard nic_shim/*xdp*), \
+		 $(wildcard *.c              \
+			    util/*.c         \
+			    nic_shim/*.c     \
+			    crypto/*.c))
 OBJ_DIR=obj
 OBJ=$(patsubst %.c, $(OBJ_DIR)/%.o, $(SRC))
 
 XDP_BIN=uet_xdp
-XDP_SRC=$(SRC) $(filter-out nic_shim/*xdp_kern*, \
-                            $(filter $(wildcard nic_shim/*xdp*.c), \
-                                     $(wildcard *.c util/*.c nic_shim/*.c)))
+XDP_SRC=$(SRC) \
+	$(filter-out nic_shim/*xdp_kern*, \
+		     $(filter $(wildcard nic_shim/*xdp*.c), \
+			      $(wildcard *.c \
+					 util/*.c \
+					 nic_shim/*.c \
+					 crypto/*.c)))
 XDP_OBJ_DIR=obj_xdp
 XDP_OBJ=$(patsubst %.c, $(XDP_OBJ_DIR)/%.o, $(XDP_SRC))
 XDP_KERN_SRC=$(wildcard nic_shim/*xdp_kern*)
@@ -74,7 +83,9 @@ xdp: $(XDP_BIN) $(XDP_KERN_BIN)
 cc_sim: $(CC_SIM_BIN)
 
 clean:
-	@rm -rf $(OBJ_DIR) $(BIN) $(XDP_OBJ_DIR) $(XDP_BIN) $(XDP_KERN_BIN) $(CC_SIM_BIN)
+	@rm -rf $(OBJ_DIR) $(BIN) \
+		$(CC_SIM_OBJ_DIR) $(CC_SIM_BIN) \
+		$(XDP_OBJ_DIR) $(XDP_BIN) $(XDP_KERN_BIN)
 
 .PHONY: all xdp cc_sim clean
 

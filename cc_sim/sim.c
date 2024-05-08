@@ -292,8 +292,7 @@ void recv_iter(struct config_params *params, struct sender_ctx *senders,
 			reply.flags |= FLAG_ACK;
 
 		/* ECN mark at dequeue time. */
-		if (red_mark(ring_count(data_queue), &params->ecn_params))
-		{
+		if (red_mark(ring_count(data_queue), &params->ecn_params)) {
 			reply.flags |= FLAG_ECN_CE;
 			src->stats.ecns++;
 		}

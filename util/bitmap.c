@@ -21,7 +21,7 @@ struct bitmap *bm_create(int size)
 		return NULL;
 
 	/* Allocate the bm itself. */
-	bm = (struct bitmap*)malloc(sizeof(struct bitmap));
+	bm = (struct bitmap *)malloc(sizeof(struct bitmap));
 	if (bm == NULL)
 		return NULL;
 
@@ -54,7 +54,7 @@ void bm_destroy(struct bitmap *bm)
 void bm_clear(struct bitmap *bm)
 {
 	memset(bm->bit_arr, 0, (sizeof(uint64_t) * bm->bit_arr_len));
-	memset(bm->data_arr, 0, (sizeof(void*) * bm->bit_arr_len));
+	memset(bm->data_arr, 0, (sizeof(void *) * bm->bit_arr_len));
 }
 
 int bm_count(const struct bitmap *bm)
@@ -210,12 +210,13 @@ void bm_shift_right(struct bitmap *bm, int s)
 
 bool bm_next_set_bit_iter(const struct bitmap *bm, int *i)
 {
+	uint64_t idx_val;
 	int idx = (*i / 64);
 
 	if (idx >= bm->bit_arr_len)
 		return false; /* could assert() here */
 
-	uint64_t idx_val = bm->bit_arr[idx];
+	idx_val = bm->bit_arr[idx];
 	idx_val >>= (*i & 63);
 
 	if (idx_val != 0) {

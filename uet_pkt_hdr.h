@@ -633,6 +633,24 @@ struct UET_PACKED uet_std_req_pkt {
 	uint8_t                payload[];
 };
 
+struct UET_PACKED uet_sec_std_req_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_sec         sec;
+	struct uet_pds_req     pds;
+	struct uet_ses_req_std ses;
+	uint8_t                payload[];
+};
+
+struct UET_PACKED uet_sec_ssi_std_req_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_sec_ssi     sec;
+	struct uet_pds_req     pds;
+	struct uet_ses_req_std ses;
+	uint8_t                payload[];
+};
+
 /* uet default response packet format */
 struct UET_PACKED uet_def_rsp_pkt {
 	struct ethhdr          eth;
@@ -641,10 +659,44 @@ struct UET_PACKED uet_def_rsp_pkt {
 	struct uet_pds_def_rsp ses;
 };
 
+struct UET_PACKED uet_sec_def_rsp_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_sec         sec;
+	struct uet_pds_ack     pds;
+	struct uet_pds_def_rsp ses;
+};
+
+struct UET_PACKED uet_sec_ssi_def_rsp_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_sec_ssi     sec;
+	struct uet_pds_ack     pds;
+	struct uet_pds_def_rsp ses;
+};
+
 /* uet standard response packet format */
 struct UET_PACKED uet_std_rsp_pkt {
 	struct ethhdr      eth;
 	struct iphdr       ipv4;
+	struct uet_pds_ack pds;
+	struct uet_ses_rsp ses;
+	uint8_t            payload[];
+};
+
+struct UET_PACKED uet_sec_std_rsp_pkt {
+	struct ethhdr      eth;
+	struct iphdr       ipv4;
+	struct uet_sec     sec;
+	struct uet_pds_ack pds;
+	struct uet_ses_rsp ses;
+	uint8_t            payload[];
+};
+
+struct UET_PACKED uet_sec_ssi_std_rsp_pkt {
+	struct ethhdr      eth;
+	struct iphdr       ipv4;
+	struct uet_sec_ssi sec;
 	struct uet_pds_ack pds;
 	struct uet_ses_rsp ses;
 	uint8_t            payload[];
@@ -659,10 +711,46 @@ struct UET_PACKED uet_std_rsp_d_ack_pkt {
 	uint8_t              payload[];
 };
 
+struct UET_PACKED uet_sec_std_rsp_d_ack_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_sec       sec;
+	struct uet_pds_ack   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+struct UET_PACKED uet_sec_ssi_std_rsp_d_ack_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_sec_ssi   sec;
+	struct uet_pds_ack   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
 /* uet standard response with data request packet format */
 struct UET_PACKED uet_std_rsp_d_req_pkt {
 	struct ethhdr        eth;
 	struct iphdr         ipv4;
+	struct uet_pds_req   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+struct UET_PACKED uet_sec_std_rsp_d_req_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_sec       sec;
+	struct uet_pds_req   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+struct UET_PACKED uet_sec_ssi_std_rsp_d_req_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_sec_ssi   sec;
 	struct uet_pds_req   pds;
 	struct uet_ses_rsp_d ses;
 	uint8_t              payload[];
@@ -682,11 +770,48 @@ union UET_PACKED uet_pkt {
 			uint16_t            dpdcid;
 		} pds;
 	} common;
-	struct uet_std_req_pkt	     std_req;
+
+	struct uet_std_req_pkt       std_req;
 	struct uet_def_rsp_pkt       def_rsp;
 	struct uet_std_rsp_pkt       std_rsp;
 	struct uet_std_rsp_d_req_pkt std_rsp_d;
 	struct uet_std_rsp_d_ack_pkt std_rsp_d_ack;
+
+	struct UET_PACKED {
+		struct ethhdr  eth;
+		struct iphdr   ipv4;
+		struct uet_sec sec;
+		struct UET_PACKED {
+			struct uet_pds_prlg prlg;
+			uint32_t            psn;
+			uint16_t            spdcid;
+			uint16_t            dpdcid;
+		} pds;
+	} common_sec;
+
+	struct uet_sec_std_req_pkt       sec_std_req;
+	struct uet_sec_def_rsp_pkt       sec_def_rsp;
+	struct uet_sec_std_rsp_pkt       sec_std_rsp;
+	struct uet_sec_std_rsp_d_req_pkt sec_std_rsp_d;
+	struct uet_sec_std_rsp_d_ack_pkt sec_std_rsp_d_ack;
+
+	struct UET_PACKED {
+		struct ethhdr      eth;
+		struct iphdr       ipv4;
+		struct uet_sec_ssi sec;
+		struct UET_PACKED {
+			struct uet_pds_prlg prlg;
+			uint32_t            psn;
+			uint16_t            spdcid;
+			uint16_t            dpdcid;
+		} pds;
+	} common_sec_ssi;
+
+	struct uet_sec_ssi_std_req_pkt       sec_ssi_std_req;
+	struct uet_sec_ssi_def_rsp_pkt       sec_ssi_def_rsp;
+	struct uet_sec_ssi_std_rsp_pkt       sec_ssi_std_rsp;
+	struct uet_sec_ssi_std_rsp_d_req_pkt sec_ssi_std_rsp_d;
+	struct uet_sec_ssi_std_rsp_d_ack_pkt sec_ssi_std_rsp_d_ack;
 };
 
 /* get job id from standard request packet */
