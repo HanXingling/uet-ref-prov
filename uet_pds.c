@@ -124,13 +124,13 @@ struct uet_pds_state {
 
 static struct uet_pds_state pds_state;
 
-#define PDS_GO()                              \
-    do {                                      \
-        if (pds_state.ready != true) {        \
-	    UET_PDS_ERR("PDS is not ready!"); \
-	    exit(1);                          \
-	}                                     \
-    } while (0)
+#define PDS_GO()                                          \
+	do {                                              \
+		if (pds_state.ready != true) {            \
+			UET_PDS_ERR("PDS is not ready!"); \
+			exit(1);                          \
+		}                                         \
+	} while (0)
 
 #define PSN_IN_MPR(psn, base_psn)                            \
 	(((uint32_t)((psn) - (base_psn)) >= 0) &&            \
@@ -148,7 +148,7 @@ static struct uet_pds_state pds_state;
 	 ((t) == UET_PDS_TYPE_ACK)       ? "ACK" :      \
 	 ((t) == UET_PDS_TYPE_NACK)      ? "NACK" :     \
 	 ((t) == UET_PDS_TYPE_CTRL)      ? "CTRL" :     \
-	                                   "UNKNOWN")
+					   "UNKNOWN")
 #define NEXT_HDR_TO_STR(n)                                    \
 	(((n) == UET_HDR_REQ_SMALL)      ? "REQ_SMALL" :      \
 	 ((n) == UET_HDR_REQ_MEDIUM)     ? "REQ_MEDIUM" :     \
@@ -156,27 +156,23 @@ static struct uet_pds_state pds_state;
 	 ((n) == UET_HDR_RSP)            ? "RSP" :            \
 	 ((n) == UET_HDR_RSP_DATA)       ? "RSP_DATA" :       \
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
-	                                   "UNKNOWN")
+					   "UNKNOWN")
 
-#define PDS_DBG_TX(pp, msg)                                         \
-	do {                                                        \
-		UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s", \
-			    (pp)->pds_spdcid, (pp)->pds_dpdcid,     \
-			    (pp)->pds_psn,                          \
-			    PDS_TYPE_TO_STR((pp)->pds_type),        \
-			    NEXT_HDR_TO_STR((pp)->next_hdr),        \
-			    (msg));                                 \
-	} while (0)
+#define PDS_DBG_TX(pp, msg)                                 \
+	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s", \
+		    (pp)->pds_spdcid, (pp)->pds_dpdcid,     \
+		    (pp)->pds_psn,                          \
+		    PDS_TYPE_TO_STR((pp)->pds_type),        \
+		    NEXT_HDR_TO_STR((pp)->next_hdr),        \
+		    (msg))
 
-#define PDS_DBG_RX(pp, msg)                                         \
-	do {                                                        \
-		UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s", \
-			    (pp)->pds_dpdcid, (pp)->pds_spdcid,     \
-			    (pp)->pds_psn,                          \
-			    PDS_TYPE_TO_STR((pp)->pds_type),        \
-			    NEXT_HDR_TO_STR((pp)->next_hdr),        \
-			    (msg));                                 \
-	} while (0)
+#define PDS_DBG_RX(pp, msg)                                 \
+	UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s", \
+		    (pp)->pds_dpdcid, (pp)->pds_spdcid,     \
+		    (pp)->pds_psn,                          \
+		    PDS_TYPE_TO_STR((pp)->pds_type),        \
+		    NEXT_HDR_TO_STR((pp)->next_hdr),        \
+		    (msg))
 
 static void uet_pds_pkt_dbg(struct uet_instance *uet,
 			    struct uet_parsed_pkt *pp,
@@ -191,6 +187,64 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 #endif
 
 	UET_PDS_PKT_HDR_TRACE(uet, pp, NULL, 0, msg);
+}
+
+/****************************************************************************/
+/*                       Security and NIC Shim APIs                         */
+/****************************************************************************/
+
+static int uet_pds_nic_tx_pkt(struct uet_instance *uet,
+			      union uet_pkt *pkt,
+			      int pkt_len)
+{
+	/* TODO: IPv6 support */
+	return uet_nic_tx_pkt(UET_NIC(uet),
+			      pkt,
+			      &pkt->common.ipv4,
+			      pkt_len);
+}
+
+/*
+ * Returns:
+ *   0, no valid packet available
+ *   1, read a packet
+ *   negative value corresponding to fabric errno, err reading packet
+ */
+static int uet_pds_nic_rx_pkt(struct uet_instance *uet,
+			      union uet_pkt **pkt,
+			      int *pkt_len)
+{
+	int rc;
+
+	*pkt = NULL;
+	*pkt_len = 0;
+
+	/* check if packet is available */
+	rc = uet_nic_rx_poll(UET_NIC(uet));
+	if (rc != 1)
+		return rc;
+
+	/* TODO: Remove this malloc... */
+	/* allocate a receive packet buffer */
+	*pkt = calloc(1, uet->nic.max_pkt_size);
+	if (*pkt == NULL) {
+		UET_PDS_ERR("failed to alloc Rx packet buffer");
+		return -FI_ENOMEM;
+	}
+
+	/* receive the packet */
+	rc = uet_nic_rx_pkt(UET_NIC(uet),
+			    *pkt,
+			    uet->nic.max_pkt_size,
+			    (size_t *)pkt_len);
+	if (rc != 1) {
+		free(*pkt);
+		*pkt = NULL;
+		*pkt_len = 0;
+		return rc;
+	}
+
+	return 1;
 }
 
 /****************************************************************************/
@@ -263,7 +317,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	memset(&pdc_key, 0, sizeof(pdc_key));
 	pdc_key.type = ((mode == UET_PDS_MODE_ROD) ? PDC_TYPE_ROD :
 			(mode == UET_PDS_MODE_RUD) ? PDC_TYPE_RUD :
-			                             PDC_TYPE_NONE);
+						     PDC_TYPE_NONE);
 	pdc_key.job_id = uet_ep->job_id;
 	pdc_key.tc = UET_DEFAULT_TC;
 	pdc_key.src_ip.v4 = uet_ep->ipv4_addr; /* TODO: IPv6 support */
@@ -321,7 +375,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc_key.type =
 		((pp->pds_type == UET_PDS_TYPE_RUD_REQ) ? PDC_TYPE_RUD :
 		 (pp->pds_type == UET_PDS_TYPE_ROD_REQ) ? PDC_TYPE_ROD :
-		                                          PDC_TYPE_NONE);
+							  PDC_TYPE_NONE);
 	pdc_key.job_id = uet_get_std_req_job_id(
 		(struct uet_ses_req_std *)ses_cmn);
 
@@ -669,11 +723,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_pdc *pdc;
 	struct uet_pds_req *pds_hdr;
-#if 0
 	void *ses_hdr, *payload;
-#else
-	void *payload;
-#endif
 	uint16_t pds_flags;
 	int rc, hdr_len;
 
@@ -720,7 +770,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	if (!pds_info && (flags & UET_PDS_FLAG_EOM)) {
 		UET_PDS_DBG("SES Tx %p EOM%s", tx_pkt_handle,
 			    (flags & UET_PDS_FLAG_MAINTAIN_PDC)
-			        ? " (maintain PDC)" : "");
+				? " (maintain PDC)" : "");
 		if (!(flags & UET_PDS_FLAG_MAINTAIN_PDC)) {
 			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
 			if (rc != FI_SUCCESS)
@@ -771,19 +821,19 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			return -FI_EINVAL;
 		}
 
+		/* TODO: IPv6 support */
+		hdr_len = (sizeof(struct ethhdr) +
+			   sizeof(struct iphdr) +
+			   sizeof(struct uet_pds_req) +
+			   ses_len);
+
 		if (next_hdr == UET_HDR_REQ_STD) {
-			hdr_len = sizeof(struct uet_std_req_pkt);
 			pds_hdr = &pdc_pkt->pkt->std_req.pds;
-#if 0
 			ses_hdr = &pdc_pkt->pkt->std_req.ses;
-#endif
 			payload = pdc_pkt->pkt->std_req.payload;
 		} else { /* UET_HDR_RSP_DATA */
-			hdr_len = sizeof(struct uet_std_rsp_d_req_pkt);
 			pds_hdr = &pdc_pkt->pkt->std_rsp_d.pds;
-#if 0
 			ses_hdr = &pdc_pkt->pkt->std_rsp_d.ses;
-#endif
 			payload = pdc_pkt->pkt->std_rsp_d.payload;
 		}
 
@@ -822,7 +872,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			pds_hdr->fwd_psn = htonl(pds_info->opsn);
 		} else {
 			/*
-			 * Set the clear_psn to to the left edge of the tx_bm
+			 * Set the clear_psn to the left edge of the tx_bm
 			 * which moves forward as ACKs are received. Note that
 			 * this is considered a cumulative clear value.
 			 */
@@ -846,10 +896,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos);
 
-#if 0
-	uet->pds.upcall.build_ses_hdr(tx_pkt_handle, pkt_len, ses_hdr, 0);
-#endif
-
+	memcpy(ses_hdr, ses, ses_len);
 	memcpy(payload, pkt, pkt_len);
 
 	/* save some params specific for this packet */
@@ -892,11 +939,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
 
-	/* TODO: IPv6 support */
-	rc = uet_nic_tx_pkt(UET_NIC(uet),
-			    pdc_pkt->pkt,
-			    &pdc_pkt->pkt->common.ipv4,
-			    pdc_pkt->pkt_len);
+	rc = uet_pds_nic_tx_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len);
 	if (rc != FI_SUCCESS) {
 		bm_unset(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn));
 		free(pdc_pkt->pkt);
@@ -934,11 +977,7 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET (retransmit)");
 
-	/* TODO: IPv6 support */
-	return uet_nic_tx_pkt(UET_NIC(uet),
-			      pdc_pkt->pkt,
-			      &pdc_pkt->pkt->common.ipv4,
-			      pdc_pkt->pkt_len);
+	return uet_pds_nic_tx_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len);
 }
 
 static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
@@ -1079,7 +1118,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
-		                       : UET_PDS_ACK_FLAGS_NONE;
+				       : UET_PDS_ACK_FLAGS_NONE;
 	pdc_pkt->ack->common.pds.prlg.type_next_flags =
 		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
 		      (next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
@@ -1140,10 +1179,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	uet_pds_pkt_dbg(uet, &pdc_pkt->ack_pp, true, "TX ACK PACKET");
 
 	/* send the ACK packet */
-	/* TODO: IPv6 support */
-	rc = uet_nic_tx_pkt(UET_NIC(uet), pdc_pkt->ack,
-			    &pdc_pkt->ack->common.ipv4,
-			    pdc_pkt->ack_len);
+	rc = uet_pds_nic_tx_pkt(uet, pdc_pkt->ack, pdc_pkt->ack_len);
 	if (rc != FI_SUCCESS) {
 		pdc_pkt->needs_clear = false;
 		pdc_pkt->ack_len = 0;
@@ -1153,7 +1189,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	return rc;
 }
 
-static int uet_nic_tx_def_rsp_ack_pkt(struct uet_instance *uet,
+static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 				      struct uet_pdc *pdc,
 				      struct uet_pdc_pkt *pdc_pkt)
 {
@@ -1205,10 +1241,7 @@ static int uet_nic_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	uet_pds_pkt_dbg(uet, &pp, true, "TX DEF_RSP ACK PACKET (duplicate)");
 
 	/* send the ACK packet */
-	/* TODO: IPv6 support */
-	return uet_nic_tx_pkt(UET_NIC(uet), &def_rsp,
-			      &def_rsp.common.ipv4,
-			      def_rsp_len);
+	return uet_pds_nic_tx_pkt(uet, &def_rsp, def_rsp_len);
 }
 
 static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
@@ -1248,7 +1281,7 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 
 	if (orig_pkt == NULL) {
 		/* send a default response */
-		rc = uet_nic_tx_def_rsp_ack_pkt(uet, pdc, pdc_pkt);
+		rc = uet_pds_tx_def_rsp_ack_pkt(uet, pdc, pdc_pkt);
 		if (rc != FI_SUCCESS)
 			return rc;
 
@@ -1258,11 +1291,7 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 				"TX ACK PACKET (duplicate)");
 
 		/* resend previous ACK/response */
-		/* TODO: IPv6 support */
-		rc = uet_nic_tx_pkt(UET_NIC(uet),
-				    orig_pkt->ack,
-				    &orig_pkt->ack->common.ipv4,
-				    orig_pkt->ack_len);
+		rc = uet_pds_nic_tx_pkt(uet, orig_pkt->ack, orig_pkt->ack_len);
 		if (rc != FI_SUCCESS)
 			return rc;
 
@@ -1392,23 +1421,23 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 		if (!bm_get(pdc->ack_bm, 0, NULL))
 			break;
 
-                /*
-                 * This transmitted packet has been ACK'ed. Note that when
-		 * the ACK was processed, the packet was removed from the
-		 * PDC's tx list that is managed for retransmissions.
-		 */
+		 /*
+		  * This transmitted packet has been ACK'ed. Note that when
+		  * the ACK was processed, the packet was removed from the
+		  * PDC's tx list that is managed for retransmissions.
+		  */
 
 		shifted = true;
-                bm_shift_right(pdc->tx_bm, 1);
-                bm_shift_right(pdc->ack_bm, 1);
-                pdc->tx_bm_base_psn++;
+		bm_shift_right(pdc->tx_bm, 1);
+		bm_shift_right(pdc->ack_bm, 1);
+		pdc->tx_bm_base_psn++;
 
-                if (pdc_pkt->ack)
-                        free(pdc_pkt->ack);
-                if (pdc_pkt->pkt)
-                        free(pdc_pkt->pkt);
-                free(pdc_pkt);
-        }
+		if (pdc_pkt->ack)
+			free(pdc_pkt->ack);
+		if (pdc_pkt->pkt)
+			free(pdc_pkt->pkt);
+		free(pdc_pkt);
+	}
 
 #if 0
 	if (shifted && (UET_LOG_LVL >= UET_LOG_DBG)) {
@@ -1422,33 +1451,33 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 #endif
 	(void)shifted;
 
-        return FI_SUCCESS;
+	return FI_SUCCESS;
 }
 
 static int uet_pds_process_ack(struct uet_instance *uet,
-                               struct uet_parsed_pkt *pp)
+			       struct uet_parsed_pkt *pp)
 {
-        struct uet_pdc *pdc;
-        struct uet_pdc_pkt *pdc_pkt;
-        int rc;
+	struct uet_pdc *pdc;
+	struct uet_pdc_pkt *pdc_pkt;
+	int rc;
 
-        /* TODO:
-         * [x] fetch the PDC (from dpdcid)
-         * [x] verify PDC is in an active state (not UNALLOC)
-         *     [x] if not then drop the ACK
-         * [x] verify the spdcid PDC is the correct peer
-         *     [x] if not then drop the Request
-         * [x] verify the PSN is within the MPR
-         *     [x] if not then drop the ACK
-         * [x] fetch the PSN/packet from the tx_bm
-         *     [x] if not found/set then drop the ACK
-         * [x] verify the PSN/packet has not been ACK'ed
-         *     [x] if already ACK'ed then drop the ACK
-         * [x] mark the PSN/packet as ACK'ed
-         * [x] call SES upcall/rx_rsp
-         * [x] if in the SYN state then move to establed (save spdcid)
-         * [x] move the tx_bm PSN window for all contiguous ACK'ed PSN
-         */
+	/* TODO:
+	 * [x] fetch the PDC (from dpdcid)
+	 * [x] verify PDC is in an active state (not UNALLOC)
+	 *     [x] if not then drop the ACK
+	 * [x] verify the spdcid PDC is the correct peer
+	 *     [x] if not then drop the Request
+	 * [x] verify the PSN is within the MPR
+	 *     [x] if not then drop the ACK
+	 * [x] fetch the PSN/packet from the tx_bm
+	 *     [x] if not found/set then drop the ACK
+	 * [x] verify the PSN/packet has not been ACK'ed
+	 *     [x] if already ACK'ed then drop the ACK
+	 * [x] mark the PSN/packet as ACK'ed
+	 * [x] call SES upcall/rx_rsp
+	 * [x] if in the SYN state then move to establed (save spdcid)
+	 * [x] move the tx_bm PSN window for all contiguous ACK'ed PSN
+	 */
 
 	pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
 	if (pdc == NULL)
@@ -1716,7 +1745,7 @@ exit_err:
 int uet_pds_progress_rx(struct uet_instance *uet)
 {
 	union uet_pkt *pkt;
-	size_t rx_pkt_size;
+	int pkt_len;
 	struct uet_parsed_pkt pp;
 	bool pkt_is_ack, pkt_is_rd_rsp;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
@@ -1728,27 +1757,13 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	bool ses_nack, gtd_del, rtx;
 	int rc = FI_SUCCESS;
 
-	/* check if packet is available */
-	rc = uet_nic_rx_poll(UET_NIC(uet));
+	rc = uet_pds_nic_rx_pkt(uet, &pkt, &pkt_len);
 	if (rc != 1)
 		return rc;
 
-	/* TODO: Remove this malloc...
-	 * allocate a receive packet buffer */
-	pkt = calloc(1, uet->nic.max_pkt_size);
-	if (pkt == NULL) {
-		UET_PDS_ERR("failed to alloc Rx packet buffer");
-		return -FI_ENOMEM;
-	}
-
-	/* receive the packet */
-	rc = uet_nic_rx_pkt(UET_NIC(uet), pkt, uet->nic.max_pkt_size,
-			    &rx_pkt_size);
-	if (rc != 1)
-		goto exit_err;
-
 	/* validate the packet */
-	if (!uet_pds_rx_pkt_chk(uet, pkt, rx_pkt_size, &pkt_is_ack,
+	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
+				&pkt_is_ack,
 				&pkt_is_rd_rsp)) {
 		UET_PDS_WARN("invalid Rx packet");
 		rc = -FI_EINVAL;
@@ -1756,7 +1771,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	}
 
 	/* parse the packet */
-	rc = uet_parse_pkt(uet, pkt, rx_pkt_size, &pp);
+	rc = uet_parse_pkt(uet, pkt, pkt_len, &pp);
 	if (rc != FI_SUCCESS) {
 		UET_PDS_ERR("malformed Rx packet");
 		goto exit_err;
@@ -1770,9 +1785,9 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 		if (rc != FI_SUCCESS)
 			goto exit_err;
 
-	} else { /* message packet */
+	} else { /* request packet */
 
-		rc = uet_pds_process_request(uet, &pp, pkt, rx_pkt_size);
+		rc = uet_pds_process_request(uet, &pp, pkt, pkt_len);
 		if (rc != FI_SUCCESS)
 			goto exit_err;
 

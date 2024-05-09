@@ -185,6 +185,21 @@ could remain attached. Use `xdp-loader` to unload any XDP programs.
 % sudo xdp-loader unload --all ens4f0np0
 ```
 
+## Crypto
+
+Standalone implementations of the cryptographic algorithms are provided for
+the UET Security layer. This includes implementations of AES, AES-GCM, CMAC,
+and the KDF. Source code can be found under the `crypto` directory.
+Verification tests are provided for each of the algorithms and where
+applicable, the set of respective NIST test vectors have been included
+into the test application. Do the following to build and run these tests:
+
+```
+% cd crypto/tests
+% make
+% ./crypto_test
+```
+
 ## Contributing
 
 Code changes, fixes, enhancements, etc are encouraged and greatly welcome!

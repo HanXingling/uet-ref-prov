@@ -14,8 +14,6 @@
  *     UET_[SES|PDS|USP]_WARN(fmt, ...)
  *     UET_[SES|PDS|USP]_ERR(fmt, ...)
  *
- * Each LOG is prefixed with the log level and UET layer name (w/ Tx/Rx).
- *
  * The LOGs for each UET layer are enabled by default. Each layer can be
  * disabled independently by undefining UET_LOG_[SES|PDS|USP].
  *
@@ -73,46 +71,36 @@
 #define UET_ERR_CLR  UET_CLR_RED
 
 #define UET_LOG(fmt, clr, ...)  \
-    do {                        \
 	printf("%s" fmt "%s\n", \
 	       (clr),           \
 	       ##__VA_ARGS__,   \
-	       UET_CLR_NORMAL); \
-    } while (0)
+	       UET_CLR_NORMAL)
 
 #define UET_DBG(fmt, clr, ...)       \
-    do {                             \
 	printf("%sDBG: " fmt "%s\n", \
 	       (clr),                \
 	       ##__VA_ARGS__,        \
-	       UET_CLR_NORMAL);      \
-    } while (0)
+	       UET_CLR_NORMAL)
 
 #define UET_INFO(fmt, clr, ...)       \
-    do {                              \
 	printf("%sINFO: " fmt "%s\n", \
 	       (clr),                 \
 	       ##__VA_ARGS__,         \
-	       UET_CLR_NORMAL);       \
-    } while (0)
+	       UET_CLR_NORMAL)
 
 #define UET_WARN(fmt, ...)                    \
-    do {                                      \
 	printf("%s[%s:%d] WARN: " fmt "%s\n", \
 	       UET_WARN_CLR,                  \
 	       __FILE__, __LINE__,            \
 	       ##__VA_ARGS__,                 \
-	       UET_CLR_NORMAL);               \
-    } while (0)
+	       UET_CLR_NORMAL)
 
 #define UET_ERR(fmt, ...)                      \
-    do {                                       \
 	printf("%s[%s:%d] ERROR: " fmt "%s\n", \
 	       UET_ERR_CLR,                    \
 	       __FILE__, __LINE__,             \
 	       ##__VA_ARGS__,                  \
-	       UET_CLR_NORMAL);                \
-    } while (0)
+	       UET_CLR_NORMAL)
 
 #if UET_LOG_LVL >= UET_LOG_DBG
 # ifdef UET_LOG_SES
