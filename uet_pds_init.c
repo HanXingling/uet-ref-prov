@@ -22,7 +22,8 @@ extern int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			  uet_pds_mode_t mode, uet_pds_tx_flags_t flags,
 			  struct uet_pds_info *pds_info,
 			  uint16_t msg_id, uet_next_hdr_t next_hdr,
-			  void *pkt, size_t pkt_len, bool dma_rdy);
+			  void *ses, size_t ses_len, void *pkt,
+			  size_t pkt_len, bool dma_rdy);
 extern int uet_pds_progress_tx(struct uet_ep *uet_ep,
 			       uet_pkt_handle_t *err_pkt_handle);
 extern int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
@@ -42,7 +43,8 @@ extern int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			      uet_pds_mode_t mode, uet_pds_tx_flags_t flags,
 			      struct uet_pds_info *pds_info,
 			      uint16_t msg_id, uet_next_hdr_t next_hdr,
-			      void *pkt, size_t pkt_len, bool dma_rdy);
+			      void *ses, size_t ses_len, void *pkt,
+			      size_t pkt_len, bool dma_rdy);
 extern int uet_pds_sng_msg_cmpl_ind(struct uet_ep *uet_ep,
 				    uet_addr_handle_t dst_addr_handle,
 				    uet_pds_mode_t mode, uint16_t msg_id);

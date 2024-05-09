@@ -59,8 +59,13 @@
 #define UET_MSG_RETRANSMIT_MAX_INFINITY	0
 
 	/* thresholds for rendezvous sends */
+#if 0
+#define UET_MSG_RENDEZVOUS_SIZE		0	/* for testing */
+#define UET_TAG_RENDEZVOUS_SIZE		0
+#else
 #define UET_MSG_RENDEZVOUS_SIZE		8192
 #define UET_TAG_RENDEZVOUS_SIZE		8192
+#endif
 
 #define UET_API_ERR(fmt, ...)                                         \
 	fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n", "error",  \
