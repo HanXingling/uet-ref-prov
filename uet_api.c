@@ -1119,7 +1119,6 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 		/* exponential backoff */
 		backoff = ((time_t) lrand48()) % (tx_desc->backoff_max + 1);
 		tx_desc->tx_time += backoff;
-		tx_desc->backoff_max = tx_desc->backoff_max << 1;
 	}
 
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD) {

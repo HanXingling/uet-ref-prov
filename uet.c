@@ -7,6 +7,10 @@
  * Simple client-server ping-pong application using UET APIs
  *   - supports message and RMA data transfers
  *   - supports both untagged and tagged messages
+ *   - supports test option that covers untagged message data transfers,
+ *     tagged message data transfers, RMA (read and write) data transfers,
+ *     unexpected message handling for untagged/tagged messages, and
+ *     deferred send for untagged/tagged messages
  *
  * Description of message operation (applies to both untagged and
  *                                   tagged messages):
@@ -42,13 +46,14 @@
  * compile time
  *
  * Usage:
- *   ./uet <server | client> [tag | rma] <remote IPv4 address>
+ *   ./uet <server | client> [tag | rma | test] <remote IPv4 address>
  *
- *   tag and rma are optional args
+ *   tag, rma, and test are optional args
  *     - if the 'tag' arg is present, tagged message data transfers are used
  *     - if the 'rma' arg is present, RMA data transfers are used
- *     - if neither 'tag' nor 'rma' is present, untagged message data transfers
- *       are used
+ *     - if the 'test' arg is present, the test suite is executed
+ *     - if neither 'tag', 'rma', nor 'test' is present,
+ *       untagged message data transfers are used
  *
  * Server Usage Example:
  *   ./uet server 192.168.1.18
@@ -61,14 +66,15 @@
 #include <stdint.h>
 
 #include "uet_api.h"
-
-#define UNEXPECTED_MSG_TEST	false
+#include "uet_api_private.h"
 
 #define UET_NUM_ITERATIONS	100
 #define UET_MSG_SIZE		4096	/* in bytes */
 #define UET_NUM_BUFS		((size_t) 8)
 #define UET_DEFAULT_TAG		((uint64_t) 1)
 #define UET_WRITE_IMM_DATA	((uint64_t) 0x0CAA)
+
+#define UET_MAX_ARGS		4
 
 /* return codes */
 typedef enum {
@@ -99,6 +105,9 @@ struct uet_cfg {
 	bool client;                /* true => operate as client, else server */
 	bool tag;                              /* true => use tagged messages */
 	bool rma;                               /* true => use rma operations */
+	bool test;				    /* true => run test suite */
+	bool unexpected_msg_test;  /* true => this is unexpected message test */
+	bool dsend_test;			/* true => this is dsend test */
 	int num_iterations;                 /* number of messages to exchange */
 	size_t msg_size;                         /* size of messages in bytes */
 	char *peer_ip_addr_string;             /* peer ip addr in string form */
@@ -144,9 +153,7 @@ struct uet_context {
 
 struct uet_context uet_ctx;
 
-#if UNEXPECTED_MSG_TEST
-bool first = true;
-#endif
+bool first;
 
 /* callback function for successful asynchronous event completions */
 static void uet_eq_callback(uet_handle_t handle,
@@ -306,7 +313,13 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	addr->initiator_id = UET_ADDR_DEF_INITIATOR_ID;
 
 	ctx->cfg.num_iterations = UET_NUM_ITERATIONS;
-	ctx->cfg.msg_size = UET_MSG_SIZE;
+	if (ctx->cfg.dsend_test) {
+		if (ctx->cfg.tag)
+			ctx->cfg.msg_size = UET_TAG_RENDEZVOUS_SIZE * 2;
+		else
+			ctx->cfg.msg_size = UET_MSG_RENDEZVOUS_SIZE * 2;
+	} else
+		ctx->cfg.msg_size = UET_MSG_SIZE;
 
 	return UET_SUCCESS_RC;
 }
@@ -451,7 +464,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 
 	ctx->info->rx_attr->size = UET_NUM_BUFS;
 	ctx->info->tx_attr->size = UET_NUM_BUFS;
-	if (UNEXPECTED_MSG_TEST)
+	if (ctx->cfg.unexpected_msg_test)
 		ctx->info->tx_attr->msg_order = FI_ORDER_NONE;
 	else
 		ctx->info->tx_attr->msg_order = FI_ORDER_SAS;
@@ -796,14 +809,14 @@ static uet_rc_t uet_rma_server(struct uet_context *ctx)
 }
 
 /*
- * perform client message data transfer as follows:
+ * perform client message data transfer for unexpected message test
  *   - send message to server
  *   - wait for message to be echoed back
  */
-#if UNEXPECTED_MSG_TEST
-static uet_rc_t uet_msg_client(struct uet_context *ctx)
+static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 {
 	ssize_t ret;
+	time_t start, now, delta;
 	struct fi_cq_data_entry cq_entry;
 
 	if (ctx->cfg.tag) {
@@ -858,8 +871,14 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 	}
 
 	if (first) {
-		sleep(3);
-		uet_cq_read(ctx->tx_cq_handle, &cq_entry, 1);
+		uet_gettime(&start);
+#define UNEXPECTED_MSG_TEST_DELAY 5 /* msecs */
+		for (now = start, delta = 0;
+		     delta < UNEXPECTED_MSG_TEST_DELAY;
+		     delta = now - start) {
+			uet_cq_read(ctx->tx_cq_handle, &cq_entry, 1);
+			uet_gettime(&now);
+		}
 		first = false;
 
 		if (ctx->cfg.tag) {
@@ -897,7 +916,12 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 
 	return UET_SUCCESS_RC;
 }
-#else
+
+/*
+ * perform client message data transfer as follows:
+ *   - send message to server
+ *   - wait for message to be echoed back
+ */
 static uet_rc_t uet_msg_client(struct uet_context *ctx)
 {
 	ssize_t ret;
@@ -963,7 +987,6 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 
 	return UET_SUCCESS_RC;
 }
-#endif
 
 /*
  * perform server message data transfer as follows:
@@ -1038,11 +1061,11 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	return UET_SUCCESS_RC;
 }
 
-int main(int argc, char *argv[])
+/* do one run */
+static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 {
 	uet_rc_t rc;
 	int iteration = 0;
-	struct uet_context *ctx = &uet_ctx;
 
 	/* init config parms */
 	rc = uet_init_cfg(argc, argv, ctx);
@@ -1077,7 +1100,10 @@ int main(int argc, char *argv[])
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			} else {
-				rc = uet_msg_client(ctx);
+				if (ctx->cfg.unexpected_msg_test)
+					rc = uet_msg_client_unexpected(ctx);
+				else
+					rc = uet_msg_client(ctx);
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			}
@@ -1098,4 +1124,112 @@ exit:
 	printf("Completed %d iterations\n", iteration);
 	uet_free_res(ctx); /* free resources */
 	return rc;
+}
+
+int main(int argc, char *argv[])
+{
+	int rc, test_argc;
+	char **test_argv;
+	char *local_argv[UET_MAX_ARGS+1];
+	struct uet_context *ctx = &uet_ctx;
+
+	if ((argc != 3) && (argc != 4))  {
+		UET_ERR("Invalid usage: wrong number of args");
+		return UET_ERR_RC;
+	}
+
+	if (argc == 3)
+		return uet_run(argc, argv, ctx);
+
+	if (strcmp(argv[2], "test"))
+		return uet_run(argc, argv, ctx);
+
+	if (!strcmp(argv[1], "client"))
+		ctx->cfg.client = true;
+
+	printf("\nUntagged Message Test\n");
+	printf("=====================\n");
+	test_argc = 3;
+	local_argv[0] = argv[0];
+	local_argv[1] = argv[1];
+	local_argv[2] = argv[3];
+	local_argv[3] = NULL;
+	test_argv = local_argv;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nTagged Message Test\n");
+	printf("===================\n");
+	test_argc = 4;
+	local_argv[2] = "tag";
+	local_argv[3] = argv[3];
+	local_argv[4] = NULL;
+	memset(ctx, 0, sizeof(struct uet_context));
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nRMA Test\n");
+	printf("========\n");
+	test_argc = 4;
+	local_argv[2] = "rma";
+	memset(ctx, 0, sizeof(struct uet_context));
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nUnexpected Untagged Message Test\n");
+	printf("================================\n");
+	test_argc = 3;
+	local_argv[0] = argv[0];
+	local_argv[1] = argv[1];
+	local_argv[2] = argv[3];
+	local_argv[3] = NULL;
+	test_argv = local_argv;
+	memset(ctx, 0, sizeof(struct uet_context));
+	first = true;
+	ctx->cfg.unexpected_msg_test = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nDeferred Send Message Test\n");
+	printf("==========================\n");
+	memset(ctx, 0, sizeof(struct uet_context));
+	first = true;
+	ctx->cfg.unexpected_msg_test = true;
+	ctx->cfg.dsend_test = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nUnexpected Tagged Message Test\n");
+	printf("==============================\n");
+	test_argc = 4;
+	local_argv[2] = "tag";
+	local_argv[3] = argv[3];
+	local_argv[4] = NULL;
+	memset(ctx, 0, sizeof(struct uet_context));
+	first = true;
+	ctx->cfg.unexpected_msg_test = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nDeferred Tagged Send Message Test\n");
+	printf("=================================\n");
+	memset(ctx, 0, sizeof(struct uet_context));
+	first = true;
+	ctx->cfg.unexpected_msg_test = true;
+	ctx->cfg.dsend_test = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	exit(rc);
 }
