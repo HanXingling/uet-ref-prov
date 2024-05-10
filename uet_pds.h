@@ -19,14 +19,10 @@
 
 #define UET_PDS "UET_PDS"
 
-#if 1
-#define UET_DEFAULT_TX_TIMEOUT       100    /* in millisecs */
-#else
-#define UET_DEFAULT_TX_TIMEOUT       10000  /* for unexpected msg tests */
-#endif
+#define UET_DEFAULT_TX_TIMEOUT       100	/* in millisecs */
 #define UET_DEFAULT_MAX_TX_RETRIES   4
-#define UET_DEFAULT_MSL              2000 /* max seg lifetime in msecs */
-#define UET_DEFAULT_PDS_MAX_ACK_DATA 16   /* in bytes */
+#define UET_DEFAULT_MSL              2000	/* max seg lifetime in msecs */
+#define UET_DEFAULT_PDS_MAX_ACK_DATA 16		/* in bytes */
 
 struct uet_ep;     /* forward references */
 struct uet_instance;
