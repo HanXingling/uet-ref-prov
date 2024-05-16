@@ -10,7 +10,6 @@
 
 #include <rdma/fabric.h>
 
-#include "uet_pkt_hdr.h"
 #include "uet_api_private.h"
 #include "uet_nic.h"
 

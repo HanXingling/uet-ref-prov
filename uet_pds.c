@@ -18,11 +18,14 @@
 #include "uet_util.h"
 #include "uet_log.h"
 #include "uet_pkt_chk.h"
+#include "uet_pkt_hdr.h"
+#include "uet_sec.h"
 #include "bitmap.h"
 
-#define UET_DEFAULT_TC  0
-#define UET_DEFAULT_MPR 128
+#define UET_DEFAULT_TC        0
+#define UET_DEFAULT_MPR       128
 #define UET_DEFAULT_START_PSN 13
+#define UET_DEFAULT_ENTROPY   0
 
 #define UET_PDC_MAX 64
 
@@ -45,8 +48,10 @@ struct uet_pdc_pkt {
 	int                   psn;
 	uint16_t              msg_id;
 
-	union uet_pkt        *pkt;
-	int		      pkt_len;
+	uint8_t              *pkt_buf;
+	int                   pkt_buf_len;
+	uint8_t              *pkt;
+	int                   pkt_len;
 	time_t                tx_time; /* tx time for detecting timeout */
 	int                   tx_retry_cnt;  /* number of retransmissions */
 	uet_pkt_handle_t      tx_pkt_handle;
@@ -56,8 +61,10 @@ struct uet_pdc_pkt {
 	bool                  needs_clear;
 	bool                  reordered; /* rx_req() upcall called for ROD */
 
-	union uet_pkt        *ack;
-	int		      ack_len;
+	uint8_t              *ack_buf;
+	int                   ack_buf_len;
+	uint8_t              *ack;
+	int                   ack_len;
 
 	struct uet_parsed_pkt pkt_pp;
 	bool                  pkt_parsed;
@@ -65,15 +72,10 @@ struct uet_pdc_pkt {
 	bool                  ack_parsed;
 };
 
-/*
- * The PDC key used for hash table lookups. Note that this implementation
- * of the PDS only supports one PDC (per these key fields) between two FEPs.
- * This implies there is NOT a mapping of msg_id to PDC being maintained.
- */
+/* The PDC key used for hash table lookups. */
 struct uet_pdc_key {
 	pdc_type_t    type;
 	uint32_t      job_id;
-	struct uet_fa src_ip;
 	struct uet_fa dst_ip;
 	uint8_t       tc;
 	uint16_t      spdcid; /* only used for receive side lookups */
@@ -104,6 +106,11 @@ struct uet_pdc {
 	/* target side fields */
 	struct bitmap      *rx_bm;
 	uint32_t            rx_bm_base_psn; /* start PSN for target MPR */
+
+	/* security fields, for Tx */
+	bool                sec_enabled;
+	uint32_t            sdi;
+	uint32_t            ssi;
 };
 
 struct uet_msgid_map {
@@ -158,21 +165,23 @@ static struct uet_pds_state pds_state;
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
 					   "UNKNOWN")
 
-#define PDS_DBG_TX(pp, msg)                                 \
-	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s", \
-		    (pp)->pds_spdcid, (pp)->pds_dpdcid,     \
-		    (pp)->pds_psn,                          \
-		    PDS_TYPE_TO_STR((pp)->pds_type),        \
-		    NEXT_HDR_TO_STR((pp)->next_hdr),        \
-		    (msg))
+#define PDS_DBG_TX(pp, msg)                                      \
+	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s (%d)", \
+		    (pp)->pds_spdcid, (pp)->pds_dpdcid,          \
+		    (pp)->pds_psn,                               \
+		    PDS_TYPE_TO_STR((pp)->pds_type),             \
+		    NEXT_HDR_TO_STR((pp)->next_hdr),             \
+		    (msg),                                       \
+		    (pp)->pkt_len)
 
-#define PDS_DBG_RX(pp, msg)                                 \
-	UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s", \
-		    (pp)->pds_dpdcid, (pp)->pds_spdcid,     \
-		    (pp)->pds_psn,                          \
-		    PDS_TYPE_TO_STR((pp)->pds_type),        \
-		    NEXT_HDR_TO_STR((pp)->next_hdr),        \
-		    (msg))
+#define PDS_DBG_RX(pp, msg)                                      \
+	UET_PDS_DBG("PDC %u [Rx %u] [PSN %u] [%s/%s] - %s (%d)", \
+		    (pp)->pds_dpdcid, (pp)->pds_spdcid,          \
+		    (pp)->pds_psn,                               \
+		    PDS_TYPE_TO_STR((pp)->pds_type),             \
+		    NEXT_HDR_TO_STR((pp)->next_hdr),             \
+		    (msg),                                       \
+		    (pp)->pkt_len)
 
 static void uet_pds_pkt_dbg(struct uet_instance *uet,
 			    struct uet_parsed_pkt *pp,
@@ -193,15 +202,104 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 /*                       Security and NIC Shim APIs                         */
 /****************************************************************************/
 
-static int uet_pds_nic_tx_pkt(struct uet_instance *uet,
-			      union uet_pkt *pkt,
-			      int pkt_len)
+static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
+			      struct uet_pdc *pdc,
+			      struct uet_pdc_pkt *pdc_pkt,
+			      bool tx_pkt, /* false = tx_ack */
+			      bool is_rtx)
 {
+	uint8_t *pkt_buf;
+	int pkt_buf_len;
+	uint8_t **pkt;
+	int *pkt_len;
+	uint8_t *new_pkt;
+	int new_pkt_len;
+	struct uet_parsed_pkt *pp;
+	bool *pp_parsed;
+	int rc;
+
+	if (tx_pkt) {
+		pkt_buf     = pdc_pkt->pkt_buf;
+		pkt_buf_len = pdc_pkt->pkt_buf_len;
+		pkt         = &pdc_pkt->pkt;
+		pkt_len     = &pdc_pkt->pkt_len;
+		pp          = &pdc_pkt->pkt_pp;
+		pp_parsed   = &pdc_pkt->pkt_parsed;
+	} else {
+		pkt_buf     = pdc_pkt->ack_buf;
+		pkt_buf_len = pdc_pkt->ack_buf_len;
+		pkt         = &pdc_pkt->ack;
+		pkt_len     = &pdc_pkt->ack_len;
+		pp          = &pdc_pkt->ack_pp;
+		pp_parsed   = &pdc_pkt->ack_parsed;
+	}
+
+	if (pdc->sec_enabled == false) {
+		if (*pp_parsed == false) {
+			rc = uet_parse_pkt(uet, *pkt, *pkt_len, pp);
+			if (rc != FI_SUCCESS) {
+				UET_PDS_ERR("malformed %s packet",
+					    (tx_pkt) ? "Tx" : "ACK");
+				return rc;
+			}
+
+			*pp_parsed = true;
+		}
+
+		if (tx_pkt)
+			uet_gettime(&pdc_pkt->tx_time);
+
+		/* TODO: IPv6 support */
+		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, *pkt_len);
+	}
+
+	/* inject/build the security header and encrypt the packet */
+
+	if (is_rtx) {
+		rc = uet_sec_update_hdr_tsc(*pkt);
+		if (rc != FI_SUCCESS)
+			return rc;
+	} else {
+		rc = uet_sec_build_hdr(pdc->sdi,
+				       pdc->ssi,
+				       pkt_buf,
+				       pkt_buf_len,
+				       *pkt,
+				       *pkt_len,
+				       &new_pkt,
+				       &new_pkt_len);
+		if (rc != FI_SUCCESS)
+			return rc;
+
+		*pkt     = new_pkt;
+		*pkt_len = new_pkt_len;
+	}
+
+	if (*pp_parsed == false) {
+		rc = uet_parse_pkt(uet, *pkt, *pkt_len, pp);
+		if (rc != FI_SUCCESS) {
+			UET_PDS_ERR("malformed %s packet with security",
+				    (tx_pkt) ? "Tx" : "ACK");
+			return rc;
+		}
+
+		*pp_parsed = true;
+	}
+
+	rc = uet_sec_enc_pkt(pkt_buf,
+			     pkt_buf_len,
+			     *pkt,
+			     *pkt_len,
+			     &new_pkt,
+			     &new_pkt_len);
+	if (rc != FI_SUCCESS)
+		return rc;
+
+	if (tx_pkt)
+		uet_gettime(&pdc_pkt->tx_time);
+
 	/* TODO: IPv6 support */
-	return uet_nic_tx_pkt(UET_NIC(uet),
-			      pkt,
-			      &pkt->common.ipv4,
-			      pkt_len);
+	return uet_nic_tx_pkt(UET_NIC(uet), new_pkt, pp->ip, new_pkt_len);
 }
 
 /*
@@ -210,10 +308,11 @@ static int uet_pds_nic_tx_pkt(struct uet_instance *uet,
  *   1, read a packet
  *   negative value corresponding to fabric errno, err reading packet
  */
-static int uet_pds_nic_rx_pkt(struct uet_instance *uet,
-			      union uet_pkt **pkt,
+static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
+			      uint8_t **pkt,
 			      int *pkt_len)
 {
+	int tag_len;
 	int rc;
 
 	*pkt = NULL;
@@ -237,14 +336,21 @@ static int uet_pds_nic_rx_pkt(struct uet_instance *uet,
 			    *pkt,
 			    uet->nic.max_pkt_size,
 			    (size_t *)pkt_len);
-	if (rc != 1) {
-		free(*pkt);
-		*pkt = NULL;
-		*pkt_len = 0;
-		return rc;
-	}
+	if (rc != 1)
+		goto err_exit;
+
+	/* decrypt the packet if the security header is present */
+	rc = uet_sec_dec_pkt(*pkt, *pkt_len, &tag_len);
+	if (rc != FI_SUCCESS)
+		goto err_exit;
 
 	return 1;
+
+err_exit:
+	free(*pkt);
+	*pkt = NULL;
+	*pkt_len = 0;
+	return rc;
 }
 
 /****************************************************************************/
@@ -304,6 +410,20 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 	dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
 }
 
+/* FIXME: get the security SDI/SSI based on JobID */
+static void uet_pdsm_get_sdi(struct uet_pdc *pdc)
+{
+	char *sec_ssi;
+
+	pdc->sec_enabled = !!getenv(UET_SEC_MODE);
+	pdc->sdi = 1; /* fixed SDI for now... */
+	pdc->ssi = 0;
+
+	sec_ssi = getenv(UET_SEC_SSI);
+	if (sec_ssi)
+		pdc->ssi = strtoul(sec_ssi, NULL, 10);
+}
+
 static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 					       struct uet_addr *dst_addr,
 					       uet_pds_mode_t mode)
@@ -320,7 +440,6 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 						     PDC_TYPE_NONE);
 	pdc_key.job_id = uet_ep->job_id;
 	pdc_key.tc = UET_DEFAULT_TC;
-	pdc_key.src_ip.v4 = uet_ep->ipv4_addr; /* TODO: IPv6 support */
 	memcpy(&pdc_key.dst_ip, &dst_addr->fa, sizeof(struct uet_fa));
 
 	HASH_FIND(pdc_hh, pds_state.pdc_ht, &pdc_key,
@@ -345,6 +464,8 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	memcpy(&pdc->hkey, &pdc_key, sizeof(struct uet_pdc_key));
 	HASH_ADD(pdc_hh, pds_state.pdc_ht, hkey,
 		 sizeof(struct uet_pdc_key), pdc);
+
+	uet_pdsm_get_sdi(pdc);
 
 	UET_PDS_DBG("allocated initiator PDC %u", pdc->pdc_id);
 
@@ -382,7 +503,6 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc_key.tc = UET_DEFAULT_TC;
 
 	/* TODO: IPv6 support */
-	pdc_key.src_ip.v4 = ntohl(ipv4->saddr);
 	pdc_key.dst_ip.v4 = ntohl(ipv4->daddr);
 
 	pdc_key.spdcid = pp->pds_spdcid; /* target side needs spdcid */
@@ -424,6 +544,8 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	memcpy(&pdc->hkey, &pdc_key, sizeof(struct uet_pdc_key));
 	HASH_ADD(pdc_hh, pds_state.pdc_ht, hkey,
 		 sizeof(struct uet_pdc_key), pdc);
+
+	uet_pdsm_get_sdi(pdc);
 
 	UET_PDS_DBG("allocated target PDC %u (established with PDC %u)",
 		    pdc->pdc_id, pdc->dpdcid);
@@ -675,7 +797,10 @@ void uet_pds_finalize(struct uet_instance *uet)
 	while (!dlist_empty(&pds_state.pending_pkts_head)) {
 		dlist_pop_front(&pds_state.pending_pkts_head,
 				struct uet_pdc_pkt, pdc_pkt, node);
-		free(pdc_pkt->pkt);
+		if (pdc_pkt->pkt_buf)
+			free(pdc_pkt->pkt_buf);
+		if (pdc_pkt->ack_buf)
+			free(pdc_pkt->ack_buf);
 		free(pdc_pkt);
 	}
 
@@ -733,10 +858,28 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	av_entry = (struct uet_av_entry *)dst_addr_handle;
 	dst_addr = av_entry->addr;
 
-	if ((mode == UET_PDS_MODE_RUD) ||
-	    (mode == UET_PDS_MODE_UUD) ||
-	    (mode == UET_PDS_MODE_RUDI)) {
-		return -FI_EINVAL; /* not supported yet */
+	switch (mode) {
+	case UET_PDS_MODE_RUD:
+		pds_pkt_type = UET_PDS_TYPE_RUD_REQ;
+		break;
+	case UET_PDS_MODE_ROD:
+		pds_pkt_type = UET_PDS_TYPE_ROD_REQ;
+		break;
+	case UET_PDS_MODE_RUDI:
+		pds_pkt_type = UET_PDS_TYPE_RUDI_REQ;
+		break;
+	case UET_PDS_MODE_UUD:
+		pds_pkt_type = UET_PDS_TYPE_UUD_REQ;
+		break;
+	default:
+		UET_PDS_ERR("unsupported pkt delivery mode %d", mode);
+		return -FI_EINVAL;
+	}
+
+	if ((next_hdr != UET_HDR_REQ_STD) &&
+	    (next_hdr != UET_HDR_RSP_DATA)) {
+		UET_PDS_ERR("unsupported next header type %d", next_hdr);
+		return -FI_EINVAL;
 	}
 
 	/* if pds_info is specified, take the PDC from its pdcid */
@@ -792,112 +935,93 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		return -FI_ENOMEM;
 	}
 
-	pdc_pkt->pkt = calloc(1, uet->nic.max_pkt_size);
-	if (pdc_pkt->pkt == NULL) {
+	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
+				((pdc->sec_enabled) ? 2 : 1));
+	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
+	if (pdc_pkt->pkt_buf == NULL) {
 		UET_PDS_ERR("failed to alloc packet buffer");
 		free(pdc_pkt);
 		return -FI_ENOMEM;
 	}
 
-	uet_build_eth_hdr(&pdc_pkt->pkt->common.eth,
+	pdc_pkt->pkt = (pdc->sec_enabled)
+			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
+			: pdc_pkt->pkt_buf;
+
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
 			  av_entry->nh_mac_addr,
 			  uet->nic.mac_addr);
 
-	switch (next_hdr) {
-	case UET_HDR_REQ_STD:
-	case UET_HDR_RSP_DATA:
+	/* TODO: IPv6 support */
+	pds_hdr = (struct uet_pds_req *)(pdc_pkt->pkt +
+					 sizeof(struct ethhdr) +
+					 sizeof(struct iphdr));
+	ses_hdr = (pds_hdr + 1);
+	payload = ((uint8_t *)ses_hdr + ses_len);
 
-		switch (mode) {
-		case UET_PDS_MODE_RUD:
-			pds_pkt_type = UET_PDS_TYPE_RUD_REQ;
-			break;
-		case UET_PDS_MODE_ROD:
-			pds_pkt_type = UET_PDS_TYPE_ROD_REQ;
-			break;
-		default:
-			UET_PDS_ERR("unsupported pkt delivery mode %d", mode);
-			free(pdc_pkt->pkt);
-			free(pdc_pkt);
-			return -FI_EINVAL;
-		}
+	/* TODO: IPv6 support */
+	hdr_len = (sizeof(struct ethhdr) +
+		   sizeof(struct iphdr) +
+		   sizeof(struct uet_pds_req) +
+		   ses_len);
 
-		/* TODO: IPv6 support */
-		hdr_len = (sizeof(struct ethhdr) +
-			   sizeof(struct iphdr) +
-			   sizeof(struct uet_pds_req) +
-			   ses_len);
+	pdc_pkt->pkt_len = (hdr_len + pkt_len);
 
-		if (next_hdr == UET_HDR_REQ_STD) {
-			pds_hdr = &pdc_pkt->pkt->std_req.pds;
-			ses_hdr = &pdc_pkt->pkt->std_req.ses;
-			payload = pdc_pkt->pkt->std_req.payload;
-		} else { /* UET_HDR_RSP_DATA */
-			pds_hdr = &pdc_pkt->pkt->std_rsp_d.pds;
-			ses_hdr = &pdc_pkt->pkt->std_rsp_d.ses;
-			payload = pdc_pkt->pkt->std_rsp_d.payload;
-		}
+	/* fill in the PDS header */
 
-		pdc_pkt->pkt_len = (pkt_len + hdr_len);
+	pds_hdr->prlg.entropy = htons(UET_DEFAULT_ENTROPY);
 
-		/* fill in PDS header (i.e. pdcid, flag, etc) */
-
-		pds_hdr->prlg.entropy = 0;
-
-		pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
-			     (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
-			     (next_hdr << UET_PDS_NEXT_HDR_SHIFT));
-		if (pdc->state == PDC_STATE_SYN) {
-			pds_flags |= (UET_PDS_REQ_FLAGS_SYN <<
-				      UET_PDS_FLAGS_SHIFT);
-		}
-
-		pds_hdr->prlg.type_next_flags = htons(pds_flags);
-
-		pdc_pkt->psn = pdc->next_psn++;
-
-		pds_hdr->psn = htonl(pdc_pkt->psn);
-		pds_hdr->spdcid = htons(pdc->pdc_id);
-
-		if (pdc->state == PDC_STATE_SYN) {
-			pds_hdr->mode_psn_off =
-				htons((pdc->syn_offset &
-				       UET_PDS_REQ_PSN_OFF_MASK) <<
-				      UET_PDS_REQ_PSN_OFF_SHIFT);
-			pdc->syn_offset++;
-		} else {
-			pds_hdr->dpdcid = htons(pdc->dpdcid);
-		}
-
-		if (pds_info) {
-			pds_hdr->fwd_psn = htonl(pds_info->opsn);
-		} else {
-			/*
-			 * Set the clear_psn to the left edge of the tx_bm
-			 * which moves forward as ACKs are received. Note that
-			 * this is considered a cumulative clear value.
-			 */
-			pds_hdr->clear_psn = htonl(pdc->tx_bm_base_psn);
-		}
-
-		break;
-
-	default:
-
-		UET_PDS_ERR("Unsupported next header type %d", next_hdr);
-		free(pdc_pkt);
-		return -FI_EINVAL;
+	pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
+		     (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
+		     (next_hdr << UET_PDS_NEXT_HDR_SHIFT));
+	if (pdc->state == PDC_STATE_SYN) {
+		pds_flags |= (UET_PDS_REQ_FLAGS_SYN <<
+			      UET_PDS_FLAGS_SHIFT);
 	}
+
+	pds_hdr->prlg.type_next_flags = htons(pds_flags);
+
+	pdc_pkt->psn = pdc->next_psn++;
+
+	pds_hdr->psn = htonl(pdc_pkt->psn);
+	pds_hdr->spdcid = htons(pdc->pdc_id);
+
+	if (pdc->state == PDC_STATE_SYN) {
+		pds_hdr->mode_psn_off =
+			htons((pdc->syn_offset &
+			       UET_PDS_REQ_PSN_OFF_MASK) <<
+			      UET_PDS_REQ_PSN_OFF_SHIFT);
+		pdc->syn_offset++;
+	} else {
+		pds_hdr->dpdcid = htons(pdc->dpdcid);
+	}
+
+	if (pds_info) {
+		pds_hdr->fwd_psn = htonl(pds_info->opsn);
+	} else {
+		/*
+		 * Set the clear_psn to the left edge of the tx_bm
+		 * which moves forward as ACKs are received. Note that
+		 * this is considered a cumulative clear value.
+		 */
+		pds_hdr->clear_psn = htonl(pdc->tx_bm_base_psn);
+	}
+
+	/* copy in the SES header and payload */
+
+	memcpy(ses_hdr, ses, ses_len);
+	memcpy(payload, pkt, pkt_len);
+
+	/* build the IP header */
 
 	/* TODO: IPv6 support */
 	uet_build_ipv4_hdr(uet,
-			   &pdc_pkt->pkt->common.ipv4,
+			   (struct iphdr *)(pdc_pkt->pkt +
+					    sizeof(struct ethhdr)),
 			   htonl(dst_addr->fa.v4),
 			   htonl(uet_ep->ipv4_addr),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos);
-
-	memcpy(ses_hdr, ses, ses_len);
-	memcpy(payload, pkt, pkt_len);
 
 	/* save some params specific for this packet */
 	pdc_pkt->msg_id        = msg_id;
@@ -905,6 +1029,17 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	pdc_pkt->tx_pkt_handle = tx_pkt_handle;
 	pdc_pkt->tx_pkt_acked  = false;
 	pdc_pkt->flags         = flags;
+
+	/* send the packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
+	if (rc != FI_SUCCESS) {
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return rc;
+	}
+
+	/* the packet was sent successfully */
+	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
 
 	/* set this packet in the tx_bm */
 	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u",
@@ -923,30 +1058,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	}
 
 	/* insert the packet to the end of the timeout queue */
-	uet_gettime(&pdc_pkt->tx_time);
 	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
 
-	rc = uet_parse_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len,
-			   &pdc_pkt->pkt_pp);
-	if (rc != FI_SUCCESS) {
-		UET_PDS_ERR("malformed Tx packet");
-		free(pdc_pkt->pkt);
-		free(pdc_pkt);
-		return rc;
-	}
-
-	pdc_pkt->pkt_parsed = true;
-
-	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
-
-	rc = uet_pds_nic_tx_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len);
-	if (rc != FI_SUCCESS) {
-		bm_unset(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn));
-		free(pdc_pkt->pkt);
-		free(pdc_pkt);
-	}
-
-	return rc;
+	return FI_SUCCESS;
 }
 
 static int uet_pds_rtx_pkt(struct uet_instance *uet,
@@ -954,30 +1068,27 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 			   struct uet_pdc_pkt *pdc_pkt)
 {
 	struct uet_pds_req *pds_hdr;
+	uint8_t *new_pkt;
+	int new_pkt_len;
 	int rc;
-
-	if (!pdc_pkt->pkt_parsed) {
-		rc = uet_parse_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len,
-				   &pdc_pkt->pkt_pp);
-		if (rc != FI_SUCCESS) {
-			UET_PDS_ERR("malformed Tx packet to retransmit");
-			return rc;
-		}
-
-		pdc_pkt->pkt_parsed = true;
-	}
 
 	/* set the retransmit flag in the PDS header */
 	pds_hdr = (struct uet_pds_req *)pdc_pkt->pkt_pp.pds;
 	pds_hdr->prlg.type_next_flags |=
 		 htons(UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT);
 
+	/* retransmit the packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, true);
+	if (rc != FI_SUCCESS)
+		return rc;
+
+	/* the packet was sent successfully */
+
 	pdc_pkt->tx_retry_cnt++;
-	uet_gettime(&pdc_pkt->tx_time);
 
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET (retransmit)");
 
-	return uet_pds_nic_tx_pkt(uet, pdc_pkt->pkt, pdc_pkt->pkt_len);
+	return FI_SUCCESS;
 }
 
 static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
@@ -1090,43 +1201,45 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 				  struct uet_pdc *pdc,
 				  struct uet_pdc_pkt *pdc_pkt,
 				  uet_next_hdr_t next_hdr,
-				  size_t ses_hdr_len,
-				  void *ses_hdr)
+				  void *ses_hdr,
+				  size_t ses_hdr_len)
 {
 	uint8_t flags;
-	void *ack_ses;
+	struct uet_pds_ack *ack_pds;
+	uint8_t *ack_ses;
 
-	if (next_hdr == UET_HDR_RSP)
-		ack_ses = &pdc_pkt->ack->std_rsp.ses;
-	else /* response w/ data */
-		ack_ses = &pdc_pkt->ack->std_rsp_d_ack.ses;
+	/* TODO: IPv6 support */
+	ack_pds = (struct uet_pds_ack *)(pdc_pkt->ack +
+					 sizeof(struct ethhdr) +
+					 sizeof(struct iphdr));
+	ack_ses = (uint8_t *)(ack_pds + 1);
 
-	uet_build_eth_hdr(&pdc_pkt->ack->common.eth,
-			  pdc_pkt->pkt->common.eth.h_source,
-			  pdc_pkt->pkt->common.eth.h_dest);
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->ack,
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest);
 
 	/* TODO: IPv6 support */
 	uet_build_ipv4_hdr(uet,
-			   &pdc_pkt->ack->common.ipv4,
-			   pdc_pkt->pkt->common.ipv4.saddr,
-			   pdc_pkt->pkt->common.ipv4.daddr,
+			   (struct iphdr *)(pdc_pkt->ack +
+					    sizeof(struct ethhdr)),
+			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
+			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
 			   uet->pds.ack_ip_tos);
 
-	pdc_pkt->ack->common.pds.prlg.entropy =
-		pdc_pkt->pkt->common.pds.prlg.entropy;
+	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
 				       : UET_PDS_ACK_FLAGS_NONE;
-	pdc_pkt->ack->common.pds.prlg.type_next_flags =
+	ack_pds->prlg.type_next_flags =
 		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
 		      (next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		      (flags << UET_PDS_FLAGS_SHIFT));
 
-	pdc_pkt->ack->common.pds.psn    = pdc_pkt->pkt->common.pds.psn;
-	pdc_pkt->ack->common.pds.spdcid = htons(pdc->pdc_id);
-	pdc_pkt->ack->common.pds.dpdcid = htons(pdc->dpdcid);
+	ack_pds->psn    = htonl(pdc_pkt->pkt_pp.pds_psn);
+	ack_pds->spdcid = htons(pdc->pdc_id);
+	ack_pds->dpdcid = htons(pdc->dpdcid);
 
 	memcpy(ack_ses, ses_hdr, ses_hdr_len);
 }
@@ -1143,105 +1256,153 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	uint16_t ack_data_len;
 	int rc;
 
-	if (next_hdr == UET_HDR_RSP)
-		pdc_pkt->ack_len = sizeof(struct uet_std_rsp_pkt);
-	else { /* response w/ data */
+	/* TODO: IPv6 support */
+	if (next_hdr == UET_HDR_RSP) {
+		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
+				    sizeof(struct iphdr) +
+				    sizeof(struct uet_pds_ack) +
+				    sizeof(struct uet_ses_rsp));
+	} else { /* response w/ data */
 		ack_data_len = (ses_hdr_len - sizeof(struct uet_ses_rsp_d));
-		pdc_pkt->ack_len = (sizeof(struct uet_std_rsp_d_ack_pkt) +
+		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
+				    sizeof(struct iphdr) +
+				    sizeof(struct uet_pds_ack) +
+				    sizeof(struct uet_ses_rsp_d) +
 				    ack_data_len);
 	}
 
 	/* allocate buffer for ack packet */
-	pdc_pkt->ack = calloc(1, pdc_pkt->ack_len);
-	if (pdc_pkt->ack == NULL) {
+	pdc_pkt->ack_buf_len = ((pdc_pkt->ack_len +
+				 ((pdc->sec_enabled)
+				  ? (UET_SEC_MAX_HDR_LEN +
+				     UET_SEC_TAG_LEN)
+				  : 0)) *
+				((pdc->sec_enabled) ? 2 : 1));
+	pdc_pkt->ack_buf = calloc(1, pdc_pkt->ack_buf_len);
+	if (pdc_pkt->ack_buf == NULL) {
 		UET_PDS_ERR("failed to alloc ACK packet buffer");
 		return -FI_ENOMEM;
 	}
+
+	pdc_pkt->ack = (pdc->sec_enabled)
+			? (pdc_pkt->ack_buf + UET_SEC_MAX_HDR_LEN)
+			: pdc_pkt->ack_buf;
 
 	pdc_pkt->needs_clear = gtd_del;
 
 	/* build the ACK packet */
 	uet_pds_build_ack_pkt(uet, pdc, pdc_pkt, next_hdr,
-			      ses_hdr_len, ses_hdr);
+			      ses_hdr, ses_hdr_len);
 
-	rc = uet_parse_pkt(uet, pdc_pkt->ack, pdc_pkt->ack_len,
-			   &pdc_pkt->ack_pp);
+	/* send the ACK packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, false, false);
 	if (rc != FI_SUCCESS) {
-		UET_PDS_ERR("malformed ACK packet");
 		pdc_pkt->needs_clear = false;
 		pdc_pkt->ack_len = 0;
-		free(pdc_pkt->ack);
+		free(pdc_pkt->ack_buf);
 		return rc;
 	}
+
+	/* the packet was sent successfully */
 
 	pdc_pkt->ack_parsed = true;
 
 	uet_pds_pkt_dbg(uet, &pdc_pkt->ack_pp, true, "TX ACK PACKET");
 
-	/* send the ACK packet */
-	rc = uet_pds_nic_tx_pkt(uet, pdc_pkt->ack, pdc_pkt->ack_len);
-	if (rc != FI_SUCCESS) {
-		pdc_pkt->needs_clear = false;
-		pdc_pkt->ack_len = 0;
-		free(pdc_pkt->ack);
-	}
-
-	return rc;
+	return FI_SUCCESS;
 }
 
 static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 				      struct uet_pdc *pdc,
 				      struct uet_pdc_pkt *pdc_pkt)
 {
-	union uet_pkt def_rsp;
-	int def_rsp_len = sizeof(struct uet_def_rsp_pkt);
-	struct uet_parsed_pkt pp;
+	uint8_t *def_rsp_buf;
+	int def_rsp_buf_len;
+	uint8_t *def_rsp;
+	int def_rsp_len;
+	struct uet_pdc_pkt tmp_pdc_pkt;
+	struct uet_pds_ack *ack_pds;
+	struct uet_pds_def_rsp *ack_ses;
 	int rc;
 
-	memset(&def_rsp, 0, sizeof(def_rsp));
+	def_rsp_len = (sizeof(struct ethhdr) +
+		       sizeof(struct iphdr) +
+		       sizeof(struct uet_pds_ack) +
+		       sizeof(struct uet_pds_def_rsp));
 
-	uet_build_eth_hdr(&def_rsp.common.eth,
-			  pdc_pkt->pkt->common.eth.h_source,
-			  pdc_pkt->pkt->common.eth.h_dest);
+	/* allocate buffer for ack packet */
+	def_rsp_buf_len = ((def_rsp_len +
+			     ((pdc->sec_enabled)
+			      ? (UET_SEC_MAX_HDR_LEN +
+				 UET_SEC_TAG_LEN)
+			      : 0)) *
+			   ((pdc->sec_enabled) ? 2 : 1));
+	def_rsp_buf = calloc(1, def_rsp_buf_len);
+	if (def_rsp_buf == NULL) {
+		UET_PDS_ERR("failed to alloc DEF_RSP ACK packet buffer");
+		return -FI_ENOMEM;
+	}
+
+	def_rsp = (pdc->sec_enabled)
+			? (def_rsp_buf + UET_SEC_MAX_HDR_LEN)
+			: def_rsp_buf;
+
+	memset(&tmp_pdc_pkt, 0, sizeof(tmp_pdc_pkt));
+	tmp_pdc_pkt.ack_buf     = def_rsp_buf;
+	tmp_pdc_pkt.ack_buf_len = def_rsp_buf_len;
+	tmp_pdc_pkt.ack         = def_rsp;
+	tmp_pdc_pkt.ack_len     = def_rsp_len;
+	tmp_pdc_pkt.ack_parsed  = false;
+
+	/* TODO: IPv6 support */
+	ack_pds = (struct uet_pds_ack *)(def_rsp +
+					 sizeof(struct ethhdr) +
+					 sizeof(struct iphdr));
+	ack_ses = (struct uet_pds_def_rsp *)(ack_pds + 1);
+
+	uet_build_eth_hdr((struct ethhdr *)def_rsp,
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest);
 
 	/* TODO: IPv6 support */
 	uet_build_ipv4_hdr(uet,
-			   &def_rsp.common.ipv4,
-			   pdc_pkt->pkt->common.ipv4.saddr,
-			   pdc_pkt->pkt->common.ipv4.daddr,
+			   (struct iphdr *)(def_rsp +
+					    sizeof(struct ethhdr)),
+			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
+			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (def_rsp_len - uet->nic.l2_hdr_size),
 			   uet->pds.ack_ip_tos);
 
-	def_rsp.common.pds.prlg.entropy =
-		pdc_pkt->pkt->common.pds.prlg.entropy;
+	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
-	def_rsp.common.pds.prlg.type_next_flags =
+	ack_pds->prlg.type_next_flags =
 		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
 		      (UET_HDR_RSP << UET_PDS_NEXT_HDR_SHIFT) |
 		      (UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 
-	def_rsp.common.pds.psn    = pdc_pkt->pkt->common.pds.psn;
-	def_rsp.common.pds.spdcid = htons(pdc->pdc_id);
-	def_rsp.common.pds.dpdcid = htons(pdc->dpdcid);
+	ack_pds->psn    = htonl(pdc_pkt->pkt_pp.pds_psn);
+	ack_pds->spdcid = htons(pdc->pdc_id);
+	ack_pds->dpdcid = htons(pdc->dpdcid);
 
-	def_rsp.def_rsp.ses.list_opcode =
+	ack_ses->list_opcode =
 		(UET_DEFAULT_RESPONSE << UET_PDS_SES_DEF_RSP_OPCODE_SHIFT);
-	def_rsp.def_rsp.ses.ver_return_code =
+	ack_ses->ver_return_code =
 		(UET_RC_NULL << UET_PDS_SES_DEF_RSP_RETCODE_SHIFT);
-	def_rsp.def_rsp.ses.msg_id =
-		((struct uet_ses_rsp_cmn *)pdc_pkt->pkt_pp.ses)->msg_id;
+	ack_ses->msg_id = htons(pdc_pkt->pkt_pp.ses_msg_id);
 
-	rc = uet_parse_pkt(uet, &def_rsp, def_rsp_len, &pp);
+	/* send the default response ACK packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, &tmp_pdc_pkt, false, false);
 	if (rc != FI_SUCCESS) {
-		UET_PDS_ERR("malformed DEF_RSP ACK packet");
+		free(def_rsp_buf);
 		return rc;
 	}
 
-	uet_pds_pkt_dbg(uet, &pp, true, "TX DEF_RSP ACK PACKET (duplicate)");
+	uet_pds_pkt_dbg(uet, &tmp_pdc_pkt.ack_pp, true,
+			"TX DEF_RSP ACK PACKET (duplicate)");
 
-	/* send the ACK packet */
-	return uet_pds_nic_tx_pkt(uet, &def_rsp, def_rsp_len);
+	free(def_rsp_buf);
+	return FI_SUCCESS;
 }
 
 static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
@@ -1287,13 +1448,13 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 
 		*rtx = true;
 	} else if (orig_pkt->ack) {
-		uet_pds_pkt_dbg(uet, &orig_pkt->ack_pp, true,
-				"TX ACK PACKET (duplicate)");
-
 		/* resend previous ACK/response */
-		rc = uet_pds_nic_tx_pkt(uet, orig_pkt->ack, orig_pkt->ack_len);
+		rc = uet_pds_sec_tx_pkt(uet, pdc, orig_pkt, false, true);
 		if (rc != FI_SUCCESS)
 			return rc;
+
+		uet_pds_pkt_dbg(uet, &orig_pkt->ack_pp, true,
+				"TX ACK PACKET (duplicate)");
 
 		*rtx = true;
 	} else {
@@ -1388,10 +1549,10 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 		bm_shift_right(pdc->rx_bm, 1);
 		pdc->rx_bm_base_psn++;
 
-		if (pdc_pkt->ack)
-			free(pdc_pkt->ack);
-		if (pdc_pkt->pkt)
-			free(pdc_pkt->pkt);
+		if (pdc_pkt->ack_buf)
+			free(pdc_pkt->ack_buf);
+		if (pdc_pkt->pkt_buf)
+			free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 	}
 
@@ -1432,10 +1593,10 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 		bm_shift_right(pdc->ack_bm, 1);
 		pdc->tx_bm_base_psn++;
 
-		if (pdc_pkt->ack)
-			free(pdc_pkt->ack);
-		if (pdc_pkt->pkt)
-			free(pdc_pkt->pkt);
+		if (pdc_pkt->ack_buf)
+			free(pdc_pkt->ack_buf);
+		if (pdc_pkt->pkt_buf)
+			free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 	}
 
@@ -1624,7 +1785,7 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 
 static int uet_pds_process_request(struct uet_instance *uet,
 				   struct uet_parsed_pkt *pp,
-				   union uet_pkt *pkt,
+				   uint8_t *pkt,
 				   int pkt_len)
 {
 	struct uet_pdc_pkt *pdc_pkt;
@@ -1744,7 +1905,7 @@ exit_err:
 
 int uet_pds_progress_rx(struct uet_instance *uet)
 {
-	union uet_pkt *pkt;
+	uint8_t *pkt;
 	int pkt_len;
 	struct uet_parsed_pkt pp;
 	bool pkt_is_ack, pkt_is_rd_rsp;
@@ -1757,7 +1918,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	bool ses_nack, gtd_del, rtx;
 	int rc = FI_SUCCESS;
 
-	rc = uet_pds_nic_rx_pkt(uet, &pkt, &pkt_len);
+	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
 	if (rc != 1)
 		return rc;
 

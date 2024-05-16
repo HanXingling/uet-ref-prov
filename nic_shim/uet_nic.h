@@ -16,8 +16,6 @@
 
 #include <rdma/fabric.h>
 
-#include "uet_pkt_hdr.h"
-
 //#define UET_NIC_DEBUG_HEXDUMP
 
 /* environment variables to control the NIC interface */

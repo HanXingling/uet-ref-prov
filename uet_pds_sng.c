@@ -17,6 +17,76 @@
 #include "uet_pkt_chk.h"
 #include "uet_nic.h"
 
+/****************************************************************************/
+/*                      FULL HEADER STACKS (UTILITY)                        */
+/****************************************************************************/
+
+/* uet standard request packet format */
+struct UET_PACKED uet_std_req_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_pds_req     pds;
+	struct uet_ses_req_std ses;
+	uint8_t                payload[];
+};
+
+/* uet default response packet format */
+struct UET_PACKED uet_def_rsp_pkt {
+	struct ethhdr          eth;
+	struct iphdr           ipv4;
+	struct uet_pds_ack     pds;
+	struct uet_pds_def_rsp ses;
+};
+
+/* uet standard response packet format */
+struct UET_PACKED uet_std_rsp_pkt {
+	struct ethhdr      eth;
+	struct iphdr       ipv4;
+	struct uet_pds_ack pds;
+	struct uet_ses_rsp ses;
+	uint8_t            payload[];
+};
+
+/* uet standard response with data ack packet format */
+struct UET_PACKED uet_std_rsp_d_ack_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_pds_ack   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+/* uet standard response with data request packet format */
+struct UET_PACKED uet_std_rsp_d_req_pkt {
+	struct ethhdr        eth;
+	struct iphdr         ipv4;
+	struct uet_pds_req   pds;
+	struct uet_ses_rsp_d ses;
+	uint8_t              payload[];
+};
+
+/* uet packet (union used to represent any packet type) */
+union UET_PACKED uet_pkt {
+	struct UET_PACKED {
+		struct ethhdr eth;
+		struct iphdr  ipv4;
+		struct UET_PACKED {
+			struct uet_pds_prlg prlg;
+			uint32_t            psn;
+			uint16_t            spdcid;
+			uint16_t            dpdcid;
+		} pds;
+	} common;
+
+	struct uet_std_req_pkt       std_req;
+	struct uet_def_rsp_pkt       def_rsp;
+	struct uet_std_rsp_pkt       std_rsp;
+	struct uet_std_rsp_d_req_pkt std_rsp_d;
+	struct uet_std_rsp_d_ack_pkt std_rsp_d_ack;
+};
+
+/****************************************************************************/
+
 /* determine if tx is active for an endpoint */
 /* pds transmit state */
 struct uet_pds_sng_tx_state {
@@ -750,8 +820,8 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	}
 
 	/* validate the packet */
-	if (!uet_pds_rx_pkt_chk(uet, pkt, rx_pkt_size, &pkt_is_ack,
-				&pkt_is_rd_rsp))
+	if (!uet_pds_rx_pkt_chk(uet, (uint8_t *)pkt, rx_pkt_size,
+				&pkt_is_ack, &pkt_is_rd_rsp))
 		goto exit;
 
 	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");

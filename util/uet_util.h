@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <rdma/fi_errno.h>
 
+#include "uet_addr.h"
 #include "uet_pkt_hdr.h"
 
 #define UET_MSEC_PER_SEC  1000
@@ -71,6 +72,11 @@ struct uet_parsed_pkt {
 	uint16_t udp_len;
 	void *sec;                                     /* uet security header */
 	uint16_t sec_len;
+	uint8_t sec_an;
+	uint32_t sec_sdi;
+	bool sec_ssi_valid;
+	uint32_t sec_ssi;
+	uint64_t sec_tsc;
 	void *pds;
 	uint16_t pds_len;
 	uint16_t entropy;             /* from udp source port or pds_prologue */
@@ -87,7 +93,7 @@ struct uet_parsed_pkt {
 	void *ses;
 	uint16_t ses_len;
 	uint8_t ses_opcode;
-	uint8_t ses_msg_id;
+	uint16_t ses_msg_id;
 	uint16_t hdr_len;                              /* total header length */
 	uint16_t trailer_len;           /* total trailer length (crc and icv) */
 	void *payload;                                         /* ses payload */
