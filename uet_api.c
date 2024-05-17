@@ -2043,7 +2043,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	struct uet_ring *ring;
 	struct uet_rx_desc *rx_desc;
 	struct uet_rx_msg_key msg_key;
-	struct uet_tag_initiator_key tag_key;
+	struct uet_tag_initiator_key tag_key, tag_only_key;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
@@ -2076,7 +2076,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		/* process header data */
 		if (write && (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
 			/* check cq format */
-			if (uet_ep->recv_cq.format_size <
+		if (uet_ep->recv_cq.format_size <
 			    sizeof(struct fi_cq_data_entry)) {
 				UET_API_ERR("RX: No CQ Support for Write Imm");
 				return (uet_rx_msg_err(
@@ -2166,6 +2166,17 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			uet_tag_initiator_key_init(&tag_key, pp);
 			rx_desc = uet_tag_initiator_hash_lookup(uet_ep,
 								&tag_key);
+			if (rx_desc == NULL) {
+				/* lookup without initiator */
+				memset(&tag_only_key, 0,
+				       sizeof(struct uet_tag_initiator_key));
+				tag_only_key.tag = tag_key.tag;
+				tag_only_key.initiator_invalid = true;
+				tag_only_key.initiator = UET_INITIATOR_NONE;
+				rx_desc = uet_tag_initiator_hash_lookup(
+							uet_ep, &tag_only_key);
+			}
+
 			if (rx_desc == NULL) {
 				ses_rc = UET_RC_NO_MATCH;
 				if (pp->ses_opcode == UET_DEFER_TSEND)
@@ -3461,10 +3472,14 @@ static void uet_tx_rtr_try(struct uet_ep *uet_ep, struct uet_rx_desc *rx_desc,
 		dlist_foreach(head, item) {
 			tx_desc = container_of(item, struct uet_tx_desc,
 					       list_entry);
-			if ((tx_desc->ephemeral_av.uet_addr.initiator_id ==
-			     ntohl(rx_desc->tag_key.initiator)) &&
-			    (tx_desc->tag_or_immdata ==
-			     ntohll(rx_desc->tag_key.tag)))
+			if (rx_desc->tag_key.initiator_invalid) {
+				if (tx_desc->tag_or_immdata ==
+				    ntohll(rx_desc->tag_key.tag))
+					goto initiate_rtr;
+			} else if ((tx_desc->ephemeral_av.uet_addr.initiator_id
+				    == ntohl(rx_desc->tag_key.initiator)) &&
+				   (tx_desc->tag_or_immdata ==
+				    ntohll(rx_desc->tag_key.tag)))
 				goto initiate_rtr;
 		}
 		break;
@@ -3500,12 +3515,6 @@ static ssize_t uet_recv_api_common(
 	}
 
 	if (recv_api == UET_TRECV_API) {
-		/* check that src_addr is specified */
-		if (src_addr_handle == UET_NULL_HANDLE) {
-			UET_API_ERR("Src Addr Required for uet_trecv()");
-			return -FI_EINVAL;
-		}
-
 		/* check that ignore bits are not specified */
 		if (ignore != UET_EXACT_MATCH) {
 			UET_API_ERR(
@@ -3549,9 +3558,15 @@ static ssize_t uet_recv_api_common(
 		memset(&rx_desc->tag_key, 0,
 		       sizeof(struct uet_tag_initiator_key));
 		rx_desc->tag_key.tag = htonll(tag);
-		av_entry = (struct uet_av_entry *) src_addr_handle;
-		rx_desc->tag_key.initiator =
-			htonl(av_entry->addr->initiator_id);
+		if (src_addr_handle == UET_NULL_HANDLE) {
+			rx_desc->tag_key.initiator_invalid = true;
+			rx_desc->tag_key.initiator = UET_INITIATOR_NONE;
+		} else {
+			av_entry = (struct uet_av_entry *) src_addr_handle;
+			rx_desc->tag_key.initiator_invalid = false;
+			rx_desc->tag_key.initiator =
+				htonl(av_entry->addr->initiator_id);
+		}
 		uet_tag_initiator_hash_insert(uet_ep, rx_desc);
 
 		if (uet_ep->tagged_gen_disabled) {
