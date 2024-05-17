@@ -62,8 +62,8 @@
 #define UET_MSG_RENDEZVOUS_SIZE		8192
 #define UET_TAG_RENDEZVOUS_SIZE		8192
 
-#define UET_API_ERR(fmt, ...)                                         \
-	fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n", "error",  \
+#define UET_API_ERR(fmt, ...)				\
+	fprintf(stderr, "UET API: %s:%-4d: " fmt "\n",	\
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_API_DEBUG_ENABLED false /* true => debug messages enabled */
@@ -170,8 +170,10 @@ struct uet_rx_msg_key {
 };
 
 /* for hash lookup of tagged buffer with {tag, initiator} key */
+#define UET_INITIATOR_NONE 0			  /* for lookup on {tag} only */
 struct uet_tag_initiator_key {
 	uint64_t tag;
+	bool initiator_invalid;
 	uint32_t initiator;
 };
 

@@ -104,6 +104,7 @@ struct uet_cfg {
 	char *prog_name;                               /* ptr to program name */
 	bool client;                /* true => operate as client, else server */
 	bool tag;                              /* true => use tagged messages */
+	bool tag_any_src;          /* true => tagged buffers match any source */
 	bool rma;                               /* true => use rma operations */
 	bool test;				    /* true => run test suite */
 	bool unexpected_msg_test;  /* true => this is unexpected message test */
@@ -818,13 +819,19 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 	ssize_t ret;
 	time_t start, now, delta;
 	struct fi_cq_data_entry cq_entry;
+	uet_addr_handle_t addr_handle;
 
 	if (ctx->cfg.tag) {
+		if (ctx->cfg.tag_any_src)
+			addr_handle = UET_NULL_HANDLE;
+		else
+			addr_handle = ctx->peer_addr_handle;
+
 		if (!first) {
 			/* post tagged rx buffer */
 			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY,
 					ctx->rx_msg, ctx->cfg.msg_size,
-					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_NULL_HANDLE, addr_handle,
 					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
@@ -872,7 +879,7 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 
 	if (first) {
 		uet_gettime(&start);
-#define UNEXPECTED_MSG_TEST_DELAY 5 /* msecs */
+#define UNEXPECTED_MSG_TEST_DELAY 3 /* msecs */
 		for (now = start, delta = 0;
 		     delta < UNEXPECTED_MSG_TEST_DELAY;
 		     delta = now - start) {
@@ -885,7 +892,7 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 			/* post tagged rx buffer */
 			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY,
 					ctx->rx_msg, ctx->cfg.msg_size,
-					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_NULL_HANDLE, addr_handle,
 					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
@@ -926,12 +933,18 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 {
 	ssize_t ret;
 	struct fi_cq_data_entry cq_entry;
+	uet_addr_handle_t addr_handle;
 
 	if (ctx->cfg.tag) {
+		if (ctx->cfg.tag_any_src)
+			addr_handle = UET_NULL_HANDLE;
+		else
+			addr_handle = ctx->peer_addr_handle;
+
 		/* post tagged rx buffer */
 		ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
 				ctx->cfg.msg_size, UET_NULL_HANDLE,
-				ctx->peer_addr_handle, UET_DEFAULT_TAG,
+				addr_handle, UET_DEFAULT_TAG,
 				UET_EXACT_MATCH, NULL);
 		if (ret < 0) {
 			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
@@ -998,12 +1011,18 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 {
 	ssize_t ret;
 	struct fi_cq_data_entry cq_entry;
+	uet_addr_handle_t addr_handle;
 
 	if (ctx->cfg.tag) {
+		if (ctx->cfg.tag_any_src)
+			addr_handle = UET_NULL_HANDLE;
+		else
+			addr_handle = ctx->peer_addr_handle;
+
 		/* post tagged rx buffer */
 		ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
 				ctx->cfg.msg_size, UET_NULL_HANDLE,
-				ctx->peer_addr_handle, UET_DEFAULT_TAG,
+				addr_handle, UET_DEFAULT_TAG,
 				UET_EXACT_MATCH, NULL);
 		if (ret < 0) {
 			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
@@ -1015,7 +1034,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 			       ctx->cfg.msg_size, UET_NULL_HANDLE,
 			       UET_NULL_HANDLE, NULL);
 		if (ret < 0) {
-			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+			UET_ERR("uet_recv: %s", fi_strerror(-ret));
 			return UET_ERR_RC;
 		}
 	}
@@ -1172,6 +1191,15 @@ int main(int argc, char *argv[])
 	if (rc != UET_SUCCESS_RC)
 		exit(rc);
 
+	printf("\nTagged Message Test (Any Source)\n");
+	printf("================================\n");
+	memset(ctx, 0, sizeof(struct uet_context));
+	ctx->cfg.tag_any_src = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
 	printf("\nRMA Test\n");
 	printf("========\n");
 	test_argc = 4;
@@ -1229,6 +1257,18 @@ int main(int argc, char *argv[])
 	first = true;
 	ctx->cfg.unexpected_msg_test = true;
 	ctx->cfg.dsend_test = true;
+
+	rc = uet_run(test_argc, test_argv, ctx);
+	if (rc != UET_SUCCESS_RC)
+		exit(rc);
+
+	printf("\nDeferred Tagged Send Message Test (Any Source)\n");
+	printf("==============================================\n");
+	memset(ctx, 0, sizeof(struct uet_context));
+	first = true;
+	ctx->cfg.unexpected_msg_test = true;
+	ctx->cfg.dsend_test = true;
+	ctx->cfg.tag_any_src = true;
 
 	rc = uet_run(test_argc, test_argv, ctx);
 	exit(rc);
