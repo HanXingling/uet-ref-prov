@@ -41,6 +41,7 @@
 #include "uet_pkt_hdr.h"
 #include "uet_api.h"
 #include "uet_util.h"
+#include "uet_sec.h"
 #include "uet_pds.h"
 #include "uet_api_private.h"
 
@@ -3755,6 +3756,10 @@ int uet_initialize(uet_handle_t *handle)
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
 
 	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
+
+	rc = uet_sec_init();
+	if (rc != FI_SUCCESS)
+		goto err_return;
 
 	rc = uet_pds_init(uet);
 	if (rc != FI_SUCCESS)

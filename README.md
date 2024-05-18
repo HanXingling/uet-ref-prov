@@ -5,7 +5,7 @@ This repository provides a reference implementation of the UEC transport
 specifications including:
 - Semantic Sublayer (SES)
 - Packet Delivery Sublayer (PDS) - Reliability and Congestion Management
-- Security
+- UEC Secure Transport Protocol (USP) - Encryption and Integrity
 
 See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
 
@@ -22,19 +22,21 @@ See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
 ## Overview
 
 The framework for the UET Reference Provider is layered. The layers include
-SES, PDS, Security, and NIC.
+SES, PDS, USP, and NIC.
 
-The SES layer is accessed via UET APIs (see uet_api.h)
-
-SES interfaces with PDS via SES-PDS APIs (see uet_pds.h)
-
-The NIC shim interface is accessed via a set of abstracted APIs (see
+- The SES layer is accessed via UET APIs (see uet_api.h)
+- SES interfaces with PDS via SES-PDS APIs (see uet_pds.h)
+- PDS interfaces with USP via PDS-USP APIs (see uet_sec.h)
+- The NIC shim interface is accessed via a set of abstracted APIs (see
 uet_nic.h).
 
 The current SES implementation supports a subset of the functionality required
 for:
-- Sending and receiving both untagged and tagged messages
+- Sending and receiving untagged messages
+- Sending and receiving tagged messages
+- Deferred send operations
 - RMA write operations
+- RMA read operations
 
 This is a work-in-progress and additional functionality will be incrementally
 added.
@@ -44,8 +46,8 @@ added.
 There are two PDS implementations available which can be selected using
 the `UET_PDS` environment variable. The first PDS implementation is a simple
 stop-and-go ROD transport that is sufficient to enable development of other
-layers. The second PDS implementation is fully featured (and probably buggy)
-transport based on the UET PDS Specification.
+layers. The second PDS implementation is fully featured transport based on the
+UET PDS Specification.
 
 There are currently two implementations of the NIC shim interface APIs:
 - Raw Ethernet socket
@@ -90,7 +92,7 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 % tar -jxvf libfabric-1.20.1.tar.bz2
 % ln -s libfabric-1.20.1 libfabric
 % cd libfabric
-% autoreconf    # might be needed depending on the system
+% autoreconf
 % ./configure
 % make -j
 ```
@@ -105,10 +107,14 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 % make
 
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet server 192.168.1.2
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       ./uet server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet client 192.168.1.1
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       ./uet client 192.168.1.1
 ```
 
 #### Containerized
@@ -124,7 +130,7 @@ The tools currently require [`buildah`](https://buildah.io/) to build and
 
 ### xdp
 
-> The `uet_xdp` program has both `rawsock` and `xdp` build into it and the
+> The `uet_xdp` program has both `rawsock` and `xdp` built into it and the
 > default NIC shim is `xdp`. The `UET_NIC_SHIM` environment variable can be
 > used to override the default.
 
@@ -140,10 +146,14 @@ over the interface.
 % make xdp
 
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet_xdp server 192.168.1.2
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       ./uet_xdp server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=ens4f0np0 ./uet_xdp client 192.168.1.1
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       ./uet_xdp client 192.168.1.1
 ```
 
 ### CC tester
@@ -164,6 +174,100 @@ Replace `2` with the desired number of senders.
 - **UET_IFNAME** - The ifname of the interface to attach to.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
+- **UET_SEC_MODE** - [ `direct` | `cluster` | `server` | `domain` ]
+- **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
+- **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
+
+## Security
+
+UET communications can be secured using the USP protocol which results in all
+packets sent by PDS to be encrypted. All four modes of operation defined by
+USP are supported and environment variables are used to select/configure
+the mode.
+
+At this stage of the implementation, only a single static Secure Domain (SD)
+is provisioned with a fixed set of cryptographic keys. No key exchanges or
+key rotations are supported. Note that automatic rekeying is enabled using the
+timestamp field in the packet security header.
+
+- Direct mode
+    - `UET_SEC_MODE=direct`
+    - If `UET_SEC_SSI` is set, the SSI will be used in the IV. When set, the value must be unique across all instances of `uet`.
+- Cluster mode
+    - `UET_SEC_MODE=cluster`
+    - If `UET_SEC_SSI` is set, the SSI will be used in the KDF and IV. When set, the value must be unique across all instances of `uet`. If not set, the source IP address will be used instead.
+- Server mode
+    - server: `UET_SEC_SSI=1 UET_SEC_MODE=server UET_SEC_CLIENT_SSI=2`
+    - client: `UET_SEC_SSI=2 UET_SEC_MODE=server`
+    - At this time, server mode requires that SSIs be used.
+- Domain mode
+    - `UET_SEC_MODE=domain`
+    - If `UET_SEC_SSI` is set, the SSI will be used in the IV. When set, the value must be unique across all instances of `uet`.
+
+Example for `direct` mode without SSIs:
+```
+# server...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=direct \
+       ./uet server 192.168.1.2
+
+# client...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=direct \
+       ./uet client 192.168.1.1
+```
+
+Example for `cluster` mode using SSIs:
+```
+# server...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=cluster \
+       UET_SEC_SSI=1 \
+       ./uet server 192.168.1.2
+
+# client...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=cluster \
+       UET_SEC_SSI=2 \
+       ./uet client 192.168.1.1
+```
+
+Example for `server` mode:
+```
+# server...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=server \
+       UET_SEC_SSI=1 \
+       UET_SEC_CLIENT_SSI=2 \
+       ./uet server 192.168.1.2
+
+# client...
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+       UET_IFNAME=ens4f0np0 \
+       UET_SEC_MODE=server \
+       UET_SEC_SSI=2 \
+       ./uet client 192.168.1.1
+```
+
+### Crypto
+
+Standalone implementations of the cryptographic algorithms are provided for
+the security layer. This includes implementations of AES, AES-GCM, CMAC,
+and the KDF. Source code can be found under the `crypto` directory.
+Verification tests are provided for each of the algorithms and where
+applicable, the set of respective NIST test vectors have been included
+into the test application. Do the following to build and run these tests:
+
+```
+% cd crypto/tests
+% make
+% ./crypto_test
+```
 
 ## XDP
 
@@ -183,21 +287,6 @@ could remain attached. Use `xdp-loader` to unload any XDP programs.
 ```
 % sudo xdp-loader status
 % sudo xdp-loader unload --all ens4f0np0
-```
-
-## Crypto
-
-Standalone implementations of the cryptographic algorithms are provided for
-the UET Security layer. This includes implementations of AES, AES-GCM, CMAC,
-and the KDF. Source code can be found under the `crypto` directory.
-Verification tests are provided for each of the algorithms and where
-applicable, the set of respective NIST test vectors have been included
-into the test application. Do the following to build and run these tests:
-
-```
-% cd crypto/tests
-% make
-% ./crypto_test
 ```
 
 ## Contributing

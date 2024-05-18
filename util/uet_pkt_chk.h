@@ -6,7 +6,6 @@
 #include <stdbool.h>
 
 #include "uet_api_private.h"
-#include "uet_pkt_hdr.h"
 
 /*
  * parse and validate received packet as follows:
@@ -35,7 +34,7 @@
  *      false => packet did not pass validation checks
  */
 bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
-			union uet_pkt *pkt,
+			uint8_t *pkt,
 			size_t pkt_size,
 			bool *pkt_is_ack,
 			bool *pkt_is_rd_rsp);

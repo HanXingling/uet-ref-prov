@@ -67,6 +67,7 @@
 
 #include "uet_api.h"
 #include "uet_api_private.h"
+#include "uet_sec.h"
 
 #define UET_NUM_ITERATIONS	100
 #define UET_MSG_SIZE		4096	/* in bytes */
@@ -356,6 +357,10 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	struct fi_info *hints = NULL, *info;
 	struct uet_addr *uet_addr;
 	uet_rc_t rc = UET_ERR_RC;
+
+	/* FIXME: Hack used to configure client/server security mode */
+	if (!ctx->cfg.client)
+		setenv(UET_SEC_SERVER, "1", 1);
 
 	ret = uet_initialize(&ctx->uet_handle);
 	if (ret) {

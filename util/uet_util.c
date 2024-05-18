@@ -218,7 +218,7 @@ void uet_print_uet_addr(struct uet_addr *uet_addr)
 /* print mac header */
 void uet_print_mac_hdr(struct ethhdr *eth)
 {
-	printf("  MAC Header\n");
+	printf("  MAC Header (%lu)\n", sizeof(struct ethhdr));
 	printf("    Destination MAC Addr: ");
 	uet_print_mac_addr(eth->h_dest);
 	printf("    Source MAC Addr:      ");
@@ -229,7 +229,7 @@ void uet_print_mac_hdr(struct ethhdr *eth)
 /* print ipv4 header */
 void uet_print_ipv4_hdr(struct iphdr *ipv4)
 {
-	printf("  IPv4 Header\n");
+	printf("  IPv4 Header (%lu)\n", sizeof(struct iphdr));
 	printf("    IP Version:           %u\n", ipv4->version);
 	printf("    IHL:                  %u\n", ipv4->ihl);
 	printf("    TOS:                  0x%x\n", ipv4->tos);
@@ -258,7 +258,18 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
 
-	printf("  PDS Header\n");
+	if (pp->sec) {
+		printf("  USP Header (%d)\n", pp->sec_len);
+		printf("    USP AN:               %d\n", pp->sec_an);
+		printf("    USP SDI:              0x%08x\n", pp->sec_sdi);
+		if (pp->sec_ssi_valid) {
+			printf("    USP SSI:              0x%08x\n",
+			        pp->sec_ssi);
+		}
+		printf("    USP TSC:              0x%016lx\n", pp->sec_tsc);
+	}
+
+	printf("  PDS Header (%d)\n", pp->pds_len);
 	printf("    PDS Packet Type:      ");
 
 	switch (pp->pds_type) {
@@ -335,7 +346,7 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		printf("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
 	}
 
-	printf("  SES Header\n");
+	printf("  SES Header (%d)\n", pp->ses_len);
 	switch (pp->next_hdr) {
 	case UET_HDR_REQ_STD:
 		printf("    SES Opcode:           ");
@@ -508,9 +519,9 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp)
 
 {
-	printf("UET Packet Headers\n");
+	printf("UET Packet Headers (pkt_len=%d)\n", pp->pkt_len);
 	uet_print_mac_hdr((struct ethhdr *) pp->eth);
-	uet_print_ipv4_hdr((struct iphdr *) pp->ip);
+	uet_print_ipv4_hdr((struct iphdr *) pp->ip); /* TODO: IPv6 support */
 	uet_print_uet_hdr(pp);
 }
 
@@ -863,10 +874,12 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 {
 	int rc, num_vlan_tags = 0;
 	uint8_t *p, ip_ver;
-	uint16_t cur_len, *etype_p, ethertype, pds_type_next_flags, sec_sp;
+	uint16_t cur_len, *etype_p, ethertype, pds_type_next_flags;
 	bool done = false;
 	struct iphdr *ipv4;
 	struct udphdr *udp;
+	struct uet_sec *sec;
+	struct uet_sec_ssi *sec_ssi;
 	struct uet_pds_prlg *pds_prlg;
 	struct uet_pds_req *pds_req;
 	struct uet_pds_ack *pds_ack;
@@ -985,12 +998,26 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		      UET_PDS_NEXT_HDR_SHIFT) != UET_HDR_PDS)
 			goto err_exit;
 		pp->sec = pds_prlg;
-		sec_sp = (pds_type_next_flags & UET_SEC_SP_MASK) >>
-			 UET_SEC_SP_SHIFT;
-		if (sec_sp)
+		if (pds_type_next_flags & UET_SEC_SP_MASK) {
+			sec_ssi = (struct uet_sec_ssi *)pds_prlg;
+			pp->sec_an = !!(ntohl(sec_ssi->an_sdi) &
+					UET_SEC_AN_MASK);
+			pp->sec_sdi = (ntohl(sec_ssi->an_sdi) &
+				       UET_SEC_SDI_MASK);
+			pp->sec_ssi_valid = true;
+			pp->sec_ssi = ntohl(sec_ssi->ssi);
+			pp->sec_tsc = ntohll(sec_ssi->tsc);
 			pp->sec_len = sizeof(struct uet_sec_ssi);
-		else
+		} else {
+			sec = (struct uet_sec *)pds_prlg;
+			pp->sec_an = !!(ntohl(sec->an_sdi) &
+					UET_SEC_AN_MASK);
+			pp->sec_sdi = (ntohl(sec->an_sdi) &
+				       UET_SEC_SDI_MASK);
+			pp->sec_ssi_valid = false;
+			pp->sec_tsc = ntohll(sec->tsc);
 			pp->sec_len = sizeof(struct uet_sec);
+		}
 		cur_len += pp->sec_len;
 		p = ((uint8_t *) pkt) + cur_len;
 		pds_prlg = (struct uet_pds_prlg *) p;
