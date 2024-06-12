@@ -903,7 +903,7 @@ static void uet_tx_desc_recycle(struct uet_tx_desc *tx_desc,
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_MSG_ID_ALLOCATED) {
 		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_MSG_ID_ALLOCATED;
 		uet_dealloc_msg_id(tx_desc->uet_ep->uet_domain->uet,
-				   &tx_desc->msg_id);
+				   tx_desc->msg_id);
 	}
 
 	/* deallocate restart token associated with descriptor */
@@ -3425,7 +3425,7 @@ static void uet_rtr_msg_age_common(struct uet_ep *uet_ep,
 		if (idle_time < timeout)
 			break;
 		uet_tx_desc_buf_rtr_list_remove(tx_desc);
-		uet_dealloc_msg_id(uet, &tx_desc->msg_id);
+		uet_dealloc_msg_id(uet, tx_desc->msg_id);
 		uet_tx_desc_list_insert(tx_desc);
 		UET_API_ERR("Buffered RTR Message Timeout");
 	}
