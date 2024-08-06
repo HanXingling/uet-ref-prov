@@ -1302,16 +1302,16 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 
 	cq_entry = (struct fi_cq_tagged_entry *) ring_entry->cq_entry;
 	cq_entry->op_context = rx_desc->context;
-	if (cq->format_size > sizeof(struct fi_cq_entry)) {
+	if (cq->format_size >= sizeof(struct fi_cq_entry)) {
 		cq_entry->flags = rx_desc->cq_flags;
 		cq_entry->len = rx_desc->msg_len;
 	}
-	if (cq->format_size > sizeof(struct fi_cq_msg_entry)) {
+	if (cq->format_size >= sizeof(struct fi_cq_msg_entry)) {
 		cq_entry->buf = rx_desc->buf_desc.buf;
 		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE_IMM)
 			cq_entry->data = rx_desc->imm_data;
 	}
-	if ((cq->format_size > sizeof(struct fi_cq_tagged_entry)) &&
+	if ((cq->format_size >= sizeof(struct fi_cq_tagged_entry)) &&
 	    (rx_desc->cq_flags & FI_TAGGED))
 		cq_entry->tag = ntohll(rx_desc->tag_key.tag);
 
