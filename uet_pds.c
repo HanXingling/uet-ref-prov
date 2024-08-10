@@ -310,7 +310,7 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
  */
 static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 			      uint8_t **pkt,
-			      int *pkt_len)
+			      size_t *pkt_len)
 {
 	int tag_len;
 	int rc;
@@ -335,7 +335,7 @@ static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 	rc = uet_nic_rx_pkt(UET_NIC(uet),
 			    *pkt,
 			    uet->nic.max_pkt_size,
-			    (size_t *)pkt_len);
+			    pkt_len);
 	if (rc != 1)
 		goto err_exit;
 
@@ -1906,7 +1906,7 @@ exit_err:
 int uet_pds_progress_rx(struct uet_instance *uet)
 {
 	uint8_t *pkt;
-	int pkt_len;
+	size_t pkt_len;
 	struct uet_parsed_pkt pp;
 	bool pkt_is_ack, pkt_is_rd_rsp;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
