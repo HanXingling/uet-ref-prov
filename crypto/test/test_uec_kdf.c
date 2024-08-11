@@ -9,7 +9,8 @@
  *   Key size: 256b (AES-256)
  *   Counter size: 1B/8b (counter prefixed to fixed data by KDF)
  *
- *   Label: "UE1" (3B, no delimiter)
+ *   Label: "UE1" (3B, no delimiter) Cluter mode KDF
+ *   Label: "UE2" (3B, no delimiter) Server mode KDF
  *
  *   Context:
  *     - zero padding
@@ -82,8 +83,8 @@ uint8_t key[32] = {
 	0xf8, 0xdb, 0x3e, 0x52, 0x43, 0xa2, 0xb0, 0xca,
 };
 
-char *label1 = "UE1";
-char *label2 = "UE2";
+char *clusterLabel = "UE1";
+char *serverLabel  = "UE2";
 
 uint64_t ts       = 0x1DC07480E5000000; // Oct 26, 1985 1:20 AM + 229ms
 uint64_t ts_mask  = 0x00000000FF000000;
@@ -114,15 +115,18 @@ uint8_t ipv6_sdk[32] = {
 	0xb7, 0xe3, 0x61, 0x72, 0x05, 0x0f, 0xdd, 0x55,
 };
 
-uint8_t domain_sdi[4] = {
-	0x80, 0x00, 0x00, 0xE5,
+uint8_t ipv4_server_sdk[32] = {
+    0x8d, 0x05, 0x2c, 0x8d, 0xdc, 0x21, 0x4a, 0xde, 
+	0xdf, 0x43, 0x00, 0xfc, 0x1a, 0x76, 0xb9, 0xee, 
+	0x7b, 0xd0, 0x35, 0xc1, 0x77, 0xfa, 0x79, 0x64, 
+	0x1c, 0x1f, 0x98, 0x76, 0x84, 0x3e, 0xb5, 0xf1  
 };
 
-uint8_t domain_sdk[32] = {
-	0x67, 0x90, 0x53, 0x36, 0xae, 0xbd, 0x8a, 0xfc,
-	0xf3, 0xd2, 0x22, 0x96, 0x6f, 0x70, 0xe8, 0x7f,
-	0xed, 0x42, 0xe9, 0xe0, 0x75, 0xe1, 0x79, 0x22,
-	0xd2, 0xbe, 0xe3, 0x5f, 0x25, 0x7c, 0xf6, 0x57,
+uint8_t ipv6_server_sdk[32] = {
+	0xd8, 0xec, 0x6c, 0x4b, 0xb0, 0xa8, 0xd5, 0xf9, 
+	0x46, 0x2d, 0xa5, 0xca, 0x7e, 0x25, 0x7a, 0x43, 
+	0xc4, 0xf4, 0x53, 0x8c, 0x7b, 0xce, 0x6f, 0xac, 
+	0x44, 0x01, 0xe9, 0x43, 0x3a, 0x0d, 0x7a, 0x9f 
 };
 
 static void print_bytes(uint8_t *data, int len)
@@ -143,8 +147,7 @@ void test_uec_kdf(void)
 	rekey = (uint16_t)((ts & ts_mask) >> ts_shift);
 	rekey = htons(rekey);
 
-	/***********************************************************/
-
+	/*************** Cluster v4*****************************************/
 	memset(derived_key, 0, sizeof(derived_key));
 
 	context = calloc(1, UEC_IPV4_CTX_SIZE);
@@ -154,8 +157,8 @@ void test_uec_kdf(void)
 	kdf_ctr_cmac_aes(key,
 			 UEC_KEY_SIZE,
 			 UEC_CTR_SIZE,
-			 (uint8_t *)label1,
-			 strlen(label1), /* ignore delimiter */
+			 (uint8_t *) clusterLabel,
+			 strlen(clusterLabel), /* ignore delimiter */
 			 context,
 			 UEC_IPV4_CTX_SIZE,
 			 derived_key,
@@ -163,14 +166,13 @@ void test_uec_kdf(void)
 
 	free(context);
 
-	printf("UEC KDF IPv4: ");
+	printf("UEC Cluster Mode KDF IPv4:\t");
 	print_bytes(derived_key, 32);
 
 	if (memcmp(ipv4_sdk, derived_key, 32) != 0)
 		printf("ERROR: IPv4 derived key mismatch\n");
 
-	/***********************************************************/
-
+	/******************* Cluster V6****************************************/
 	memset(derived_key, 0, sizeof(derived_key));
 
 	context = calloc(1, UEC_IPV6_CTX_SIZE);
@@ -180,8 +182,8 @@ void test_uec_kdf(void)
 	kdf_ctr_cmac_aes(key,
 			 UEC_KEY_SIZE,
 			 UEC_CTR_SIZE,
-			 (uint8_t *)label1,
-			 strlen(label1), /* ignore delimiter */
+			 (uint8_t *)clusterLabel,
+			 strlen(clusterLabel), /* ignore delimiter */
 			 context,
 			 UEC_IPV6_CTX_SIZE,
 			 derived_key,
@@ -189,25 +191,23 @@ void test_uec_kdf(void)
 
 	free(context);
 
-	printf("UEC KDF IPv6: ");
+	printf("UEC Cluster Mode KDF IPv6:\t");
 	print_bytes(derived_key, 32);
 
 	if (memcmp(ipv6_sdk, derived_key, 32) != 0)
 		printf("ERROR: IPv6 derived key mismatch\n");
 
-	/***********************************************************/
-
+	/********************* Server v4**************************************/
 	memset(derived_key, 0, sizeof(derived_key));
 
-	context = calloc(1, UEC_DOMM_CTX_SIZE);
-	memcpy((context + 1), (uint8_t *)&rekey, 2);
-	memcpy((context + 3), domain_sdi, 4);
+	context = calloc(1, UEC_IPV4_CTX_SIZE);
+	memcpy((context + 3), ipv4, 4);
 
 	kdf_ctr_cmac_aes(key,
 			 UEC_KEY_SIZE,
 			 UEC_CTR_SIZE,
-			 (uint8_t *)label2,
-			 strlen(label2), /* ignore delimiter */
+			 (uint8_t *) serverLabel,
+			 strlen(serverLabel), /* ignore delimiter */
 			 context,
 			 UEC_DOMM_CTX_SIZE,
 			 derived_key,
@@ -215,10 +215,34 @@ void test_uec_kdf(void)
 
 	free(context);
 
-	printf("UEC KDF DOMAIN: ");
+	printf("UEC Server Mode KDF v4: \t");
 	print_bytes(derived_key, 32);
 
-	if (memcmp(domain_sdk, derived_key, 32) != 0)
-		printf("ERROR: Domain mode derived key mismatch\n");
+	if (memcmp(ipv4_server_sdk, derived_key, 32) != 0)
+		printf("ERROR: Server IPv4 mode derived key mismatch\n");
+
+	/*******************Server V6****************************************/
+	memset(derived_key, 0, sizeof(derived_key));
+
+	context = calloc(1, UEC_IPV6_CTX_SIZE);
+	memcpy((context + 7), ipv6, 16);
+
+	kdf_ctr_cmac_aes(key,
+			 UEC_KEY_SIZE,
+			 UEC_CTR_SIZE,
+			 (uint8_t *)serverLabel,
+			 strlen(serverLabel), /* ignore delimiter */
+			 context,
+			 UEC_IPV6_CTX_SIZE,
+			 derived_key,
+			 UEC_KEY_SIZE);
+
+	free(context);
+
+	printf("UEC Server Mode KDF IPv6:\t");
+	print_bytes(derived_key, 32);
+
+	if (memcmp(ipv6_server_sdk, derived_key, 32) != 0)
+		printf("ERROR: IPv6 derived key mismatch\n");
 }
 

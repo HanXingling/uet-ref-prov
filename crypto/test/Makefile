@@ -9,7 +9,7 @@ BIN=crypto_test
 HDRS=$(wildcard *.h ../*.h)
 SRC=$(wildcard *.c ../*.c)
 
-$(BIN): $(HDRS)
+$(BIN): $(HDRS) $(SRC)
 	@echo 'Building program: $@'
 	@$(CC) $(CFLAGS) $(INCS) $(SRC) -o $@ $(LDFLAGS)
 
