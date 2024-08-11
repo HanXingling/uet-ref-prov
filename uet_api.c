@@ -903,7 +903,7 @@ static void uet_tx_desc_recycle(struct uet_tx_desc *tx_desc,
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_MSG_ID_ALLOCATED) {
 		tx_desc->desc_flags &= ~UET_TX_DESC_FLAG_MSG_ID_ALLOCATED;
 		uet_dealloc_msg_id(tx_desc->uet_ep->uet_domain->uet,
-				   &tx_desc->msg_id);
+				   tx_desc->msg_id);
 	}
 
 	/* deallocate restart token associated with descriptor */
@@ -1302,16 +1302,16 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 
 	cq_entry = (struct fi_cq_tagged_entry *) ring_entry->cq_entry;
 	cq_entry->op_context = rx_desc->context;
-	if (cq->format_size > sizeof(struct fi_cq_entry)) {
+	if (cq->format_size >= sizeof(struct fi_cq_entry)) {
 		cq_entry->flags = rx_desc->cq_flags;
 		cq_entry->len = rx_desc->msg_len;
 	}
-	if (cq->format_size > sizeof(struct fi_cq_msg_entry)) {
+	if (cq->format_size >= sizeof(struct fi_cq_msg_entry)) {
 		cq_entry->buf = rx_desc->buf_desc.buf;
 		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE_IMM)
 			cq_entry->data = rx_desc->imm_data;
 	}
-	if ((cq->format_size > sizeof(struct fi_cq_tagged_entry)) &&
+	if ((cq->format_size >= sizeof(struct fi_cq_tagged_entry)) &&
 	    (rx_desc->cq_flags & FI_TAGGED))
 		cq_entry->tag = ntohll(rx_desc->tag_key.tag);
 
@@ -3425,7 +3425,7 @@ static void uet_rtr_msg_age_common(struct uet_ep *uet_ep,
 		if (idle_time < timeout)
 			break;
 		uet_tx_desc_buf_rtr_list_remove(tx_desc);
-		uet_dealloc_msg_id(uet, &tx_desc->msg_id);
+		uet_dealloc_msg_id(uet, tx_desc->msg_id);
 		uet_tx_desc_list_insert(tx_desc);
 		UET_API_ERR("Buffered RTR Message Timeout");
 	}
