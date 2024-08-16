@@ -4,6 +4,7 @@
  */
 
 #include <stdio.h>
+#include <getopt.h>
 
 extern void do_aes_test(void);
 
@@ -19,25 +20,41 @@ extern void test_uec_kdf(void);
 
 int main(int argc, char *argv[])
 {
-	printf("\n---------------------------------------\n\n");
-	do_aes_test();
-	printf("\n---------------------------------------\n\n");
-	//do_gcm_test(0);
-	do_gcm_test(1);
-	printf("\n---------------------------------------\n\n");
-	//do_gcm_test_updates(0);
-	do_gcm_test_updates(1);
-	printf("\n---------------------------------------\n\n");
-	test_cmac_aes_128();
-	printf("\n---------------------------------------\n\n");
-	test_cmac_aes_192();
-	printf("\n---------------------------------------\n\n");
-	test_cmac_aes_256();
-	printf("\n---------------------------------------\n\n");
-	test_kdf();
-	printf("\n---------------------------------------\n\n");
-	test_uec_kdf();
-	printf("\n---------------------------------------\n\n");
+if (argc == 1) {
+		goto out;		
+	}
+
+	for(int i=0; i<argc; i++){
+		switch(getopt(argc, argv, "cghku")){
+			case 'g':
+				printf("\n----------------do_aes_tes-------------\n\n");
+				do_aes_test();
+				printf("\n----------------do_gcm_test------------\n\n");
+				do_gcm_test(1); // Inline
+				printf("\n----------------do_gcm_test_updates----\n\n");
+				do_gcm_test_updates(1); // Inline
+				continue;
+			case 'c':
+				printf("\n----------------test_cmac_aes_256------\n\n");
+				test_cmac_aes_256();
+				continue;
+			case 'k':
+				printf("\n-----------------test_kdf--------------\n\n");
+				test_kdf();
+				continue;
+			case 'u':
+				printf("\n-----------------test_uec_kdf----------\n\n");
+				test_uec_kdf();
+				continue;
+			case 'h':
+				goto out;
+			default :
+				continue;
+		}
+	}
 	return 0;
+out:
+	printf("%s -hcgku\n\t -g gcm tests\n\t -k kdf tests\n\t -c cmac tests\n\t -u uec kdf tests\n\n\t To run full regression %s -cgku\n\n", argv[0], argv[0]);
+	return -1;
 }
 
