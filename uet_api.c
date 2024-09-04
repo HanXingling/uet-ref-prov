@@ -1527,7 +1527,7 @@ static int uet_rx_msg_truncate(struct uet_parsed_pkt *pp,
 
 	*msg_complete = false;
 
-	msg_off = ((ntohll(ses->msg_off_payload_len) &
+	msg_off = ((ntohll(ses->payload_len_msg_off) &
 		    UET_SES_REQ_STD_MSG_OFF_MASK) >>
 		   UET_SES_REQ_STD_MSG_OFF_SHIFT);
 	if (msg_off < rx_desc->msg_len) {
@@ -1571,7 +1571,7 @@ static uet_ses_rc_t uet_rx_msg_err(
 	}
 
 	if (rx_desc->desc_flags & UET_RX_DESC_FLAG_DSEND) {
-		if ((ses->cmn.eom_opcode & UET_SES_EOM_MASK) &&
+		if ((ses->cmn.ver_flags & UET_SES_REQ_FLAG_EOM) &&
 		    (pp->ses_payload_len == 0)) {
 			rc = uet_rx_msg_truncate(pp, rx_desc, &msg_complete);
 			if ((rc != FI_SUCCESS) || (msg_complete == true)) {
@@ -1834,7 +1834,7 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	uint16_t max_ack_data;
 	size_t start_off, buf_off;
 	uint32_t req_len, msg_off, rx_gen, ep_gen;
-	uint64_t msg_off_payload_len;
+	uint64_t payload_len_msg_off;
 	struct uet_ses_req_std *ses;
 	struct uet_tx_desc *tx_desc;
 	struct uet_mr_desc *mr_desc;
@@ -1850,8 +1850,8 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM)
 		msg_off = 0;
 	else {
-		msg_off_payload_len = ntohll(ses->msg_off_payload_len);
-		msg_off = (msg_off_payload_len &
+		payload_len_msg_off = ntohll(ses->payload_len_msg_off);
+		msg_off = (payload_len_msg_off &
 			   UET_SES_REQ_STD_MSG_OFF_MASK) >>
 			  UET_SES_REQ_STD_MSG_OFF_SHIFT;
 	}
@@ -2036,7 +2036,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	uint16_t max_payload_len;
 	size_t start_off, buf_off;
 	uint32_t req_len, rx_gen, ep_gen;
-	uint64_t msg_off_payload_len;
+	uint64_t payload_len_msg_off;
 	bool ep_gen_disabled, first_msg_pkt = false,
 	     invalid_payload_len = false;
 	void *buf_ptr;
@@ -2077,7 +2077,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		/* process header data */
 		if (write && (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
 			/* check cq format */
-		if (uet_ep->recv_cq.format_size <
+			if (uet_ep->recv_cq.format_size <
 			    sizeof(struct fi_cq_data_entry)) {
 				UET_API_ERR("RX: No CQ Support for Write Imm");
 				return (uet_rx_msg_err(
@@ -2097,8 +2097,8 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			invalid_payload_len = true;
 	} else {
 		/* set buffer offset and check payload length */
-		msg_off_payload_len = ntohll(ses->msg_off_payload_len);
-		buf_off = (start_off + ((msg_off_payload_len &
+		payload_len_msg_off = ntohll(ses->payload_len_msg_off);
+		buf_off = (start_off + ((payload_len_msg_off &
 					 UET_SES_REQ_STD_MSG_OFF_MASK) >>
 					UET_SES_REQ_STD_MSG_OFF_SHIFT));
 		if (pp->ses_payload_len > pp->pkt_payload_len)
@@ -2342,7 +2342,7 @@ static uet_ses_rc_t uet_rx_cancel_pkt(
 	if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
 		UET_API_ERR("RX: Unexpected SOM on UET_MSG_ERR");
 		goto post_err_exit;
-	} else if (!(ses->cmn.eom_opcode & UET_SES_EOM_MASK)) {
+	} else if (!(ses->cmn.ver_flags & UET_SES_REQ_FLAG_EOM)) {
 		UET_API_ERR("RX: No EOM on UET_MSG_ERR");
 		goto post_err_exit;
 	} else {
@@ -2642,7 +2642,7 @@ build_response_w_data:
 	payload_len = (ack_d_info.payload_len &
 		       UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 		      UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
-	ses_rsp_d->rsvd = 0;
+	ses_rsp_d->rd_msg_id = ses_std_req->cmn.msg_id;
 	ses_rsp_d->payload_len = htons(payload_len);
 	ses_rsp_d->mod_len = ses_std_req->req_len;
 	ses_rsp_d->msg_off = htonl(ack_d_info.msg_off);
@@ -2687,8 +2687,8 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->cmn.index_gen_job_id = htonl(tx_desc->job_id <<
 					  UET_SES_RSP_JOB_ID_SHIFT);
-	ses->rsvd_payload_len = htonl(payload_len <<
-				      UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
+	ses->rd_msg_id_payload_len = htonl(payload_len <<
+					   UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 	ses->mod_len = htonl(tx_desc->rd_rsp.mod_len);
 	ses->msg_off = htonl(tx_desc->remote_msg_off);
 
@@ -2724,10 +2724,10 @@ static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
 	uint64_t local_token, remote_token;
 
 	memset(ses, 0, sizeof(struct uet_ses_req_std));
-	ses->cmn.eom_opcode = UET_SES_EOM_MASK |
-			     (UET_DEFER_RTR << UET_SES_OPCODE_SHIFT);
+	ses->cmn.rsvd_opcode = UET_DEFER_RTR << UET_SES_OPCODE_SHIFT;
 	ses->cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT) |
-		UET_SES_REQ_FLAG_REL | UET_SES_REQ_FLAG_SOM;
+		UET_SES_REQ_FLAG_REL | UET_SES_REQ_FLAG_EOM |
+		UET_SES_REQ_FLAG_SOM;
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->cmn.index_gen_job_id =
 		htonl(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT);
@@ -2789,7 +2789,7 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 				payload_len = tx_desc->remaining_bytes;
 		} else
 			payload_len = pkt_len;
-		ses->msg_off_payload_len =
+		ses->payload_len_msg_off =
 			htonll(((tx_desc->buf_desc.buf_off <<
 				 UET_SES_REQ_STD_MSG_OFF_SHIFT) &
 				UET_SES_REQ_STD_MSG_OFF_MASK) |
@@ -2800,7 +2800,7 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 
 	if ((som && (payload_len == req_len)) ||
 	    (!som && (payload_len == tx_desc->remaining_bytes)))
-		eom = UET_SES_EOM_FLAG;
+		eom = UET_SES_REQ_FLAG_EOM;
 
 	if (tx_desc->op_flags & FI_DELIVERY_COMPLETE)
 		dc = UET_SES_REQ_FLAG_DC;
@@ -2865,15 +2865,15 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 							remote_token);
 		} else
 			opcode = UET_MSG_ERR;
-		ses->msg_off_payload_len =
+		ses->payload_len_msg_off =
 			htonll((tx_desc->buf_desc.buf_off <<
 				UET_SES_REQ_STD_MSG_OFF_SHIFT) &
 			       UET_SES_REQ_STD_MSG_OFF_MASK);
-		eom = UET_SES_EOM_FLAG;
+		eom = UET_SES_REQ_FLAG_EOM;
 	}
 
-	ses->cmn.eom_opcode =
-		(eom << UET_SES_EOM_SHIFT) | (opcode << UET_SES_OPCODE_SHIFT);
+	ses->cmn.rsvd_opcode = opcode << UET_SES_OPCODE_SHIFT;
+	ses->cmn.ver_flags |= eom;
 	ses->cmn.rsvd_res_index = htons(av->addr->start_index <<
 					UET_SES_REQ_RES_INDEX_SHIFT);
 	ses->cmn.rsvd_pid_on_fep = htons(av->addr->pid_on_fep <<

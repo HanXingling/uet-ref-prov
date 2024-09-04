@@ -264,7 +264,7 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		printf("    USP SDI:              0x%08x\n", pp->sec_sdi);
 		if (pp->sec_ssi_valid) {
 			printf("    USP SSI:              0x%08x\n",
-			        pp->sec_ssi);
+			       pp->sec_ssi);
 		}
 		printf("    USP TSC:              0x%016lx\n", pp->sec_tsc);
 	}
@@ -351,9 +351,9 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	case UET_HDR_REQ_STD:
 		printf("    SES Opcode:           ");
 		ses_req_std = (struct uet_ses_req_std *) pp->ses;
-		opcode = ((ses_req_std->cmn.eom_opcode &
+		opcode = ((ses_req_std->cmn.rsvd_opcode &
 			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
-		if (ses_req_std->cmn.eom_opcode & UET_SES_EOM_MASK)
+		if (ses_req_std->cmn.ver_flags & UET_SES_REQ_FLAG_EOM)
 			eom = true;
 		else
 			eom = false;
@@ -427,11 +427,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("    SES Header Data:      %lu\n",
 			       ntohll(ses_req_std->cmpl_data));
 		else if (!som) {
-			msg_off = (ntohll(ses_req_std->msg_off_payload_len)
+			msg_off = (ntohll(ses_req_std->payload_len_msg_off)
 				   & UET_SES_REQ_STD_MSG_OFF_MASK) >>
 				  UET_SES_REQ_STD_MSG_OFF_SHIFT;
 			payload_len =
-				(ntohll(ses_req_std->msg_off_payload_len) &
+				(ntohll(ses_req_std->payload_len_msg_off) &
 				 UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
 				UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT;
 			printf("    SES Message Offset:   %lu\n", msg_off);
@@ -506,7 +506,7 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		printf("    SES Message Offset:   %u\n",
 		       ntohl(ses_rsp_d->msg_off));
 		printf("    SES Payload Length:   %u\n",
-		       (ntohl(ses_rsp_d->rsvd_payload_len) &
+		       (ntohl(ses_rsp_d->rd_msg_id_payload_len) &
 			UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 		       UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 		break;
@@ -832,7 +832,7 @@ uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 {
 	uint16_t hdr_len, payload_len;
 	uint32_t req_len;
-	uint64_t msg_off_payload_len;
+	uint64_t payload_len_msg_off;
 	struct uet_ses_req_std *ses;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
@@ -846,8 +846,8 @@ uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
 		if (payload_len > req_len)
 			payload_len = req_len;
 	} else {
-		msg_off_payload_len = ntohll(ses->msg_off_payload_len);
-		payload_len = ((msg_off_payload_len &
+		payload_len_msg_off = ntohll(ses->payload_len_msg_off);
+		payload_len = ((payload_len_msg_off &
 				UET_SES_REQ_STD_PAYLOAD_LEN_MASK) >>
 			       UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT);
 	}
@@ -1102,7 +1102,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_req_std);
 		ses_req = (struct uet_ses_req_std *) pp->ses;
-		pp->ses_opcode = (ses_req->cmn.eom_opcode &
+		pp->ses_opcode = (ses_req->cmn.rsvd_opcode &
 				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
 		pp->ses_msg_id = ntohs(ses_req->cmn.msg_id);
 		switch (pp->ses_opcode) {
@@ -1124,9 +1124,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->payload = p;
 		pp->hdr_len = cur_len;
 
-		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC)
-			pp->trailer_len += UET_SES_CRC_SIZE;
-
 		pp->pkt_payload_len =
 			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
 
@@ -1139,15 +1136,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			if (rc != FI_SUCCESS)
 				return rc;
 			cur_len += pp->ses_payload_len;
-		}
-
-		if (ses_req->cmn.ver_flags & UET_SES_REQ_FLAG_CRC) {
-			rc = uet_parse_chk_next_field(
-					pp, cur_len, UET_SES_CRC_SIZE);
-			if (rc != FI_SUCCESS)
-				return rc;
-			pp->ses_crc = ((uint8_t *) pkt) + cur_len;
-			cur_len += UET_SES_CRC_SIZE;
 		}
 		break;
 	case UET_HDR_RSP:
@@ -1190,7 +1178,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pkt_payload_len =
 			pp->pkt_len - (pp->hdr_len + pp->trailer_len);
 		pp->ses_payload_len =
-			(ntohl(ses_rsp_d->rsvd_payload_len) &
+			(ntohl(ses_rsp_d->rd_msg_id_payload_len) &
 			 UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 			UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
 		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);

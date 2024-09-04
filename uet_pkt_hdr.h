@@ -59,13 +59,14 @@ typedef enum {
 
 /* uet next header types */
 typedef enum {
-	UET_HDR_REQ_SMALL      = 0x00, /* small SES request header */
-	UET_HDR_REQ_MEDIUM     = 0x01, /* medium SES request header */
-	UET_HDR_REQ_STD        = 0x02, /* standard SES request header */
-	UET_HDR_RSP            = 0x03, /* SES response header */
-	UET_HDR_RSP_DATA       = 0x04, /* SES response header with data */
-	UET_HDR_RSP_DATA_SMALL = 0x05, /* SES tiny response header with data */
-	UET_HDR_PDS            = 0x1f, /* PDS Prologue (security header) */
+	UET_HDR_NONE           = 0x0, /* no header follows */
+	UET_HDR_REQ_SMALL      = 0x1, /* small SES request header */
+	UET_HDR_REQ_MEDIUM     = 0x2, /* medium SES request header */
+	UET_HDR_REQ_STD        = 0x3, /* standard SES request header */
+	UET_HDR_RSP            = 0x4, /* SES response header */
+	UET_HDR_RSP_DATA       = 0x5, /* SES response header with data */
+	UET_HDR_RSP_DATA_SMALL = 0x6, /* SES tiny response header with data */
+	UET_HDR_PDS            = 0x7, /* PDS Prologue (security header) */
 } uet_next_hdr_t;
 
 /* vlan tag */
@@ -322,7 +323,6 @@ struct UET_PACKED uet_pds_def_rsp {
 /*                              SEMANTIC (SES)                              */
 /****************************************************************************/
 
-#define UET_SES_CRC_SIZE	8	/* in bytes */
 #define UET_SEC_ICV_SIZE	16	/* in bytes */
 
 /* uet ses request opcodes */
@@ -345,9 +345,6 @@ typedef enum {
 	UET_MSG_ERR            = 0x0f,
 } uet_ses_req_opcode_t;
 
-#define UET_SES_EOM_MASK	0x80
-#define UET_SES_EOM_SHIFT	7
-#define UET_SES_EOM_FLAG        (UET_SES_EOM_MASK >> UET_SES_EOM_SHIFT)
 #define UET_SES_OPCODE_MASK	0x3f
 #define UET_SES_OPCODE_SHIFT	0
 
@@ -357,20 +354,14 @@ typedef enum {
 
 /* uet ses request common header fields */
 struct UET_PACKED uet_ses_req_cmn {
-	/* see UET_SES_EOM_MASK|SHIFT and */
-	/* UET_SES_OPCODE_MASK|SHIFT      */
-	uint8_t  eom_opcode;
+	/* see UET_SES_OPCODE_MASK|SHIFT */
+	uint8_t  rsvd_opcode;
 	/* see UET_SES_VER_MASK|SHIFT */
-	/* flags:
-	 *   UET_HDR_REQ_SMALL  - [DC|IE|REL|CRC]
-	 *   UET_HDR_REQ_MEDIUM - [DC|IE|REL|CRC|HD]
-	 *   UET_HDR_REQ_STD    - [DC|IE|REL|CRC|HD|SOM]
-	 */
 #define UET_SES_REQ_FLAG_DC  0x20 /* delivery complete */
 #define UET_SES_REQ_FLAG_IE  0x10 /* initiator error */
 #define UET_SES_REQ_FLAG_REL 0x08 /* relative addressing */
-#define UET_SES_REQ_FLAG_CRC 0x04 /* extended CRC is present */
-#define UET_SES_REQ_FLAG_HD  0x02 /* header data is present */
+#define UET_SES_REQ_FLAG_HD  0x04 /* header data is present */
+#define UET_SES_REQ_FLAG_EOM 0x02 /* end of message */
 #define UET_SES_REQ_FLAG_SOM 0x01 /* start of message */
 	uint8_t  ver_flags;
 	union {
@@ -411,11 +402,11 @@ struct UET_PACKED uet_ses_req_std {
 	};
 	union { /* header data valid if UET_SES_REQ_FLAG_HD */
 		uint64_t cmpl_data; /* if UET_SES_REQ_FLAG_SOM */
-#define UET_SES_REQ_STD_MSG_OFF_MASK      0xffffffff00000000ULL
-#define UET_SES_REQ_STD_MSG_OFF_SHIFT     32
-#define UET_SES_REQ_STD_PAYLOAD_LEN_MASK  0x0000000000003fffULL
-#define UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT 0
-		uint64_t msg_off_payload_len;
+#define UET_SES_REQ_STD_MSG_OFF_MASK      0x00000000ffffffffULL
+#define UET_SES_REQ_STD_MSG_OFF_SHIFT     0
+#define UET_SES_REQ_STD_PAYLOAD_LEN_MASK  0x00003fff00000000ULL
+#define UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT 32
+		uint64_t payload_len_msg_off;
 	};
 	uint32_t req_len;
 };
@@ -443,12 +434,13 @@ struct UET_PACKED uet_ses_req_smsg {
 /* uet ses rendezvous extension header */
 struct UET_PACKED uet_ses_rndv_ext {
 	uint32_t eager_len;
-#define UET_SES_RNDV_RD_PID_ON_FEP_MASK  0x0fff
-#define UET_SES_RNDV_RD_PID_ON_FEP_SHIFT 0
-	uint16_t rsvd_rd_pid_on_fep;
-#define UET_SES_RNDV_RD_INDEX_MASK  0x0fff
-#define UET_SES_RNDV_RD_INDEX_SHIFT 0
-	uint16_t rsvd_rd_res_index;
+#define UET_SES_RNDV_RD_GEN_MASK         0xff000000
+#define UET_SES_RNDV_RD_GEN_SHIFT        24
+#define UET_SES_RNDV_RD_PID_ON_FEP_MASK  0x00fff000
+#define UET_SES_RNDV_RD_PID_ON_FEP_SHIFT 12
+#define UET_SES_RNDV_RD_RES_INDEX_MASK   0x00000fff
+#define UET_SES_RNDV_RD_RES_INDEX_SHIFT  0
+	uint32_t rd_gen_pid_on_fep_res_index;
 	uint64_t rd_offset;
 	uint64_t rd_match_bits;
 };
@@ -474,6 +466,7 @@ typedef enum {
 	UET_AMO_CSWAP_GE = 0x11,
 	UET_AMO_CSWAP_GT = 0x12,
 	UET_AMO_MSWAP    = 0x13,
+	UET_AMO_INVAL    = 0x14,
 } uet_ses_atomic_opcode_t;
 
 typedef enum {
@@ -501,6 +494,8 @@ typedef enum {
 struct UET_PACKED uet_ses_atomic_ext {
 	uint8_t atomic_opcode;
 	uint8_t atomic_dt;
+#define UET_AMO_CTRL_CACHEABLE 0x01
+#define UET_AMO_CPU_COHERENT   0x02
 	uint8_t sem_ctrl;
 	uint8_t rsvd;
 };
@@ -512,6 +507,14 @@ struct UET_PACKED uet_ses_atomic_cmpswp_ext {
 	uint64_t cmp_val_lo;
 	uint64_t swp_val_hi;
 	uint64_t swp_val_lo;
+};
+
+/* uet ses inc output extension header */
+struct UET_PACKED uet_ses_inc_output_ext {
+	uint32_t write_len;
+	uint32_t rsvd;
+	uint64_t write_off;
+	uint64_t write_mem_key;
 };
 
 /* uet ses response opcodes */
@@ -604,9 +607,9 @@ struct UET_PACKED uet_ses_rsp_d {
 #define UET_SES_RSP_D_PAYLOAD_LEN_MASK  0x0000003fff
 #define UET_SES_RSP_D_PAYLOAD_LEN_SHIFT 0
 	union UET_PACKED {
-		uint32_t rsvd_payload_len;
+		uint32_t rd_msg_id_payload_len;
 		struct UET_PACKED {
-			uint16_t rsvd;
+			uint16_t rd_msg_id;
 			uint16_t payload_len;
 		};
 	};
@@ -618,6 +621,7 @@ struct UET_PACKED uet_ses_rsp_d {
 /* uet ses small response header w/ data (UET_HDR_RSP_DATA_SMALL) */
 struct UET_PACKED uet_ses_rsp_ds {
 	struct uet_ses_rsp_cmn cmn;
+	uint32_t orig_req_psn;
 };
 
 /* TODO: IPv6 support */
