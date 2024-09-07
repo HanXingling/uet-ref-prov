@@ -649,7 +649,7 @@ struct UET_PACKED uet_ses_rsp_d {
 
 /* uet ses small response header w/ data (UET_HDR_RSP_DATA_SMALL) */
 struct UET_PACKED uet_ses_rsp_ds {
-	struct uet_ses_rsp_cmn cmn; /* FIXME: remove index_gen_job_id */
+	struct uet_ses_rsp_cmn cmn;
 	uint32_t orig_req_psn;
 };
 
