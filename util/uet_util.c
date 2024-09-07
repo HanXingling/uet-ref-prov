@@ -17,6 +17,7 @@
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
 #include "uet_api_private.h"
+#include "crc64.h"
 
 /* get current time in milliseconds */
 int uet_gettime(time_t *time_ms)
@@ -337,12 +338,10 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("    PDS SYN Offset:       %u\n", pp->pds_syn_off);
 		else
 			printf("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
-		printf("    PDS Clear PSN:        %u\n", pp->pds_clear_fwd_psn);
-	} else if ((pp->next_hdr == UET_HDR_RSP_DATA) ||
+		printf("    PDS Clear PSN:        %u\n", pp->pds_clear_psn);
+	} else if ((pp->next_hdr == UET_HDR_RSP) ||
+		   (pp->next_hdr == UET_HDR_RSP_DATA) ||
 		   (pp->next_hdr == UET_HDR_RSP_DATA_SMALL)) {
-		printf("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
-		printf("    PDS Forward PSN:      %u\n", pp->pds_clear_fwd_psn);
-	} else { /* UET_HDR_RSP */
 		printf("    PDS Dest PDCID:       %u\n", pp->pds_dpdcid);
 	}
 
@@ -891,7 +890,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 
 	memset(pp, 0, sizeof(struct uet_parsed_pkt));
 
-	p = (uint8_t *) pkt;
+	p = (uint8_t *)pkt;
 	pp->pkt_len = pkt_len;
 
 	/* parse ethernet header */
@@ -1044,11 +1043,14 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_len = sizeof(struct uet_pds_req);
 		pp->pds_psn = ntohl(pds_req->psn);
 		pp->pds_spdcid = ntohs(pds_req->spdcid);
-		pp->pds_clear_fwd_psn = ntohl(pds_req->clear_psn);
+		pp->pds_clear_psn = ((int16_t)ntohs(pds_req->clear_psn_offset) +
+				     pp->pds_psn);
+		if (pp->pds_flags & UET_PDS_REQ_FLAGS_CRC)
+			pp->trailer_len = CRC64_LEN;
 		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
-			pp->pds_syn_off = ((ntohs(pds_req->mode_psn_off) &
-					    UET_PDS_REQ_PSN_OFF_MASK) >>
-					   UET_PDS_REQ_PSN_OFF_SHIFT);
+			pp->pds_syn_off = ((ntohs(pds_req->pdc_info_psn_offset) &
+					    UET_PDS_REQ_PSN_OFFSET_MASK) >>
+					   UET_PDS_REQ_PSN_OFFSET_SHIFT);
 		else
 			pp->pds_dpdcid = ntohs(pds_req->dpdcid);
 		break;
@@ -1056,15 +1058,19 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_len = sizeof(struct uet_pds_uud_req);
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_ACK:
+	case UET_PDS_TYPE_ACK_CC:
+	case UET_PDS_TYPE_ACK_CCX:
 		pds_ack = (struct uet_pds_ack *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_ack);
-		pp->pds_psn = ntohl(pds_ack->psn);
+		pp->pds_cack_psn = ntohl(pds_ack->cack_psn);
+		pp->pds_psn = (ntohl(pds_ack->ack_psn_offset) +
+			       pp->pds_cack_psn);
 		pp->pds_spdcid = ntohs(pds_ack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
-		if (pp->pds_flags & UET_PDS_ACK_FLAGS_AX)
-			pp->pds_len += sizeof(struct uet_pds_ack_ext);
-		/* TODO: support for parsing the extended ACK header */
+		if (pp->pds_flags & UET_PDS_ACK_FLAGS_CRC)
+			pp->trailer_len = CRC64_LEN;
 		break;
+	/* TODO: support for parsing the two extended ACK headers */
 	case UET_PDS_TYPE_NACK:
 		pds_nack = (struct uet_pds_nack *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_nack);
@@ -1072,9 +1078,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_nack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_nack->dpdcid);
 		pp->pds_nack_code = pds_nack->nack_code;
-		if (pp->pds_flags & UET_PDS_NACK_FLAGS_AX)
-			pp->pds_len += (sizeof(struct uet_pds_ack_ext) - 4);
-		/* TODO: support for parsing the extended ACK header */
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_CTRL:
 		pds_ctrl = (struct uet_pds_ctrl *)pp->pds;
@@ -1084,6 +1087,8 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
+		if (pp->pds_flags & UET_PDS_RUDI_FLAGS_CRC)
+			pp->trailer_len = CRC64_LEN;
 		/* TODO: support for parsing RUDI */
 	default:
 		goto err_exit;

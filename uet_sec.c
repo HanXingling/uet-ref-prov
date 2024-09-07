@@ -32,7 +32,6 @@ typedef enum {
 	UET_SEC_MODE_DIRECT  = 1,
 	UET_SEC_MODE_CLUSTER = 2,
 	UET_SEC_MODE_SERVER  = 3,
-	UET_SEC_MODE_DOMAIN  = 4,
 } uet_sec_mode_t;
 
 struct uet_sec_sd {
@@ -81,7 +80,6 @@ static uint8_t def_key[2][UET_SEC_KEY_SIZE] = {
 #define DEF_AOFF        -8 /* AAD includes source IPv4 address */
 #define DEF_COFF        16 /* sizeof security header, +4 if using SSI */
 
-static int fep_an = 0;
 static uint8_t fep_key[2][UET_SEC_KEY_SIZE] = {
 	{
 		0xa1, 0xbf, 0x74, 0xac, 0x7f, 0xf2, 0x35, 0x63,
@@ -172,10 +170,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 
 	sec->type_next_flags = htons(tnf);
 
-	if (sd->mode == UET_SEC_MODE_DOMAIN)
-		sec->an_sdi = htonl((fep_an << UET_SEC_AN_SHIFT) | sd->sdi);
-	else
-		sec->an_sdi = htonl((sd->an << UET_SEC_AN_SHIFT) | sd->sdi);
+	sec->an_sdi = htonl((sd->an << UET_SEC_AN_SHIFT) | sd->sdi);
 
 	uet_gettime((time_t *)&tsc);
 
@@ -363,23 +358,6 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 				 (UET_SEC_KEY_SIZE * 8));
 		break;
 
-	case UET_SEC_MODE_DOMAIN:
-		memset(small_context, 0, sizeof(small_context));
-		memcpy((small_context + 1), (uint8_t *)&rekey, 2);
-		tmp_val = htonl(sdi);
-		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
-
-		kdf_ctr_cmac_aes(fep_key[an],
-				 (UET_SEC_KEY_SIZE * 8),
-				 UET_SEC_CTR_SIZE,
-				 (uint8_t *)uet_sec_label2,
-				 strlen(uet_sec_label2), /* ignore delimiter */
-				 small_context,
-				 UET_SEC_SMALL_CTX_SIZE,
-				 derived_key,
-				 (UET_SEC_KEY_SIZE * 8));
-		break;
-
 	default:
 		UET_USP_ERR("unknown mode\n");
 		return -FI_EINVAL;
@@ -532,23 +510,6 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 				 UET_SEC_CTR_SIZE,
 				 (uint8_t *)uet_sec_label1,
 				 strlen(uet_sec_label1), /* ignore delimiter */
-				 small_context,
-				 UET_SEC_SMALL_CTX_SIZE,
-				 derived_key,
-				 (UET_SEC_KEY_SIZE * 8));
-		break;
-
-	case UET_SEC_MODE_DOMAIN:
-		memset(small_context, 0, sizeof(small_context));
-		memcpy((small_context + 1), (uint8_t *)&rekey, 2);
-		tmp_val = htonl(sdi);
-		memcpy((small_context + 3), (uint8_t *)&tmp_val, 4);
-
-		kdf_ctr_cmac_aes(fep_key[an],
-				 (UET_SEC_KEY_SIZE * 8),
-				 UET_SEC_CTR_SIZE,
-				 (uint8_t *)uet_sec_label2,
-				 strlen(uet_sec_label2), /* ignore delimiter */
 				 small_context,
 				 UET_SEC_SMALL_CTX_SIZE,
 				 derived_key,
@@ -712,11 +673,6 @@ int uet_sec_init(void)
 
 		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_SERVER,
 				     true, false);
-
-	} else if (strcmp(sec_mode, "domain") == 0) {
-
-		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_DOMAIN,
-				     (sec_ssi != NULL), true);
 
 	} else {
 

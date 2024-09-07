@@ -82,11 +82,12 @@ struct uet_parsed_pkt {
 	uint16_t entropy;             /* from udp source port or pds_prologue */
 	uint8_t pds_type;
 	uint8_t pds_flags;
+	uint32_t pds_cack_psn;
 	uint32_t pds_psn;
 	uint16_t pds_spdcid;
 	uint16_t pds_dpdcid;
 	uint8_t pds_syn_off;
-	uint32_t pds_clear_fwd_psn;
+	uint32_t pds_clear_psn;
 	uint8_t pds_nack_code;
 	uint8_t pds_ctrl_payload;
 	uint8_t next_hdr;        /* identifies format of header following pds */
