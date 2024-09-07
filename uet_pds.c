@@ -21,6 +21,7 @@
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
 #include "bitmap.h"
+#include "crc64.h"
 
 #define UET_DEFAULT_TC        0
 #define UET_DEFAULT_MPR       128
@@ -165,6 +166,19 @@ static struct uet_pds_state pds_state;
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
 					   "UNKNOWN")
 
+#define PDS_NEED_CRC(pp)                               \
+	(((pp)->pds_type == UET_PDS_TYPE_RUD_REQ)   || \
+	 ((pp)->pds_type == UET_PDS_TYPE_ROD_REQ)   || \
+	 ((pp)->pds_type == UET_PDS_TYPE_RUDI_REQ)  || \
+	 ((pp)->pds_type == UET_PDS_TYPE_RUDI_RESP) || \
+	 ((pp)->pds_type == UET_PDS_TYPE_ACK)       || \
+	 ((pp)->pds_type == UET_PDS_TYPE_ACK_CC)    || \
+	 ((pp)->pds_type == UET_PDS_TYPE_ACK_CCX)) 
+
+#define PDS_HAS_CRC(pp)                             \
+	(PDS_NEED_CRC(pp) &&                        \
+	 ((pp)->pds_flags & UET_PDS_REQ_FLAGS_CRC))
+
 #define PDS_DBG_TX(pp, msg)                                      \
 	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s (%d)", \
 		    (pp)->pds_spdcid, (pp)->pds_dpdcid,          \
@@ -198,6 +212,14 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 	UET_PDS_PKT_HDR_TRACE(uet, pp, NULL, 0, msg);
 }
 
+int16_t psn_2c_offset(uint32_t base_psn, uint32_t psn)
+{
+	int32_t offset;
+	offset = (~(base_psn - psn) + 1); /* two's complement */
+	assert((base_psn + offset) == psn);
+	return offset;
+}
+
 /****************************************************************************/
 /*                       Security and NIC Shim APIs                         */
 /****************************************************************************/
@@ -216,6 +238,8 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	int new_pkt_len;
 	struct uet_parsed_pkt *pp;
 	bool *pp_parsed;
+	struct uet_pds_req *pds_hdr;
+	uint64_t crc;
 	int rc;
 
 	if (tx_pkt) {
@@ -234,6 +258,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		pp_parsed   = &pdc_pkt->ack_parsed;
 	}
 
+	/*
+	 * If security is not enabled, just pass the packet through. If
+	 * the packet hasn't been parsed yet for debug then do it now.
+	 */
 	if (pdc->sec_enabled == false) {
 		if (*pp_parsed == false) {
 			rc = uet_parse_pkt(uet, *pkt, *pkt_len, pp);
@@ -246,11 +274,28 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			*pp_parsed = true;
 		}
 
+		new_pkt_len = *pkt_len;
+
+		if (PDS_NEED_CRC(pp)) {
+			/* set the CRC flag in the PDS header */
+			pds_hdr = (struct uet_pds_req *)pp->pds;
+			pds_hdr->prlg.type_next_flags |=
+				htons(UET_PDS_REQ_FLAGS_CRC << UET_PDS_FLAGS_SHIFT);
+			pp->pds_flags |= UET_PDS_REQ_FLAGS_CRC;
+
+			/* calculate the CRC */
+			crc = crc64_be(*pkt, *pkt_len);
+
+			/* append the CRC and adjust the transmit length */
+			memcpy((*pkt + *pkt_len), &crc, CRC64_LEN);
+			new_pkt_len += CRC64_LEN;
+		}
+
 		if (tx_pkt)
 			uet_gettime(&pdc_pkt->tx_time);
 
 		/* TODO: IPv6 support */
-		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, *pkt_len);
+		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, new_pkt_len);
 	}
 
 	/* inject/build the security header and encrypt the packet */
@@ -275,6 +320,7 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		*pkt_len = new_pkt_len;
 	}
 
+	/* If the packet hasn't been parsed yet for debug then do it now. */
 	if (*pp_parsed == false) {
 		rc = uet_parse_pkt(uet, *pkt, *pkt_len, pp);
 		if (rc != FI_SUCCESS) {
@@ -982,29 +1028,27 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	pds_hdr->prlg.type_next_flags = htons(pds_flags);
 
 	pdc_pkt->psn = pdc->next_psn++;
-
 	pds_hdr->psn = htonl(pdc_pkt->psn);
+
+        /*
+         * Set the clear_psn to the left edge (-1) of the tx_bm which moves
+	 * forward as ACKs are received. Note that this is considered a
+	 * cumulative clear value.
+         */
+        pds_hdr->clear_psn_offset =
+		htons(psn_2c_offset(pdc_pkt->psn,
+				    (pdc->tx_bm_base_psn - 1)));
+
 	pds_hdr->spdcid = htons(pdc->pdc_id);
 
 	if (pdc->state == PDC_STATE_SYN) {
-		pds_hdr->mode_psn_off =
+		pds_hdr->pdc_info_psn_offset =
 			htons((pdc->syn_offset &
-			       UET_PDS_REQ_PSN_OFF_MASK) <<
-			      UET_PDS_REQ_PSN_OFF_SHIFT);
+			       UET_PDS_REQ_PSN_OFFSET_MASK) <<
+			      UET_PDS_REQ_PSN_OFFSET_SHIFT);
 		pdc->syn_offset++;
 	} else {
 		pds_hdr->dpdcid = htons(pdc->dpdcid);
-	}
-
-	if (pds_info) {
-		pds_hdr->fwd_psn = htonl(pds_info->opsn);
-	} else {
-		/*
-		 * Set the clear_psn to the left edge of the tx_bm
-		 * which moves forward as ACKs are received. Note that
-		 * this is considered a cumulative clear value.
-		 */
-		pds_hdr->clear_psn = htonl(pdc->tx_bm_base_psn);
 	}
 
 	/* copy in the SES header and payload */
@@ -1076,6 +1120,7 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 	pds_hdr = (struct uet_pds_req *)pdc_pkt->pkt_pp.pds;
 	pds_hdr->prlg.type_next_flags |=
 		 htons(UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT);
+	pdc_pkt->pkt_pp.pds_flags |= UET_PDS_REQ_FLAGS_RETX;
 
 	/* retransmit the packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, true);
@@ -1229,7 +1274,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 
 	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
-	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
+	/* TODO: support ACK_CC and ACK_CCX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
@@ -1237,7 +1282,10 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 		      (next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		      (flags << UET_PDS_FLAGS_SHIFT));
 
-	ack_pds->psn    = htonl(pdc_pkt->pkt_pp.pds_psn);
+	/* XXX start tracking a real cumulative ack value */
+	ack_pds->ack_psn_offset = 0;
+	ack_pds->cack_psn = htonl(pdc_pkt->pkt_pp.pds_psn);
+
 	ack_pds->spdcid = htons(pdc->pdc_id);
 	ack_pds->dpdcid = htons(pdc->dpdcid);
 
@@ -1381,7 +1429,10 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 		      (UET_HDR_RSP << UET_PDS_NEXT_HDR_SHIFT) |
 		      (UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 
-	ack_pds->psn    = htonl(pdc_pkt->pkt_pp.pds_psn);
+	/* XXX start tracking a real cumulative ack value */
+	ack_pds->ack_psn_offset = 0;
+	ack_pds->cack_psn = htonl(pdc_pkt->pkt_pp.pds_psn);
+
 	ack_pds->spdcid = htons(pdc->pdc_id);
 	ack_pds->dpdcid = htons(pdc->dpdcid);
 
@@ -1916,6 +1967,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	void *rsp_ses_hdr = NULL;
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del, rtx;
+	uint64_t crc;
 	int rc = FI_SUCCESS;
 
 	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
@@ -1936,6 +1988,19 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (rc != FI_SUCCESS) {
 		UET_PDS_ERR("malformed Rx packet");
 		goto exit_err;
+	}
+
+	if (PDS_HAS_CRC(&pp)) {
+		/* calculate the CRC */
+		crc = crc64_be(pkt, (pkt_len - CRC64_LEN));
+
+		/* verify the CRC */
+		if (memcmp(&crc, (pkt + pkt_len - CRC64_LEN),
+			   CRC64_LEN) != 0) {
+			UET_PDS_WARN("Rx packet CRC mismatch");
+			rc = -FI_EINVAL;
+			goto exit_err;
+		}
 	}
 
 	uet_pds_pkt_dbg(uet, &pp, false, "RX PACKET");

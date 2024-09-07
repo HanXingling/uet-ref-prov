@@ -174,7 +174,7 @@ Replace `2` with the desired number of senders.
 - **UET_IFNAME** - The ifname of the interface to attach to.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
-- **UET_SEC_MODE** - [ `direct` | `cluster` | `server` | `domain` ]
+- **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
 
@@ -200,9 +200,6 @@ timestamp field in the packet security header.
     - server: `UET_SEC_SSI=1 UET_SEC_MODE=server UET_SEC_CLIENT_SSI=2`
     - client: `UET_SEC_SSI=2 UET_SEC_MODE=server`
     - At this time, server mode requires that SSIs be used.
-- Domain mode
-    - `UET_SEC_MODE=domain`
-    - If `UET_SEC_SSI` is set, the SSI will be used in the IV. When set, the value must be unique across all instances of `uet`.
 
 Example for `direct` mode without SSIs:
 ```

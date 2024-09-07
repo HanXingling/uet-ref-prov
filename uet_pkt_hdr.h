@@ -50,11 +50,13 @@ typedef enum {
 	UET_PDS_TYPE_RUD_REQ   = 0x02,
 	UET_PDS_TYPE_ROD_REQ   = 0x03,
 	UET_PDS_TYPE_RUDI_REQ  = 0x04,
-	UET_PDS_TYPE_UUD_REQ   = 0x05,
-	UET_PDS_TYPE_RUDI_RESP = 0x06,
+	UET_PDS_TYPE_RUDI_RESP = 0x05,
+	UET_PDS_TYPE_UUD_REQ   = 0x06,
 	UET_PDS_TYPE_ACK       = 0x07,
-	UET_PDS_TYPE_NACK      = 0x08,
-	UET_PDS_TYPE_CTRL      = 0x09,
+	UET_PDS_TYPE_ACK_CC    = 0x08,
+	UET_PDS_TYPE_ACK_CCX   = 0x09,
+	UET_PDS_TYPE_NACK      = 0x0a,
+	UET_PDS_TYPE_CTRL      = 0x0b,
 } uet_pds_pkt_type_t;
 
 /* uet next header types */
@@ -66,7 +68,7 @@ typedef enum {
 	UET_HDR_RSP            = 0x4, /* SES response header */
 	UET_HDR_RSP_DATA       = 0x5, /* SES response header with data */
 	UET_HDR_RSP_DATA_SMALL = 0x6, /* SES tiny response header with data */
-	UET_HDR_PDS            = 0x7, /* PDS Prologue (security header) */
+	UET_HDR_PDS            = 0xf, /* PDS Prologue (security header) */
 } uet_next_hdr_t;
 
 /* vlan tag */
@@ -117,24 +119,18 @@ struct UET_PACKED uet_sec_ssi {
 /*                             RELIABLITY (PDS)                             */
 /****************************************************************************/
 
-/* uet pds ack/nack codes */
-typedef enum {
-	UET_PDS_CTRL_TYPE_NOP           = 0x00, /* no-op */
-	UET_PDS_CTRL_TYPE_REQ_FOR_ACK   = 0x01, /* request for ACK (at PSN) */
-	UET_PDS_CTRL_TYPE_CLEAR         = 0x02, /* clear PDS ACk state */
-	UET_PDS_CTRL_TYPE_REQ_FOR_CLEAR = 0x03, /* request for clear */
-	UET_PDS_CTRL_TYPE_CLOSE         = 0x04, /* closing the PDC */
-	UET_PDS_CTRL_TYPE_REQ_FOR_CLOSE = 0x05, /* request for close */
-	UET_PDS_CTRL_TYPE_PROBE         = 0x06, /* request for ACK */
-	UET_PDS_CTRL_TYPE_CREDIT        = 0x07, /* CC credit info */
-} uet_pds_ctrl_type_t;
+/* uet pds entropy header - used when running directory over IPv4/IPv6 */
+struct UET_PACKED uet_pds_entropy {
+	uint16_t entropy;
+	uint16_t rsvd;
+};
 
 /* uet pds prologue header */
 struct UET_PACKED uet_pds_prlg {
 	uint16_t entropy;
-#define UET_PDS_TYPE_MASK       0xf000
-#define UET_PDS_TYPE_SHIFT      12
-#define UET_PDS_NEXT_HDR_MASK   0x0f80
+#define UET_PDS_TYPE_MASK       0xf800
+#define UET_PDS_TYPE_SHIFT      11
+#define UET_PDS_NEXT_HDR_MASK   0x0780
 #define UET_PDS_NEXT_HDR_SHIFT  7
 #define UET_PDS_CTRL_TYPE_MASK  UET_PDS_NEXT_HDR_MASK
 #define UET_PDS_CTRL_TYPE_SHIFT UET_PDS_NEXT_HDR_SHIFT
@@ -150,71 +146,66 @@ struct UET_PACKED uet_pds_prlg {
 /* uet pds rod/rud request header */
 struct UET_PACKED uet_pds_req {
 	/* uet pds request flags in prologue */
-#define UET_PDS_REQ_FLAGS_NONE 0x00 /* no flags */
-#define UET_PDS_REQ_FLAGS_SYN  0x40 /* connection setup request */
-#define UET_PDS_REQ_FLAGS_CLR  0x20 /* when not set = cumulative clear */
-#define UET_PDS_REQ_FLAGS_CC   0x10 /* CC state field present */
+#define UET_PDS_REQ_FLAGS_NONE 0x00
+#define UET_PDS_REQ_FLAGS_CRC  0x40 /* CRC is present */
+#define UET_PDS_REQ_FLAGS_CC   0x20 /* requestor CC state field present */
+#define UET_PDS_REQ_FLAGS_SYN  0x10 /* connection setup request */
 #define UET_PDS_REQ_FLAGS_AR   0x08 /* ACK requested */
 #define UET_PDS_REQ_FLAGS_RETX 0x04 /* request is a retransmit */
 	struct uet_pds_prlg prlg;
+	int16_t             clear_psn_offset;
 	uint32_t            psn;
 	uint16_t            spdcid;
 	union {
-		uint16_t dpdcid;
-#define UET_PDS_REQ_PDC_MODE_MASK  0xf000
-#define UET_PDS_REQ_PDC_MODE_SHIFT 12
-#define UET_PDS_REQ_PDC_MODE_INC   0x01 /* reserved PDC for INC */
-#define UET_PDS_REQ_PSN_OFF_MASK   0x0fff
-#define UET_PDS_REQ_PSN_OFF_SHIFT  0
-		uint16_t mode_psn_off;
-	};
-	union {
-		uint32_t clear_psn; /* cumulative clear PSN or original PSN */
-		uint32_t fwd_psn;   /* forward PSN associated with request */
+		uint16_t dpdcid; /* valid when UET_PDS_REQ_FLAGS_SYN=0 */
+#define UET_PDS_REQ_PDC_INFO_MASK        0xf000
+#define UET_PDS_REQ_PDC_INFO_SHIFT       12
+#define UET_PDS_REQ_PDC_INFO_USE_RSV_PDC 0x01 /* reserved PDC (e.g., INC) */
+#define UET_PDS_REQ_PSN_OFFSET_MASK      0x0fff
+#define UET_PDS_REQ_PSN_OFFSET_SHIFT     0
+		uint16_t pdc_info_psn_offset;
 	};
 };
 
 /* uet (optional) cc data following uet_pds_req (UET_PDS_REQ_FLAGS_CC) */
-struct UET_PACKED uet_pds_cc_state {
-	uint32_t cc_state;
+struct UET_PACKED uet_pds_req_cc_state {
+	uint32_t req_cc_state;
 };
 
 /* uet pds rod/rud ack header */
 struct UET_PACKED uet_pds_ack {
 	/* uet pds ack flags in prologue */
-#define UET_PDS_ACK_FLAGS_NONE	      0x00
-#define UET_PDS_ACK_FLAGS_M           0x40 /* original pkt was ECN marked */
-#define UET_PDS_ACK_FLAGS_AX          0x20 /* ACK extension header present */
-#define UET_PDS_ACK_FLAGS_REQ_TGT_CLR 0x10 /* ini=0, tgt requests clear */
-#define UET_PDS_ACK_FLAGS_REQ_TGT_CLS 0x08 /* ini=0, tgt requests close */
-#define UET_PDS_ACK_P                 0x04 /* ACK to a probe (PSN ignored) */
+#define UET_PDS_ACK_FLAGS_NONE        0x00
+#define UET_PDS_ACK_FLAGS_CRC         0x40 /* CRC is present */
+#define UET_PDS_ACK_FLAGS_M           0x20 /* original pkt was ECN marked */
+#define UET_PDS_ACK_FLAGS_RETX        0x10 /* ACK to a retransmit */
+#define UET_PDS_ACK_FLAGS_P           0x08 /* ACK to a probe (PSN ignored) */
+#define UET_PDS_ACK_FLAGS_REQ_TGT_CLS 0x04 /* target requests close */
+#define UET_PDS_ACK_FLAGS_REQ_TGT_CLR 0x02 /* target requests clear */
 	struct uet_pds_prlg prlg;
-	uint32_t            psn;
+	int16_t             ack_psn_offset;
+	uint32_t            cack_psn;
 	uint16_t            spdcid;
 	uint16_t            dpdcid;
 };
 
-/* uet pds rod/rud ack extension header */
-struct UET_PACKED uet_pds_ack_ext {
-#define UET_PDS_ACK_CC_TYPE_MASK      0xe000
-#define UET_PDS_ACK_CC_TYPE_SHIFT     13
-#define UET_PDS_ACK_CC_TYPE           0
-#define UET_PDS_ACK_MPR_MASK          0x1e00 /* 2^MPR = max window/bitmap size */
-#define UET_PDS_ACK_MPR_SHIFT         9
-#define UET_PDS_ACK_SACK_OFFSET_MASK  0x01ff /* bitmap base = c_ack_psn + <this> */
-#define UET_PDS_ACK_SACK_OFFSET_SHIFT 0
-	uint16_t cc_type_mpr_sack_off;
-	uint8_t  cc_state0;
-#define UET_PDS_ACK_CC_FLAGS_SVF 0x80 /* new_start_psn field is valid */
-	uint8_t  cc_flags;
-	uint32_t cc_state1;
-	uint32_t cc_state2;
-	uint32_t c_ack_psn;
-	union {
-		uint32_t sack_bitmap_upper;
-		uint32_t new_start_psn; /* valid if UET_PDS_ACK_CC_FLAGS_SVF */
-	};
-	uint32_t sack_bitmap_lower; /* zero if UET_PDS_ACK_CC_FLAGS_SVF */
+/* uet pds rod/rud ack w/ cc extension header */
+struct UET_PACKED uet_pds_ack_cc {
+	struct uet_pds_ack ack;
+#define UET_PDS_ACK_CC_TYPE_MASK  0xf0
+#define UET_PDS_ACK_CC_TYPE_SHIFT 4
+#define UET_PDS_ACK_CC_FLAGS_NONE 0x00
+	uint8_t            cc_type_flags;
+	uint8_t            mpr;
+	int16_t            sack_psn_offset;
+	uint64_t           sack_bitmap;
+	uint64_t           ack_cc_state1;
+};
+
+/* uet pds rod/rud ack w/ ccx extension header */
+struct UET_PACKED uet_pds_ack_ccx {
+	struct uet_pds_ack_cc ack_cc;
+	uint64_t              ack_cc_state2;
 };
 
 /* uet pds nack codes */
@@ -243,40 +234,62 @@ typedef enum {
 struct UET_PACKED uet_pds_nack {
 	/* uet pds nack flags in prologue */
 #define UET_PDS_NACK_FLAGS_NONE 0x00
-#define UET_PDS_NACK_FLAGS_M    0x40 /* original pkt was ECN marked */
-#define UET_PDS_NACK_FLAGS_AX   0x20 /* ACK extension header present */
+#define UET_PDS_NACK_FLAGS_NT   0x40 /* ROD/RUD=0, RUDI=1 */
+#define UET_PDS_NACK_FLAGS_M    0x20 /* original pkt was ECN marked */
+#define UET_PDS_NACK_FLAGS_RETX 0x10 /* NACK to a retransmit */
 	struct uet_pds_prlg prlg;
-	uint32_t            nack_psn;
-	uint16_t            spdcid;
-	uint16_t            dpdcid;
-	/*
-	 * The following are only valid if UET_PDS_NACK_FLAGS_AX is NOT set.
-	 * If UET_PDS_NACK_FLAGS_AX is set, then the uet_pds_ack_ext struct
-	 * is overlayed starting here.
-	 */
 	uint8_t             nack_code;
 	uint8_t             vendor_code;
-	uint16_t            rsvd; /* zero (always) */
+	union {
+		uint32_t nack_psn;
+		uint32_t nack_pkd_id; /* valid when UET_PDS_NACK_FLAGS_NT=1 */
+	};
+	uint16_t            spdcid;
+	uint16_t            dpdcid;
+	uint32_t            payload; /* specific to nack_code */
 };
+
+/* uet pds ack/nack codes */
+typedef enum {
+	UET_PDS_CTRL_TYPE_NOP       = 0x00, /* no-op */
+	UET_PDS_CTRL_TYPE_ACK_REQ   = 0x01, /* request for ACK (at PSN) */
+	UET_PDS_CTRL_TYPE_CLEAR     = 0x02, /* clear PDS ACK state */
+	UET_PDS_CTRL_TYPE_CLEAR_REQ = 0x03, /* request for clear */
+	UET_PDS_CTRL_TYPE_CLOSE     = 0x04, /* closing the PDC */
+	UET_PDS_CTRL_TYPE_CLOSE_REQ = 0x05, /* request for close */
+	UET_PDS_CTRL_TYPE_PROBE     = 0x06, /* probe to request for ACK */
+	UET_PDS_CTRL_TYPE_CREDIT    = 0x07, /* CC credit info */
+} uet_pds_ctrl_type_t;
 
 /* uet pds rod/rud control header */
 struct UET_PACKED uet_pds_ctrl {
 	/* uet pds control flags in prologue */
 #define UET_PDS_CTRL_FLAGS_NONE 0x00
-#define UET_PDS_CTRL_FLAGS_SYN  0x40 /* connection setup request */
-#define UET_PDS_CTRL_FLAGS_CLR  0x20 /* when not set = cumulative clear */
+#define UET_PDS_CTRL_FLAGS_SYN  0x10 /* connection setup request */
+#define UET_PDS_CRTL_FLAGS_AR   0x08 /* ACK requested */
 	struct uet_pds_prlg prlg;
+	uint16_t            rsvd;
 	uint32_t            psn;
 	uint16_t            spdcid;
-	uint16_t            dpdcid;
+	union {
+		uint16_t dpdcid; /* valid when UET_PDS_CTRL_FLAGS_SYN=0 */
+#define UET_PDS_CTRL_PDC_INFO_MASK        0xf000
+#define UET_PDS_CTRL_PDC_INFO_SHIFT       12
+#define UET_PDS_CTRL_PDC_INFO_USE_RSV_PDC 0x01 /* reserved PDC (e.g., INC) */
+#define UET_PDS_CTRL_PSN_OFFSET_MASK      0x0fff
+#define UET_PDS_CTRL_PSN_OFFSET_SHIFT     0
+		uint16_t pdc_info_psn_offset;
+	};
 	/*
 	 * The payload field is based on the CTRL_TYPE:
-	 * - clear, request for clear, or initiator close request
+	 * - clear, clear request, or close
 	 *     -> clear sequence number
-	 * - request for ACK
-	 *     -> message ID, job ID associated with requested PSN
 	 * - credit
-	 *     -> credit allocation
+	 *     -> credit
+	 * - credit request
+	 *     -> credit target
+	 * - ack request
+	 *     -> message ID or zero
 	 * - all others
 	 *     -> zero
 	 */
@@ -286,9 +299,13 @@ struct UET_PACKED uet_pds_ctrl {
 /* uet pds rudi request header */
 struct UET_PACKED uet_pds_rudi_req {
 	/* uet pds rudi request flags in prologue */
-#define UET_PDS_RUDI_REQ_FLAGS_NONE 0x00
+#define UET_PDS_RUDI_FLAGS_NONE 0x00
+#define UET_PDS_RUDI_FLAGS_CRC  0x40 /* CRC is present */
+#define UET_PDS_RUDI_FLAGS_M    0x20 /* original request pkt was ECN marked */
+#define UET_PDS_RUDI_FLAGS_RETX 0x10 /* request is a retransmit */
 	struct uet_pds_prlg prlg;
-	uint32_t            rudi_id;
+	uint16_t            rsvd;
+	uint32_t            pkt_id;
 };
 
 /* uet pds rudi response header */
@@ -297,11 +314,12 @@ struct UET_PACKED uet_pds_rudi_req {
 /* uet pds uud request header */
 struct UET_PACKED uet_pds_uud_req {
 	/* uet pds uud request flags in prologue */
-#define UET_PDS_UUD_REQ_FLAGS_NONE 0x00
+#define UET_PDS_UUD_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
+	uint16_t            rsvd;
 };
 
-/* uet pds ses default response header */
+/* uet pds ses default/no response header */
 struct UET_PACKED uet_pds_def_rsp {
 #define UET_PDS_SES_DEF_RSP_LIST_MASK    0xc0
 #define UET_PDS_SES_DEF_RSP_LIST_SHIFT   6
@@ -316,7 +334,12 @@ struct UET_PACKED uet_pds_def_rsp {
 #define UET_PDS_SES_DEF_RSP_RETCODE_SHIFT 0
 	uint8_t  ver_return_code;
 	uint16_t msg_id;
-	uint32_t rsvd;
+#define UET_PDS_SES_DEF_INDEX_GEN_MASK  0xff000000
+#define UET_PDS_SES_DEF_INDEX_GEN_SHIFT 24
+#define UET_PDS_SES_DEF_JOB_ID_MASK     0x00ffffff
+#define UET_PDS_SES_DEF_JOB_ID_SHIFT    0
+	uint32_t index_gen_job_id;
+	uint32_t mod_len;
 };
 
 /****************************************************************************/
@@ -343,6 +366,7 @@ typedef enum {
 	UET_TSEND_ATOMIC       = 0x0d,
 	UET_TSEND_FETCH_ATOMIC = 0x0e,
 	UET_MSG_ERR            = 0x0f,
+	UET_INC_PUH            = 0x10,
 } uet_ses_req_opcode_t;
 
 #define UET_SES_OPCODE_MASK	0x3f
@@ -386,18 +410,22 @@ struct UET_PACKED uet_ses_req_cmn {
 /* uet ses standard request header (UET_HDR_REQ_STD) */
 struct UET_PACKED uet_ses_req_std {
 	struct uet_ses_req_cmn cmn;
+	union {
+		uint64_t buf_off;
 #define UET_SES_REQ_STD_SRC_TOKEN_MASK	0xffffffff00000000ULL
 #define UET_SES_REQ_STD_SRC_TOKEN_SHIFT	32
 #define UET_SES_REQ_STD_DST_TOKEN_MASK	0x00000000ffffffffULL
 #define UET_SES_REQ_STD_DST_TOKEN_SHIFT	0
-	union {
-		uint64_t buf_off;
 		uint64_t restart_token; /* valid for UET_DEFER_SEND */
 	};
 	uint32_t initiator;
 	union {
 		uint64_t mem_key;
 		uint64_t match_bits;
+#define UET_SES_REQ_STD_TGT_TOKEN_MASK  0x00000000ffffffffULL
+#define UET_SES_REQ_STD_TGT_TOKEN_SHIFT 0
+#define UET_SES_REQ_STD_INI_TOKEN_MASK  0xffffffff00000000ULL
+#define UET_SES_REQ_STD_INI_TOKEN_SHIFT 32
 		uint64_t restart_token_rtr; /* valid for UET_DEFER_RTR */
 	};
 	union { /* header data valid if UET_SES_REQ_FLAG_HD */
@@ -442,7 +470,7 @@ struct UET_PACKED uet_ses_rndv_ext {
 #define UET_SES_RNDV_RD_RES_INDEX_SHIFT  0
 	uint32_t rd_gen_pid_on_fep_res_index;
 	uint64_t rd_offset;
-	uint64_t rd_match_bits;
+	uint64_t rd_mem_key;
 };
 
 typedef enum {
@@ -523,6 +551,7 @@ typedef enum {
 	UET_RESPONSE         = 0x01,
 	UET_RESPONSE_W_DATA  = 0x02,
 	UET_NO_RESPONSE      = 0x03,
+	UET_INC_ERR_RESPONSE = 0x04,
 } uet_ses_rsp_opcode_t;
 
 /* uet ses return codes */
