@@ -288,33 +288,37 @@ local RSP_OPCODE_DESC_MAP = {
 
 local yes_no = {"Yes", "No"}
 local fld = p_uet.fields
-fld.pds		= ProtoField.none("uet.pds",		"PDS")
-fld.entropy	= ProtoField.uint16("uet.entropy",	"Entropy",				base.DEC)
-fld.type	= ProtoField.uint16("uet.type",		"Type",					base.HEX, PDS_TYPE_DESC_MAP, 0xf000)
-fld.next_hdr	= ProtoField.uint16("uet.next_hdr",	"Next Header",				base.HEX, PDS_NEXT_HDR_DESC_MAP, 0xf80)
-fld.flags	= ProtoField.uint16("uet.flags",	"Flags",				base.HEX, nil, 0x07f)
-fld.psn		= ProtoField.uint32("uet.psn",		"Packet Sequence Number",		base.DEC)
-fld.spdcid	= ProtoField.uint16("uet.spdcid",	"Source PDC ID",			base.DEC)
-fld.dpdcid	= ProtoField.uint16("uet.dpdcid",	"Destination PDC ID",			base.DEC)
-fld.forward_psn	= ProtoField.uint32("uet.forward_psn",	"Forward Packet Sequence Number",	base.DEC)
-fld.req_in	= ProtoField.framenum("uet.request_in",	"Request in",				base.NONE, frametype.REQUEST)
-fld.ack_in	= ProtoField.framenum("uet.ack_in",	"ACK in",				base.NONE, frametype.ACK)
-fld.resp_in	= ProtoField.framenum("uet.response_in", "Response in",				base.NONE, frametype.RESPONSE)
+fld.pds		= ProtoField.none("uet.pds",			"PDS")
+fld.entropy	= ProtoField.uint16("uet.entropy",		"Entropy",				base.DEC)
+fld.type	= ProtoField.uint16("uet.type",			"Type",					base.HEX, PDS_TYPE_DESC_MAP, 0xf800)
+fld.next_hdr	= ProtoField.uint16("uet.next_hdr",		"Next Header",				base.HEX, PDS_NEXT_HDR_DESC_MAP, 0x780)
+fld.flags	= ProtoField.uint16("uet.flags",		"Flags",				base.HEX, nil, 0x07f)
+fld.clr_psn_off	= ProtoField.int16("uet.clear_psn_offset",	"Clear PSN offset",			base.DEC)
+fld.clear_psn	= ProtoField.uint32("uet.clear_psn",		"Clear PSN",				base.DEC)
+fld.psn		= ProtoField.uint32("uet.psn",			"Packet Sequence Number",		base.DEC)
+fld.spdcid	= ProtoField.uint16("uet.spdcid",		"Source PDC ID",			base.DEC)
+fld.dpdcid	= ProtoField.uint16("uet.dpdcid",		"Destination PDC ID",			base.DEC)
+fld.ack_psn_off	= ProtoField.int16("uet.ack_psn_offset",	"ACK PSN offset",			base.DEC)
+fld.req_in	= ProtoField.framenum("uet.request_in",		"Request in",				base.NONE, frametype.REQUEST)
+fld.ack_in	= ProtoField.framenum("uet.ack_in",		"ACK in",				base.NONE, frametype.ACK)
+fld.resp_in	= ProtoField.framenum("uet.response_in",	 "Response in",				base.NONE, frametype.RESPONSE)
 
 -- ROD/RUD request flags
-fld.flag_rreq_syn	= ProtoField.bool("uet.flags.rreq.syn",		"SYN",			16, yes_no, 0x40)
-fld.flag_rreq_clr	= ProtoField.bool("uet.flags.rreq.clr",		"CLR (Clear)",		16, {"Specific PSN", "Cumulative"}, 0x20)
+fld.flag_rreq_crc	= ProtoField.bool("uet.flags.rreq.crc",		"CRC",			16, yes_no, 0x40)
+fld.flag_rreq_rsv5	= ProtoField.bool("uet.flags.rreq.rsv5",	"RSV",			16, nil, 0x20)
 fld.flag_rreq_cc	= ProtoField.bool("uet.flags.rreq.cc",		"CC state present",	16, yes_no, 0x10)
-fld.flag_rreq_ar	= ProtoField.bool("uet.flags.rreq.ar",		"AR (ACK Request)",	16, yes_no, 0x08)
-fld.flag_rreq_retx	= ProtoField.bool("uet.flags.rreq.retx",	"RETX (is retransmit)",	16, yes_no, 0x04)
-fld.flag_rreq_rsv	= ProtoField.uint16("uet.flags.rreq.rsv",	"RSV",			base.DEC, nil, 0x03)
+fld.flag_rreq_syn	= ProtoField.bool("uet.flags.rreq.syn",		"SYN",			16, yes_no, 0x08)
+fld.flag_rreq_ar	= ProtoField.bool("uet.flags.rreq.ar",		"AR (ACK Request)",	16, yes_no, 0x04)
+fld.flag_rreq_retx	= ProtoField.bool("uet.flags.rreq.retx",	"RETX (is retransmit)",	16, yes_no, 0x02)
+fld.flag_rreq_rsv0	= ProtoField.bool("uet.flags.rreq.rsv0",	"RSV",			16, nil, 0x01)
 
 -- ACK flags
-fld.flag_ack_m			= ProtoField.bool("uet.flags.ack.m",			"M (ECN marked)",	16, yes_no, 0x40)
-fld.flag_ack_ax			= ProtoField.bool("uet.flags.ack.ax",			"AX (ACK Extension)",	16, yes_no, 0x20)
-fld.flag_ack_req		= ProtoField.uint16("uet.flags.ack.req",		"Requests",		base.DEC, nil, 0x18)
-fld.flag_ack_probe		= ProtoField.bool("uet.flags.ack.probe",		"Probe",		16, yes_no, 0x04)
-fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, nil, 0x03)
+fld.flag_ack_crc		= ProtoField.bool("uet.flags.ack.crc",			"CRC",			16, yes_no, 0x40)
+fld.flag_ack_m			= ProtoField.bool("uet.flags.ack.m",			"M (ECN marked)",	16, yes_no, 0x20)
+fld.flag_ack_ax			= ProtoField.bool("uet.flags.ack.ax",			"AX (ACK Extension)",	16, yes_no, 0x10)
+fld.flag_ack_req		= ProtoField.uint16("uet.flags.ack.req",		"Requests",		base.DEC, nil, 0x0c)
+fld.flag_ack_probe		= ProtoField.bool("uet.flags.ack.probe",		"Probe",		16, yes_no, 0x02)
+fld.flag_ack_rsv		= ProtoField.bool("uet.flags.ack.rsv",			"RSV",			16, nil, 0x01)
 
 fld.ses_req			= ProtoField.none("uet.ses.req",			"SES request") -- FIXME: Proto()?
 fld.ses_req_flag_eom		= ProtoField.bool("uet.ses.req.flags.eom",		"End of Message (EOM)",		8, yes_no, 0x80)
@@ -375,7 +379,7 @@ function p_uet.dissector(buf, pinfo, root)
 	local subtree = proto_tree:add(fld.pds, buf:range(0))
 	subtree:add(fld.entropy, buf(0, 2))
 	subtree:add(fld.type, buf(2, 2))
-	local h_type = buf(2, 1):bitfield(0, 4)
+	local h_type = buf(2, 1):bitfield(0, 5)
 	local type_str = PDS_TYPE_STR_MAP[h_type]
 	local summary = ""
 	local offset = 4
@@ -391,24 +395,26 @@ function p_uet.dissector(buf, pinfo, root)
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_clr, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_crc, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_rsv5, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_cc, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_ar, buf(2, 2))
 		flags_tree:add(fld.flag_rreq_retx, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_rsv, buf(2, 2))
+		flags_tree:add(fld.flag_rreq_rsv0, buf(2, 2))
 
-		local b_psn = buf(4, 4)
-		local b_spdcid = buf(8, 2)
-		local b_dpdcid = buf(10, 2)
-		local b_fwd_psn = buf(12, 4)
+
+		local b_clr_psn_off = buf(4, 2)
+		local b_psn = buf(6, 4)
+		local b_spdcid = buf(10, 2)
+		local b_dpdcid = buf(12, 2)
+		subtree:add(fld.clr_psn_off, b_clr_psn_off)
+		-- TODO: absolute clear PSN (calculated)
 		subtree:add(fld.psn, b_psn)
 		subtree:add(fld.spdcid, b_spdcid)
-		-- TODO: mode&offset for SYN
+		-- TODO: info&offset for SYN
 		subtree:add(fld.dpdcid, b_dpdcid)
-		-- TODO: clear
-		subtree:add(fld.forward_psn, b_fwd_psn)
-		offset = 16
+		offset = 14
 		subtree:set_len(offset)
 		-- TODO: cc_state
 
@@ -427,22 +433,27 @@ function p_uet.dissector(buf, pinfo, root)
 	end if h_type == TYPE_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
 		local flags_tree = subtree:add(fld.flags, buf(2, 2))
+		flags_tree:add(fld.flag_ack_crc, buf(2, 2))
 		flags_tree:add(fld.flag_ack_m, buf(2, 2))
 		flags_tree:add(fld.flag_ack_ax, buf(2, 2))
 		flags_tree:add(fld.flag_ack_req, buf(2, 2))
 		flags_tree:add(fld.flag_ack_probe, buf(2, 2))
 		flags_tree:add(fld.flag_ack_rsv, buf(2, 2))
 
-		local b_psn = buf(4, 4)
-		local b_spdcid = buf(8, 2)
-		local b_dpdcid = buf(10, 2)
-		subtree:add(fld.psn, b_psn) -- TODO: ack_psn?
+		local b_ack_psn_off = buf(4, 2)
+		local b_psn = buf(6, 4)
+		local b_spdcid = buf(10, 2)
+		local b_dpdcid = buf(12, 2)
+		subtree:add(fld.ack_psn_off, b_ack_psn_off)
+		-- TODO: absolute ACK PSN (calculated)
+		subtree:add(fld.psn, b_psn) -- TODO: cack_psn?
 		subtree:add(fld.spdcid, b_spdcid)
 		subtree:add(fld.dpdcid, b_dpdcid)
-		offset = 12
+		offset = 14
 		subtree:set_len(offset)
 
 		if do_track then
+			-- TODO: use ack_psn_off
 			local key = track_key(pinfo.net_dst, b_dpdcid, b_psn)
 			local req = pds_req_map[key]
 			if req ~= nil then
@@ -467,7 +478,7 @@ function p_uet.dissector(buf, pinfo, root)
 
 	-- TODO: TYPE_CTRL
 	if h_type ~= TYPE_CTRL then
-		local h_next = buf(2, 2):bitfield(4, 5)
+		local h_next = buf(2, 2):bitfield(5, 4)
 		-- TODO: distinct Proto()
 		if h_next == UET_HDR_REQUEST_STD then
 			local opcode = buf(offset, 1):bitfield(2, 6)
