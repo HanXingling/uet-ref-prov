@@ -301,7 +301,8 @@ fld.dpdcid	= ProtoField.uint16("uet.dpdcid",		"Destination PDC ID",			base.DEC)
 fld.ack_psn_off	= ProtoField.int16("uet.ack_psn_offset",	"ACK PSN offset",			base.DEC)
 fld.req_in	= ProtoField.framenum("uet.request_in",		"Request in",				base.NONE, frametype.REQUEST)
 fld.ack_in	= ProtoField.framenum("uet.ack_in",		"ACK in",				base.NONE, frametype.ACK)
-fld.resp_in	= ProtoField.framenum("uet.response_in",	 "Response in",				base.NONE, frametype.RESPONSE)
+fld.ses_req_in	= ProtoField.framenum("uet.ses.request_in",	 "Request in",				base.NONE, frametype.REQUEST)
+fld.ses_resp_in	= ProtoField.framenum("uet.ses.response_in",	 "Response in",				base.NONE, frametype.RESPONSE)
 
 -- ROD/RUD request flags
 fld.flag_rreq_crc	= ProtoField.bool("uet.flags.rreq.crc",		"CRC",			16, yes_no, 0x40)
@@ -366,10 +367,16 @@ local dissect_data	= Dissector.get("data")
 
 local pds_req_map = {} -- <IP, PDCID, PSN> -> framenum
 local pds_frame_info = {} -- framenum -> table
+local ses_req_map = {} -- <IP, MSG_ID> -> framenum
 
 function track_key(net_addr, pdcid_tvb, psn_tvb)
 	-- TODO: anything more efficient than strings?
 	return tostring(net_addr) .. "--" .. tostring(pdcid_tvb:uint()) .. "--" .. tostring(psn_tvb:uint())
+end
+
+function ses_track_key(net_addr, msg_id)
+	-- TODO: anything more efficient than strings?
+	return tostring(net_addr) .. "--" .. tostring(msg_id:uint())
 end
 
 function p_uet.dissector(buf, pinfo, root)
@@ -421,14 +428,6 @@ function p_uet.dissector(buf, pinfo, root)
 		if do_track then
 			local key = track_key(pinfo.net_src, b_spdcid, b_psn)
 			pds_req_map[key] = pinfo.number
-
-			-- TODO: only if "response"? how? what about Clear?
-			local fkey = track_key(pinfo.net_dst, b_dpdcid, b_fwd_psn)
-			local fw = pds_req_map[fkey]
-			if fw ~= nil then
-				pds_frame_info[pinfo.number].req_in = fw
-				pds_frame_info[fw].resp_in = pinfo.number
-			end
 		end
 	end if h_type == TYPE_ACK then
 		subtree:add(fld.next_hdr, buf(2, 2))
@@ -471,11 +470,9 @@ function p_uet.dissector(buf, pinfo, root)
 		if fi.ack_in ~= nil then
 			subtree:add(fld.ack_in, fi.ack_in):set_generated()
 		end
-		if fi.resp_in ~= nil then
-			subtree:add(fld.resp_in, fi.resp_in):set_generated()
-		end
 	end
 
+	local ses_tree = nil
 	-- TODO: TYPE_CTRL
 	if h_type ~= TYPE_CTRL then
 		local h_next = buf(2, 2):bitfield(5, 4)
@@ -488,6 +485,7 @@ function p_uet.dissector(buf, pinfo, root)
 			end
 
 			local req_tree = proto_tree:add(fld.ses_req, buf(offset, 44))
+			ses_tree = req_tree
 			req_tree:add(fld.ses_req_rsv, buf(offset, 1))
 			req_tree:add(fld.ses_req_opcode, buf(offset, 1))
 			req_tree:add(fld.ses_req_ver, buf(offset+1, 1))
@@ -498,7 +496,8 @@ function p_uet.dissector(buf, pinfo, root)
 			req_tree:add(fld.ses_req_flag_eom, buf(offset+1, 1))
 			req_tree:add(fld.ses_req_flag_som, buf(offset+1, 1))
 			local is_som = buf(offset+1, 1):bitfield(7, 1)
-			req_tree:add(fld.ses_msgid, buf(offset+2, 2))
+			local b_msgid = buf(offset+2, 2)
+			req_tree:add(fld.ses_msgid, b_msgid)
 			req_tree:add(fld.ses_index_gen, buf(offset+4, 1))
 			req_tree:add(fld.ses_job_id, buf(offset+5, 3))
 			req_tree:add(fld.ses_req_rsv2, buf(offset+8, 2))
@@ -517,6 +516,11 @@ function p_uet.dissector(buf, pinfo, root)
 			end
 			req_tree:add(fld.ses_req_len, buf(offset+40, 4))
 			offset = offset + 44
+
+			if do_track then
+				local key = ses_track_key(pinfo.net_src, b_msgid)
+				ses_req_map[key] = pinfo.number
+			end
 		end if h_next == UET_HDR_RESPONSE then
 			local opcode = buf(offset, 1):bitfield(2, 6)
 			local opcode_str = RSP_OPCODE_STR_MAP[opcode]
@@ -524,6 +528,7 @@ function p_uet.dissector(buf, pinfo, root)
 				summary = summary .. " " .. opcode_str
 			end
 			local resp_tree = proto_tree:add(fld.ses_resp, buf(offset, 12))
+			ses_tree = resp_tree
 			resp_tree:add(fld.ses_resp_list, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_ver, buf(offset+1, 1))
@@ -540,6 +545,7 @@ function p_uet.dissector(buf, pinfo, root)
 				summary = summary .. " " .. opcode_str
 			end
 			local resp_tree = proto_tree:add(fld.ses_resp_data, buf(offset, 20))
+			ses_tree = resp_tree
 			resp_tree:add(fld.ses_resp_list, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_opcode, buf(offset, 1))
 			resp_tree:add(fld.ses_resp_ver, buf(offset+1, 1))
@@ -547,12 +553,32 @@ function p_uet.dissector(buf, pinfo, root)
 			resp_tree:add(fld.ses_msgid, buf(offset+2, 2)) -- of itself
 			resp_tree:add(fld.ses_index_gen, buf(offset+4, 1)) -- FIXME: reserved in HDR_RSP_DATA
 			resp_tree:add(fld.ses_job_id, buf(offset+5, 3))
-			resp_tree:add(fld.ses_resp_rreq_msgid, buf(offset+8, 2))
+			local b_rreq_msgid = buf(offset+8, 2)
+			resp_tree:add(fld.ses_resp_rreq_msgid, b_rreq_msgid)
 			resp_tree:add(fld.ses_resp_rsvd, buf(offset+10, 2))
 			resp_tree:add(fld.ses_resp_payload_len, buf(offset+10, 2))
 			resp_tree:add(fld.ses_resp_mod_len, buf(offset+12, 4))
 			resp_tree:add(fld.ses_resp_msg_offset, buf(offset+16, 4))
 			offset = offset + 20
+
+			if do_track then
+				local fkey = ses_track_key(pinfo.net_dst, b_rreq_msgid)
+				local fw = ses_req_map[fkey]
+				if fw ~= nil then
+					pds_frame_info[pinfo.number].ses_req_in = fw
+					pds_frame_info[fw].ses_resp_in = pinfo.number
+				end
+			end
+
+		end
+	end
+
+	if fi ~= nil and ses_tree ~= nil then
+		if fi.ses_req_in ~= nil then
+			ses_tree:add(fld.ses_req_in, fi.ses_req_in):set_generated()
+		end
+		if fi.ses_resp_in ~= nil then
+			ses_tree:add(fld.ses_resp_in, fi.ses_resp_in):set_generated()
 		end
 	end
 
@@ -573,4 +599,5 @@ function p_uet:init()
 	udp_table:add_for_decode_as(p_uet)
 	pds_req_map = {}
 	pds_frame_info = {}
+	ses_req_map = {}
 end
