@@ -278,6 +278,7 @@ struct uet_ephemeral_av {
 struct uet_rd_rsp_info {
 	struct uet_pds_info pds_info;     /* pds info echoed in read response */
 	uint32_t mod_len;                          /* modified message length */
+	uint16_t req_msg_id;                    /* message ID of Read request */
 };
 
 /* tx msg descriptor states */
