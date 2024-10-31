@@ -384,12 +384,13 @@ function p_uet.dissector(buf, pinfo, root)
 
 	local proto_tree = root:add(p_uet, buf:range(0))
 	local subtree = proto_tree:add(fld.pds, buf:range(0))
+	local offset = 2
 	subtree:add(fld.entropy, buf(0, 2))
-	subtree:add(fld.type, buf(2, 2))
-	local h_type = buf(2, 1):bitfield(0, 5)
+	subtree:add(fld.type, buf(offset, 2))
+	local h_type = buf(offset, 1):bitfield(0, 5)
+	local h_next = buf(offset, 2):bitfield(5, 4)
 	local type_str = PDS_TYPE_STR_MAP[h_type]
 	local summary = ""
-	local offset = 4
 	if type_str ~= nil then
 		summary = type_str
 	end
@@ -400,28 +401,28 @@ function p_uet.dissector(buf, pinfo, root)
 	end
 
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
-		subtree:add(fld.next_hdr, buf(2, 2))
-		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_crc, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_rsv5, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_cc, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_syn, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_ar, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_retx, buf(2, 2))
-		flags_tree:add(fld.flag_rreq_rsv0, buf(2, 2))
+		subtree:add(fld.next_hdr, buf(offset, 2))
+		local flags_tree = subtree:add(fld.flags, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_crc, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_rsv5, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_cc, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_syn, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_ar, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_retx, buf(offset, 2))
+		flags_tree:add(fld.flag_rreq_rsv0, buf(offset, 2))
 
 
-		local b_clr_psn_off = buf(4, 2)
-		local b_psn = buf(6, 4)
-		local b_spdcid = buf(10, 2)
-		local b_dpdcid = buf(12, 2)
+		local b_clr_psn_off = buf(offset+2, 2)
+		local b_psn = buf(offset+4, 4)
+		local b_spdcid = buf(offset+8, 2)
+		local b_dpdcid = buf(offset+10, 2)
 		subtree:add(fld.clr_psn_off, b_clr_psn_off)
 		-- TODO: absolute clear PSN (calculated)
 		subtree:add(fld.psn, b_psn)
 		subtree:add(fld.spdcid, b_spdcid)
 		-- TODO: info&offset for SYN
 		subtree:add(fld.dpdcid, b_dpdcid)
-		offset = 14
+		offset = offset + 12
 		subtree:set_len(offset)
 		-- TODO: cc_state
 
@@ -430,25 +431,25 @@ function p_uet.dissector(buf, pinfo, root)
 			pds_req_map[key] = pinfo.number
 		end
 	end if h_type == TYPE_ACK then
-		subtree:add(fld.next_hdr, buf(2, 2))
-		local flags_tree = subtree:add(fld.flags, buf(2, 2))
-		flags_tree:add(fld.flag_ack_crc, buf(2, 2))
-		flags_tree:add(fld.flag_ack_m, buf(2, 2))
-		flags_tree:add(fld.flag_ack_ax, buf(2, 2))
-		flags_tree:add(fld.flag_ack_req, buf(2, 2))
-		flags_tree:add(fld.flag_ack_probe, buf(2, 2))
-		flags_tree:add(fld.flag_ack_rsv, buf(2, 2))
+		subtree:add(fld.next_hdr, buf(offset, 2))
+		local flags_tree = subtree:add(fld.flags, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_crc, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_m, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_ax, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_req, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_probe, buf(offset, 2))
+		flags_tree:add(fld.flag_ack_rsv, buf(offset, 2))
 
-		local b_ack_psn_off = buf(4, 2)
-		local b_psn = buf(6, 4)
-		local b_spdcid = buf(10, 2)
-		local b_dpdcid = buf(12, 2)
+		local b_ack_psn_off = buf(offset+2, 2)
+		local b_psn = buf(offset+4, 4)
+		local b_spdcid = buf(offset+8, 2)
+		local b_dpdcid = buf(offset+10, 2)
 		subtree:add(fld.ack_psn_off, b_ack_psn_off)
 		-- TODO: absolute ACK PSN (calculated)
 		subtree:add(fld.psn, b_psn) -- TODO: cack_psn?
 		subtree:add(fld.spdcid, b_spdcid)
 		subtree:add(fld.dpdcid, b_dpdcid)
-		offset = 14
+		offset = offset + 12
 		subtree:set_len(offset)
 
 		if do_track then
@@ -475,7 +476,6 @@ function p_uet.dissector(buf, pinfo, root)
 	local ses_tree = nil
 	-- TODO: TYPE_CTRL
 	if h_type ~= TYPE_CTRL then
-		local h_next = buf(2, 2):bitfield(5, 4)
 		-- TODO: distinct Proto()
 		if h_next == UET_HDR_REQUEST_STD then
 			local opcode = buf(offset, 1):bitfield(2, 6)
