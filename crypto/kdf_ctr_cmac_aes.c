@@ -79,25 +79,26 @@ void kdf_ctr_cmac_aes(uint8_t *key,
 {
 	uint8_t *fixed;
 	uint32_t fixed_len;
-	uint32_t be_keybits_out;
+	uint16_t be_keybits_out;
 
 	// don't be lame
 	assert((ctr_len % 8) == 0);
 	assert((keybits_out % 8) == 0);
+	assert(keybits_out < (uint16_t)-1); /* two byte key length encoded */
 
 	fixed_len = (label_len +
 		     1 + // 0x00
 		     context_len +
-		     sizeof(uint32_t));
+		     sizeof(uint16_t));
 	fixed = calloc(1, fixed_len);
 
 	memcpy(fixed, label, label_len);
 	memcpy((fixed + label_len + 1), context, context_len);
 
-	be_keybits_out = htonl(keybits_out);
+	be_keybits_out = htons((uint16_t)keybits_out);
 	memcpy((fixed + label_len + 1 + context_len),
 	       (uint8_t *)&be_keybits_out,
-	       sizeof(uint32_t));
+	       sizeof(uint16_t));
 
 	kdf_ctr_cmac_aes_fixed(key,
 			       keybits,

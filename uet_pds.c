@@ -751,6 +751,8 @@ int uet_pds_initialize(struct uet_instance *uet)
 	struct uet_pdc *pdc;
 	int i;
 
+	crc64_generate_table();
+
 	uet->pds.tx_timeout     = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
 	uet->pds.msl            = UET_DEFAULT_MSL;
