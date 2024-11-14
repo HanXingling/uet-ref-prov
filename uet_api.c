@@ -1788,6 +1788,7 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	tx_desc->remote_msg_off = msg_off;
 	tx_desc->mr_desc = mr_desc;
 
+	tx_desc->rd_rsp.req_msg_id = pp->ses_msg_id;
 	tx_desc->rd_rsp.mod_len = req_len;
 	tx_desc->rd_rsp.pds_info = *pds_info;
 
@@ -2687,8 +2688,8 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->cmn.index_gen_job_id = htonl(tx_desc->job_id <<
 					  UET_SES_RSP_JOB_ID_SHIFT);
-	ses->rd_msg_id_payload_len = htonl(payload_len <<
-					   UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
+	ses->rd_msg_id = htons(tx_desc->rd_rsp.req_msg_id);
+	ses->payload_len = htons(payload_len << UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 	ses->mod_len = htonl(tx_desc->rd_rsp.mod_len);
 	ses->msg_off = htonl(tx_desc->remote_msg_off);
 
