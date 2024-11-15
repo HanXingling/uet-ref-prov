@@ -284,7 +284,9 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			pp->pds_flags |= UET_PDS_REQ_FLAGS_CRC;
 
 			/* calculate the CRC */
-			crc = crc64_be(*pkt, *pkt_len);
+			crc = crc64_be(pp->pds, (pp->pkt_len -
+						 ((uint8_t *)pp->pds -
+						  (uint8_t *)pp->eth)));
 
 			/* append the CRC and adjust the transmit length */
 			memcpy((*pkt + *pkt_len), &crc, CRC64_LEN);
@@ -1995,7 +1997,9 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	if (PDS_HAS_CRC(&pp)) {
 		/* calculate the CRC */
-		crc = crc64_be(pkt, (pkt_len - CRC64_LEN));
+		crc = crc64_be(pp.pds, (pp.pkt_len - CRC64_LEN -
+					((uint8_t *)pp.pds -
+					 (uint8_t *)pp.eth)));
 
 		/* verify the CRC */
 		if (memcmp(&crc, (pkt + pkt_len - CRC64_LEN),
