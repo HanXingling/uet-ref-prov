@@ -583,15 +583,16 @@ uint16_t uet_ipv4_csum(struct iphdr *ipv4)
  *      sip     - source ipv4 address
  *      tot_len - value for total length field of ipv4 header
  *      tos     - value for tos field of ipv4 header
+ *      crc_en  - CRC will or will not be appended to the frame
  */
 void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 			uint32_t dip, uint32_t sip, uint16_t tot_len,
-			uint8_t tos)
+			uint8_t tos, bool crc_en)
 {
 	ipv4->version = IPVERSION;
 	ipv4->ihl = UET_IPV4_IHL_NO_OPTIONS;
 	ipv4->tos = tos;
-	ipv4->tot_len = htons(tot_len);
+	ipv4->tot_len = htons(tot_len + (crc_en ? CRC64_LEN : 0));
 	ipv4->id = 0;
 	ipv4->frag_off = htons(UET_IPV4_FRAG_OFF_DF);
 	ipv4->ttl = IPDEFTTL;
