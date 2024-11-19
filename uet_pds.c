@@ -1275,7 +1275,8 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos, !pdc->sec_enabled);
+			   uet->pds.ack_ip_tos,
+			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
 
 	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
@@ -1424,7 +1425,8 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (def_rsp_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos, !pdc->sec_enabled);
+			   uet->pds.ack_ip_tos,
+			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
 
 	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
