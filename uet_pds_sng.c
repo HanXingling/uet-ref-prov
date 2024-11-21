@@ -72,6 +72,11 @@ union UET_PACKED uet_pkt {
 		struct iphdr  ipv4;
 		struct UET_PACKED {
 			struct uet_pds_prlg prlg;
+			union {
+				uint16_t clear_psn_offset;
+				uint16_t ack_psn_offset;
+				uint16_t rsv;
+			};
 			uint32_t            psn;
 			uint16_t            spdcid;
 			uint16_t            dpdcid;
