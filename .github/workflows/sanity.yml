@@ -1,0 +1,85 @@
+name: sanity check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  run_sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v3  
+
+      - name: Install bridge-utils
+        run: |
+          sudo apt update
+          sudo apt install -y iproute2 bridge-utils
+
+      - name: Create VETH Interfaces
+        run: |
+          sudo ip link add dev vm1 type veth peer name vm2
+          sudo ip link set dev vm1 up
+
+      - name: Create the Bridge
+        run: |
+          sudo ip tuntap add tapm mode tap
+          sudo ip link set dev tapm up
+          sudo ip link add brm type bridge
+
+      - name: Bring the Bridge Up
+        run: |
+          sudo ip link set tapm master brm
+          sudo ip link set vm1 master brm
+          sudo ip addr add 10.1.0.1/24 dev brm
+          sudo ip addr add 10.1.0.2/24 dev vm2
+          sudo ip link set brm up
+          sudo ip link set vm2 up
+
+      - name: Bring the libfabric up
+        run: |
+          cd ..
+          wget https://github.com/ofiwg/libfabric/releases/download/v1.20.1/libfabric-1.20.1.tar.bz2
+          tar -jxvf libfabric-1.20.1.tar.bz2
+          ln -s libfabric-1.20.1 libfabric
+          cd libfabric
+          autoreconf
+          ./configure
+          make -j
+
+      - name: Compile uet-ref-prov
+        run: |
+          make
+          
+      - name: Check network brm to vm
+        run: |
+          ping -c1 10.1.0.2
+          ping -I 10.1.0.1 -c1 10.1.0.2
+          arp -a
+
+      - name: Check network vm to brm
+        run: |
+          ping -c1 10.1.0.1
+          ping -I 10.1.0.2 -c1 10.1.0.1
+          arp -a
+
+      - name: Add ip addresses to arp table
+        run: |
+          ip link show brm | awk '/link\/ether/ {print $2}'
+          ip link show vm2 | awk '/link\/ether/ {print $2}'
+          MAC1=$(ip link show vm2 | awk '/link\/ether/ {print $2}')
+          MAC2=$(ip link show brm | awk '/link\/ether/ {print $2}')
+          
+          echo "Discovered MAC2 Address: $MAC2"
+          echo "Discovered MAC2 Address: $MAC1"
+          sudo arp -i vm2 -s 10.1.0.1 $MAC2
+          sudo arp -i brm -s 10.1.0.2 $MAC1
+
+      - name: Start server client
+        run: |
+          arp -a
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=brm ./uet server 10.1.0.2 &
+          echo "Server started in background."
+          sleep 2
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client 10.1.0.1
+          echo "Client started."
