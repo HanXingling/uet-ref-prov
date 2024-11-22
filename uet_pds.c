@@ -166,17 +166,17 @@ static struct uet_pds_state pds_state;
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
 					   "UNKNOWN")
 
-#define PDS_NEED_CRC(pp)                               \
-	(((pp)->pds_type == UET_PDS_TYPE_RUD_REQ)   || \
-	 ((pp)->pds_type == UET_PDS_TYPE_ROD_REQ)   || \
-	 ((pp)->pds_type == UET_PDS_TYPE_RUDI_REQ)  || \
-	 ((pp)->pds_type == UET_PDS_TYPE_RUDI_RESP) || \
-	 ((pp)->pds_type == UET_PDS_TYPE_ACK)       || \
-	 ((pp)->pds_type == UET_PDS_TYPE_ACK_CC)    || \
-	 ((pp)->pds_type == UET_PDS_TYPE_ACK_CCX)) 
+#define PDS_NEED_CRC(pds_type)                     \
+	(((pds_type) == UET_PDS_TYPE_RUD_REQ)   || \
+	 ((pds_type) == UET_PDS_TYPE_ROD_REQ)   || \
+	 ((pds_type) == UET_PDS_TYPE_RUDI_REQ)  || \
+	 ((pds_type) == UET_PDS_TYPE_RUDI_RESP) || \
+	 ((pds_type) == UET_PDS_TYPE_ACK)       || \
+	 ((pds_type) == UET_PDS_TYPE_ACK_CC)    || \
+	 ((pds_type) == UET_PDS_TYPE_ACK_CCX))
 
 #define PDS_HAS_CRC(pp)                             \
-	(PDS_NEED_CRC(pp) &&                        \
+	(PDS_NEED_CRC((pp)->pds_type) &&            \
 	 ((pp)->pds_flags & UET_PDS_REQ_FLAGS_CRC))
 
 #define PDS_DBG_TX(pp, msg)                                      \
@@ -276,7 +276,7 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 		new_pkt_len = *pkt_len;
 
-		if (PDS_NEED_CRC(pp)) {
+		if (PDS_NEED_CRC(pp->pds_type)) {
 			/* set the CRC flag in the PDS header */
 			pds_hdr = (struct uet_pds_req *)pp->pds;
 			pds_hdr->prlg.type_next_flags |=
@@ -284,7 +284,9 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			pp->pds_flags |= UET_PDS_REQ_FLAGS_CRC;
 
 			/* calculate the CRC */
-			crc = crc64_be(*pkt, *pkt_len);
+			crc = crc64_be(pp->pds, (pp->pkt_len -
+						 ((uint8_t *)pp->pds -
+						  (uint8_t *)pp->eth)));
 
 			/* append the CRC and adjust the transmit length */
 			memcpy((*pkt + *pkt_len), &crc, CRC64_LEN);
@@ -1067,7 +1069,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			   htonl(dst_addr->fa.v4),
 			   htonl(uet_ep->ipv4_addr),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
-			   uet_ep->msg_ip_tos);
+			   uet_ep->msg_ip_tos,
+			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
 
 	/* save some params specific for this packet */
 	pdc_pkt->msg_id        = msg_id;
@@ -1272,7 +1275,8 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos);
+			   uet->pds.ack_ip_tos,
+			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
 
 	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
@@ -1421,7 +1425,8 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (def_rsp_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos);
+			   uet->pds.ack_ip_tos,
+			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
 
 	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
@@ -1994,7 +1999,9 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	if (PDS_HAS_CRC(&pp)) {
 		/* calculate the CRC */
-		crc = crc64_be(pkt, (pkt_len - CRC64_LEN));
+		crc = crc64_be(pp.pds, (pp.pkt_len - CRC64_LEN -
+					((uint8_t *)pp.pds -
+					 (uint8_t *)pp.eth)));
 
 		/* verify the CRC */
 		if (memcmp(&crc, (pkt + pkt_len - CRC64_LEN),

@@ -344,7 +344,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 	tot_len = ack_pkt_len - ((uint16_t) uet->nic.l2_hdr_size);
 	uet_build_ipv4_hdr(uet, &ack->common.ipv4, pkt->common.ipv4.saddr,
 			   pkt->common.ipv4.daddr, tot_len,
-			   uet->pds.ack_ip_tos);
+			   uet->pds.ack_ip_tos, false);
 
 	ack->common.pds.prlg.type_next_flags = htons(
 		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
@@ -630,7 +630,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	};
 
 	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
-			   htonl(uet_ep->ipv4_addr), tot_len, tos);
+			   htonl(uet_ep->ipv4_addr), tot_len, tos, false);
 
 	if (!(flags & UET_PDS_FLAG_RETRANSMIT)) {
 		memcpy(state->pkt_parms.ses_hdr, ses, ses_len);

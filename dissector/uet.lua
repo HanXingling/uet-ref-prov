@@ -363,7 +363,8 @@ fld.ses_resp_msg_offset		= ProtoField.uint32("uet.ses.resp.msg_offset",		"Messag
 fld.ses_resp_rsvd		= ProtoField.uint16("uet.ses.resp.reserved",		"Reserved",			base.HEX,     nil, 0xc000)
 fld.ses_resp_payload_len	= ProtoField.uint16("uet.ses.resp.payload_len",		"Payload length",		base.DEC_HEX, nil, 0x3fff)
 
-local dissect_data	= Dissector.get("data")
+fld.payload			= ProtoField.bytes("uet.payload",			"Payload")
+fld.crc				= ProtoField.bytes("uet.crc",				"CRC")
 
 local pds_req_map = {} -- <IP, PDCID, PSN> -> framenum
 local pds_frame_info = {} -- framenum -> table
@@ -390,6 +391,7 @@ function p_uet.dissector(buf, pinfo, root)
 	local h_type = buf(offset, 1):bitfield(0, 5)
 	local h_next = buf(offset, 2):bitfield(5, 4)
 	local type_str = PDS_TYPE_STR_MAP[h_type]
+	local has_crc = false
 	local summary = ""
 	if type_str ~= nil then
 		summary = type_str
@@ -403,6 +405,9 @@ function p_uet.dissector(buf, pinfo, root)
 	if h_type == TYPE_RUD_REQ or h_type == TYPE_ROD_REQ then
 		subtree:add(fld.next_hdr, buf(offset, 2))
 		local flags_tree = subtree:add(fld.flags, buf(offset, 2))
+		if buf(offset, 2):bitfield(9, 1) == 1 then
+			has_crc = true
+		end
 		flags_tree:add(fld.flag_rreq_crc, buf(offset, 2))
 		flags_tree:add(fld.flag_rreq_rsv, buf(offset, 2))
 		flags_tree:add(fld.flag_rreq_retx, buf(offset, 2))
@@ -432,6 +437,9 @@ function p_uet.dissector(buf, pinfo, root)
 	end if h_type == TYPE_ACK then
 		subtree:add(fld.next_hdr, buf(offset, 2))
 		local flags_tree = subtree:add(fld.flags, buf(offset, 2))
+		if buf(offset, 2):bitfield(9, 1) == 1 then
+			has_crc = true
+		end
 		flags_tree:add(fld.flag_ack_crc, buf(offset, 2))
 		flags_tree:add(fld.flag_ack_m, buf(offset, 2))
 		flags_tree:add(fld.flag_ack_retx, buf(offset, 2))
@@ -586,9 +594,19 @@ function p_uet.dissector(buf, pinfo, root)
 	end
 
 	proto_tree:set_len(offset)
-	local pktlen = buf:len() - offset
-	local data_buf = buf(offset, pktlen)
-	dissect_data:call(data_buf:tvb(), pinfo, root)
+	local payload_len = buf:len() - offset
+
+	if has_crc then
+		payload_len = payload_len - 8
+	end
+
+	if payload_len > 0 then
+		root:add(fld.payload, buf(offset, payload_len))
+	end
+
+	if has_crc then
+		root:add(fld.crc, buf((offset + payload_len), 8))
+	end
 end
 
 function p_uet:init()
