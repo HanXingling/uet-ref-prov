@@ -146,12 +146,14 @@ struct UET_PACKED uet_pds_prlg {
 /* uet pds rod/rud request header */
 struct UET_PACKED uet_pds_req {
 	/* uet pds request flags in prologue */
-#define UET_PDS_REQ_FLAGS_NONE 0x00
 #define UET_PDS_REQ_FLAGS_CRC  0x40 /* CRC is present */
-#define UET_PDS_REQ_FLAGS_CC   0x20 /* requestor CC state field present */
-#define UET_PDS_REQ_FLAGS_SYN  0x10 /* connection setup request */
+#define UET_PDS_REQ_FLAGS_RSV  0x20 /* Reserved*/
+#define UET_PDS_REQ_FLAGS_RETX 0x10 /* request is a retransmit */
 #define UET_PDS_REQ_FLAGS_AR   0x08 /* ACK requested */
-#define UET_PDS_REQ_FLAGS_RETX 0x04 /* request is a retransmit */
+#define UET_PDS_REQ_FLAGS_SYN  0x04 /* connection setup request */
+#define UET_PDS_REQ_FLAGS_CC   0x02 /* requestor CC state field present */
+#define UET_PDS_REQ_FLAGS_RSV2 0x01 /* Reserved*/
+#define UET_PDS_REQ_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
 	int16_t             clear_psn_offset;
 	uint32_t            psn;
