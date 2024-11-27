@@ -146,12 +146,14 @@ struct UET_PACKED uet_pds_prlg {
 /* uet pds rod/rud request header */
 struct UET_PACKED uet_pds_req {
 	/* uet pds request flags in prologue */
-#define UET_PDS_REQ_FLAGS_NONE 0x00
 #define UET_PDS_REQ_FLAGS_CRC  0x40 /* CRC is present */
-#define UET_PDS_REQ_FLAGS_CC   0x20 /* requestor CC state field present */
-#define UET_PDS_REQ_FLAGS_SYN  0x10 /* connection setup request */
+#define UET_PDS_REQ_FLAGS_RSV  0x20 /* Reserved*/
+#define UET_PDS_REQ_FLAGS_RETX 0x10 /* request is a retransmit */
 #define UET_PDS_REQ_FLAGS_AR   0x08 /* ACK requested */
-#define UET_PDS_REQ_FLAGS_RETX 0x04 /* request is a retransmit */
+#define UET_PDS_REQ_FLAGS_SYN  0x04 /* connection setup request */
+#define UET_PDS_REQ_FLAGS_CC   0x02 /* requestor CC state field present */
+#define UET_PDS_REQ_FLAGS_RSV2 0x01 /* Reserved*/
+#define UET_PDS_REQ_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
 	int16_t             clear_psn_offset;
 	uint32_t            psn;
@@ -175,13 +177,14 @@ struct UET_PACKED uet_pds_req_cc_state {
 /* uet pds rod/rud ack header */
 struct UET_PACKED uet_pds_ack {
 	/* uet pds ack flags in prologue */
-#define UET_PDS_ACK_FLAGS_NONE        0x00
 #define UET_PDS_ACK_FLAGS_CRC         0x40 /* CRC is present */
 #define UET_PDS_ACK_FLAGS_M           0x20 /* original pkt was ECN marked */
 #define UET_PDS_ACK_FLAGS_RETX        0x10 /* ACK to a retransmit */
 #define UET_PDS_ACK_FLAGS_P           0x08 /* ACK to a probe (PSN ignored) */
 #define UET_PDS_ACK_FLAGS_REQ_TGT_CLS 0x04 /* target requests close */
 #define UET_PDS_ACK_FLAGS_REQ_TGT_CLR 0x02 /* target requests clear */
+#define UET_PDS_ACK_FLAGS_RSV         0x01 /* Reserved*/
+#define UET_PDS_ACK_FLAGS_NONE        0x00
 	struct uet_pds_prlg prlg;
 	int16_t             ack_psn_offset;
 	uint32_t            cack_psn;
@@ -233,10 +236,12 @@ typedef enum {
 /* uet pds rod/rud nack header */
 struct UET_PACKED uet_pds_nack {
 	/* uet pds nack flags in prologue */
-#define UET_PDS_NACK_FLAGS_NONE 0x00
-#define UET_PDS_NACK_FLAGS_NT   0x40 /* ROD/RUD=0, RUDI=1 */
+#define UET_PDS_NACK_FLAGS_RSV  0x40 /* Reserved*/
 #define UET_PDS_NACK_FLAGS_M    0x20 /* original pkt was ECN marked */
 #define UET_PDS_NACK_FLAGS_RETX 0x10 /* NACK to a retransmit */
+#define UET_PDS_NACK_FLAGS_NT	0x08 /* ROD/RUD=0, RUDI=1 */
+#define UET_PDS_NACK_FLAGS_RSV2 0x07 /* Reserved*/
+#define UET_PDS_NACK_FLAGS_NONE	0x00
 	struct uet_pds_prlg prlg;
 	uint8_t             nack_code;
 	uint8_t             vendor_code;
@@ -264,9 +269,12 @@ typedef enum {
 /* uet pds rod/rud control header */
 struct UET_PACKED uet_pds_ctrl {
 	/* uet pds control flags in prologue */
-#define UET_PDS_CTRL_FLAGS_NONE 0x00
-#define UET_PDS_CTRL_FLAGS_SYN  0x10 /* connection setup request */
+#define UET_PDS_CTRL_FLAGS_RSV  0x60 /* Reserved*/
+#define UET_PDS_CTRL_FLAGS_RETX 0x10 /* NACK to a retransmit */
 #define UET_PDS_CRTL_FLAGS_AR   0x08 /* ACK requested */
+#define UET_PDS_CTRL_FLAGS_SYN  0x04 /* connection setup request */
+#define UET_PDS_CTRL_FLAGS_RSV2 0x03 /* Reserved*/
+#define UET_PDS_CTRL_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
 	uint16_t            rsvd;
 	uint32_t            psn;
@@ -299,10 +307,11 @@ struct UET_PACKED uet_pds_ctrl {
 /* uet pds rudi request header */
 struct UET_PACKED uet_pds_rudi_req {
 	/* uet pds rudi request flags in prologue */
-#define UET_PDS_RUDI_FLAGS_NONE 0x00
 #define UET_PDS_RUDI_FLAGS_CRC  0x40 /* CRC is present */
 #define UET_PDS_RUDI_FLAGS_M    0x20 /* original request pkt was ECN marked */
 #define UET_PDS_RUDI_FLAGS_RETX 0x10 /* request is a retransmit */
+#define UET_PDS_RUDI_FLAGS_RSV  0x0f /* Reserved*/
+#define UET_PDS_RUDI_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
 	uint16_t            rsvd;
 	uint32_t            pkt_id;
@@ -314,6 +323,8 @@ struct UET_PACKED uet_pds_rudi_req {
 /* uet pds uud request header */
 struct UET_PACKED uet_pds_uud_req {
 	/* uet pds uud request flags in prologue */
+#define UET_PDS_UUD_FLAGS_CRC  0x40 /* CRC is present */
+#define UET_PDS_UUD_FLAGS_RSV  0x3f /* Reserved*/
 #define UET_PDS_UUD_FLAGS_NONE 0x00
 	struct uet_pds_prlg prlg;
 	uint16_t            rsvd;
