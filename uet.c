@@ -825,6 +825,10 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 	time_t start, now, delta;
 	struct fi_cq_data_entry cq_entry;
 	uet_addr_handle_t addr_handle;
+	int prev_descr_count, attempt_count;
+	struct dlist_entry *active_list;
+	struct dlist_entry * dummy_item;
+	int descr_count;
 
 	if (ctx->cfg.tag) {
 		if (ctx->cfg.tag_any_src)
@@ -883,12 +887,72 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 	}
 
 	if (first) {
+
+		/* 
+		 * NOTE: Previous behavior and error (bug) description:
+		 *
+		 * After the client completes TX, the server echoes the message
+		 * back. The packet is unexpected at the client since we did not
+		 * call uet_recv.
+		 * Now, we call uet_cq_read periodically to mimic the client
+		 * waiting for the TX packet completion.
+		 * 
+		 * After the first packet of the echoed message arrives, the
+		 * client parses it, checks that since there is no matching read
+		 * descriptor in the ring buffer, client sends a NO_MATCH
+		 * notification to the server, but creates an active RX
+		 * descriptor for the first packet.
+		 * 
+		 * The server receives the client's notification and sends a
+		 * MSG_ERROR back to ask the client to terminate the message.
+		 * 
+		 * Then, the client removes the active descriptor and notifies
+		 * the server.
+		 * The server tries to retransmit the message, and the whole
+		 * cycle repeats.
+		 * 
+		 * The client side waits for up to 3ms in this cycle and then
+		 * calls uet_recv, putting the appropriate read descriptor in
+		 * the ring buffer, so the message is not unexpected anymore
+		 * and gets properly received.
+		 * 
+		 * The server tries to retransmit up to 10 times, then gives up.
+		 * This breaks the test logic on fast computers if the cycle
+		 * happens more than 10 times within 3ms.
+		 * 
+		 * NOTE: FIX description
+		 * To avoid test failure, we now count MSG_ERROR arrivals by
+		 * counting the number of active RX descriptors and detecting
+		 * the removal of an active descriptor. After the fifth
+		 * MSG_ERROR arrival, we break the loop even if 3ms have not
+		 * passed yet.
+		 */
+
 		uet_gettime(&start);
 #define UNEXPECTED_MSG_TEST_DELAY 3 /* msecs */
+		prev_descr_count = 0;
+		attempt_count = 0;
 		for (now = start, delta = 0;
 		     delta < UNEXPECTED_MSG_TEST_DELAY;
 		     delta = now - start) {
 			uet_cq_read(ctx->tx_cq_handle, &cq_entry, 1);
+			
+			active_list = &(((struct uet_ep *)(ctx->ep_handle))->
+						rx_desc_active_list_head);
+
+			/* count active RX descriptors			*/
+			descr_count = 0;
+			dlist_foreach(active_list, dummy_item)
+				descr_count++;
+			
+			/* is descriptor removed from the active list? */
+			if (descr_count < prev_descr_count)
+				attempt_count++; /* a MSG_ERROR arrived */
+
+			prev_descr_count = descr_count;
+
+			if (attempt_count >= 5) break;
+
 			uet_gettime(&now);
 		}
 		first = false;
@@ -1245,9 +1309,12 @@ int main(int argc, char *argv[])
 	printf("\nUnexpected Tagged Message Test\n");
 	printf("==============================\n");
 	test_argc = 4;
+	local_argv[0] = argv[0];
+	local_argv[1] = argv[1];
 	local_argv[2] = "tag";
 	local_argv[3] = argv[3];
 	local_argv[4] = NULL;
+	test_argv = local_argv;
 	memset(ctx, 0, sizeof(struct uet_context));
 	first = true;
 	ctx->cfg.unexpected_msg_test = true;
