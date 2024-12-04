@@ -891,38 +891,41 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 		/* 
 		 * NOTE: Previous behavior and error (bug) description:
 		 *
-		 * After the client completes TX, the server echoes the message back.
-		 * The packet is unexpected at the client since we did not call
-		 * uet_recv.
-		 * Now, we call uet_cq_read periodically to mimic the client waiting
-		 * for the TX packet completion.
+		 * After the client completes TX, the server echoes the message
+		 * back. The packet is unexpected at the client since we did not
+		 * call uet_recv.
+		 * Now, we call uet_cq_read periodically to mimic the client
+		 * waiting for the TX packet completion.
 		 * 
-		 * After the first packet of the echoed message arrives, the client
-		 * parses it, checks that since there is no matching read descriptor
-		 * in the ring buffer, client sends a NO_MATCH notification to the
-		 * server, but creates an active RX descriptor for the first packet.
+		 * After the first packet of the echoed message arrives, the
+		 * client parses it, checks that since there is no matching read
+		 * descriptor in the ring buffer, client sends a NO_MATCH
+		 * notification to the server, but creates an active RX
+		 * descriptor for the first packet.
 		 * 
-		 * The server receives the client's notification and sends a MSG_ERROR
-		 * back to ask the client to terminate the message.
+		 * The server receives the client's notification and sends a
+		 * MSG_ERROR back to ask the client to terminate the message.
 		 * 
-		 * Then, the client removes the active descriptor and notifies the
-		 * server. The server tries to retransmit the message, and the whole
+		 * Then, the client removes the active descriptor and notifies
+		 * the server.
+		 * The server tries to retransmit the message, and the whole
 		 * cycle repeats.
 		 * 
-		 * The client side waits for up to 3ms in this cycle and then calls
-		 * uet_recv, putting the appropriate read descriptor in the ring
-		 * buffer, so the message is not unexpected anymore and gets properly
-		 * received.
+		 * The client side waits for up to 3ms in this cycle and then
+		 * calls uet_recv, putting the appropriate read descriptor in
+		 * the ring buffer, so the message is not unexpected anymore
+		 * and gets properly received.
 		 * 
 		 * The server tries to retransmit up to 10 times, then gives up.
-		 * This breaks the test logic on fast computers if the cycle happens
-		 * more than 10 times within 3ms.
+		 * This breaks the test logic on fast computers if the cycle
+		 * happens more than 10 times within 3ms.
 		 * 
 		 * NOTE: FIX description
-		 * To avoid test failure, we now count MSG_ERROR arrivals by counting
-		 * the number of active RX descriptors and detecting the removal of an
-		 * active descriptor. After the fifth MSG_ERROR arrival, we break the
-		 * loop even if 3ms have not passed yet.
+		 * To avoid test failure, we now count MSG_ERROR arrivals by
+		 * counting the number of active RX descriptors and detecting
+		 * the removal of an active descriptor. After the fifth
+		 * MSG_ERROR arrival, we break the loop even if 3ms have not
+		 * passed yet.
 		 */
 
 		uet_gettime(&start);
@@ -942,7 +945,7 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 			dlist_foreach(active_list, dummy_item)
 				descr_count++;
 			
-			/* check that a descriptor is removed from the active list*/
+			/* is descriptor removed from the active list? */
 			if (descr_count < prev_descr_count)
 				attempt_count++; /* a MSG_ERROR arrived */
 
