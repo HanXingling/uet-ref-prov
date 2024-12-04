@@ -7,6 +7,7 @@ on:
 jobs:
   run_sanity:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - name: Check out the code
         uses: actions/checkout@v3  
@@ -75,11 +76,23 @@ jobs:
           sudo arp -i vm2 -s 10.1.0.1 $MAC2
           sudo arp -i brm -s 10.1.0.2 $MAC1
 
-      - name: Start server client
+      - name: run tests in SNG mode
         run: |
           arp -a
           sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=brm ./uet server test 10.1.0.2 &
           echo "Server started in background."
           sleep 2
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client test 10.1.0.1
           echo "Client started."
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client test 10.1.0.1
+          echo "Client finished."  
+
+
+      - name: run tests in PDS mode
+        run: |
+          arp -a
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=brm ./uet server test 10.1.0.2 &
+          echo "Server started in background."
+          sleep 2
+          echo "Client started."
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=vm2 ./uet client test 10.1.0.1
+          echo "Client finished."   
