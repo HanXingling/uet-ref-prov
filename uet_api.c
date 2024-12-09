@@ -4527,6 +4527,83 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, void *buf, size_t len,
 	return FI_SUCCESS;
 }
 
+int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
+	       size_t iov_count,uint64_t access, uint64_t requested_key,
+		   uint64_t flags,void *context, uet_mr_handle_t *mr_handle)
+{
+	int rc;
+	uint64_t key, rkey;
+	bool desc_allocated;
+	size_t mr_index;
+	struct uet_domain *uet_dom;
+	struct uet_mr_desc *mr_desc;
+
+	uet_dom = (struct uet_domain *) domain_handle;
+
+	/* allocate descriptor for memory region */
+	key = requested_key & UET_MR_KEY_IDEMPOTENT_SAFE;
+	if (uet_dom->info->domain_attr->mr_mode & FI_MR_PROV_KEY) {
+		desc_allocated = false;
+		if (requested_key & UET_MR_KEY_OPTIMIZED) {
+			if (uet_alloc_opt_mr_desc(uet_dom, &mr_index) ==
+			    FI_SUCCESS) {
+				desc_allocated = true;
+				key |= (UET_MR_KEY_OPTIMIZED |
+					(mr_index <<
+					 UET_MR_KEY_OPTIMIZED_RKEY_SHIFT));
+			}
+		}
+		if (!desc_allocated) {
+			rc = uet_alloc_mr_desc(uet_dom, &mr_index);
+			if (rc != FI_SUCCESS)
+				return rc;
+			key |= (mr_index << UET_MR_KEY_RKEY_SHIFT);
+		}
+		rkey = mr_index;
+	} else {
+		if (requested_key & UET_MR_KEY_OPTIMIZED) {
+			rkey = (requested_key & UET_MR_KEY_OPTIMIZED_RKEY_MASK) >>
+				UET_MR_KEY_OPTIMIZED_RKEY_SHIFT;
+			if (rkey > UET_MR_KEY_OPTIMIZED_MAX_RKEY) {
+				UET_API_ERR(
+				"Requested key too large for optimized format");
+				return -FI_EINVAL;
+			}
+			key |= (UET_MR_KEY_OPTIMIZED |
+				(rkey << UET_MR_KEY_OPTIMIZED_RKEY_SHIFT));
+		} else {
+			rkey = (requested_key & UET_MR_KEY_RKEY_MASK) >>
+				UET_MR_KEY_RKEY_SHIFT;
+			if (rkey > UET_MR_KEY_MAX_RKEY) {
+				UET_API_ERR("Requested key too large");
+				return -FI_EINVAL;
+			}
+			key |= rkey << UET_MR_KEY_RKEY_SHIFT;
+		}
+		rc = uet_alloc_mr_desc(uet_dom, &mr_index);
+		if (rc != FI_SUCCESS)
+			return rc;
+	}
+
+	/* init memory region descriptor */
+	mr_desc = &uet_dom->mr_desc[mr_index];
+	memset(mr_desc, 0, sizeof(struct uet_mr_desc));
+	mr_desc->state = UET_MR_DESC_STATE_DISABLED_REG;
+	mr_desc->uet_dom = uet_dom;
+	mr_desc->buf_desc.type = UET_MR_BUF_TYPE_IOV;
+	mr_desc->buf_desc.iov.iov = iov;
+	mr_desc->buf_desc.iov.iov_count = iov_count;
+	mr_desc->access = access;
+	mr_desc->flags = flags;
+	mr_desc->context = context;
+	mr_desc->full_key = key;
+	mr_desc->hash_key.rkey = rkey;
+
+	*mr_handle = mr_desc;
+
+	return FI_SUCCESS;
+}
+
 uint64_t uet_mr_key(uet_mr_handle_t mr_handle)
 {
 	struct uet_mr_desc *mr_desc;
