@@ -1090,6 +1090,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	/* the packet was sent successfully */
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
 
+	// FIXME: Add descriptive comment
+	uet_print_uet_hdr(&pdc_pkt->pkt_pp);
+
 	/* set this packet in the tx_bm */
 	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u",
 		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,

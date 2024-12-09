@@ -2046,6 +2046,11 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	struct uet_rx_desc *rx_desc;
 	struct uet_rx_msg_key msg_key;
 	struct uet_tag_initiator_key tag_key, tag_only_key;
+	const struct iovec *iov;
+	size_t iov_count;
+	size_t index = 0;
+	static uint64_t saved_offset;
+	void * pkt_buf;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
@@ -2260,6 +2265,40 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		uet_rx_msg_hash_insert(uet_ep, rx_desc);
 	}
 
+	if (rx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
+		iov = rx_desc->buf_desc.iov.iov;
+		iov_count = rx_desc->buf_desc.iov.iov_count;
+		// TODO: actually here shall be actual payload size
+		//       but at the time of writing it was unavailable
+		//       in current scope, that's why max size is allocated
+		//       here
+		// FIXME: Allocate buffer where appropriate
+		pkt_buf = malloc(max_payload_len); // FIXME: Free pkt_buf where appropriate
+		size_t pkt_buf_offset = 0;
+		size_t copied = 0;
+
+		for (; index < iov_count; index++) {
+			void * current_buf = (void * )(iov[index].iov_base +
+					saved_offset);				
+			size_t current_len = iov[index].iov_len - saved_offset;
+			size_t space_left = max_payload_len - pkt_buf_offset;
+			size_t to_copy = (current_len < space_left) ?
+				current_len : space_left;
+
+			memcpy(pkt_buf + pkt_buf_offset,
+					current_buf + copied, to_copy);
+			pkt_buf_offset += to_copy;
+			copied += to_copy;
+
+			if (copied == max_payload_len) {
+				if (current_len > to_copy) {
+					saved_offset = to_copy;
+				}
+				break;
+			}
+			saved_offset = 0;
+		}
+	}
 	/* validate pkt fits in buffer */
 	if ((buf_off + pp->ses_payload_len) > rx_desc->buf_desc.len) {
 		UET_API_ERR("RX: Invalid Buffer Offset");
@@ -2280,9 +2319,15 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 				       UET_RC_INITIATOR_ERR, gtd_del));
 	}
+	if (rx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
+		buf_ptr =  (void *) ((size_t) pkt_buf); 
+	} else {
+		buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + buf_off);
+	}
 
 	/* copy packet to rx buffer */
-	buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + buf_off);
+	// FIXME: Here we actually rewrite what we previously written into
+	//        buffer. Related to comments on memory allocation above
 	memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
 
 	/* check for message completion */
@@ -3220,6 +3265,10 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	void *ses, *pkt_buf;
 	uet_next_hdr_t next_hdr;
 	struct uet_pds_info *pds_info;
+	const struct iovec *iov;
+	size_t iov_count;
+	size_t index = 0;
+	size_t saved_offset = 0;
 
 	uet_ep = tx_desc->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
@@ -3259,9 +3308,41 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			ses_len = sizeof(struct uet_ses_req_std);
 		}
 
-		/* TODO: add support for iov and dma'able buffers */
-		pkt_buf = (void *) (((size_t) tx_desc->buf_desc.buf) +
-				    tx_desc->buf_desc.buf_off);
+		if (tx_desc -> buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
+		  	iov = tx_desc -> buf_desc.iov.iov;
+		  	iov_count = tx_desc -> buf_desc.iov.iov_count;
+			pkt_buf = malloc(payload_len);
+		  	size_t pkt_buf_offset = 0;
+		  	size_t copied = 0;
+
+			for (; index < iov_count; index++) {
+				void * current_buf = (void * )(iov[index].iov_base + saved_offset);				
+				size_t current_len = iov[index].iov_len - saved_offset;
+				size_t space_left = payload_len - pkt_buf_offset;
+				size_t to_copy = (current_len < space_left) ? current_len : space_left;
+
+				memcpy(pkt_buf + pkt_buf_offset, current_buf + copied, to_copy);
+				pkt_buf_offset += to_copy;
+				copied += to_copy;
+
+				if (copied == payload_len) {
+					if (current_len > to_copy) {
+						saved_offset = to_copy;
+					}
+					break;
+				}
+				saved_offset = 0;
+			}
+			pkt_buf = (void *) ((size_t) pkt_buf);
+
+
+		}
+		else {
+			/* TODO: add support for iov and dma'able buffers */
+			pkt_buf = (void *) (((size_t) tx_desc->buf_desc.buf) +
+						tx_desc->buf_desc.buf_off);
+		}
+
 		uet_build_ses_hdr(tx_desc, pkt_len, ses);
 		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, uet_ep,
 					  tx_desc->dst_addr_handle,
@@ -3303,8 +3384,8 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 	for (i = 0; i < uet_ep->num_tx_desc; i++) {
 		if (uet_ring_empty(ring))
 			return;
-		tx_desc = ((struct uet_tx_desc_ring_entry *)
-			   ring->base)[ring->tail].tx_desc;
+
+		tx_desc = ((struct uet_tx_desc_ring_entry *)ring->base)[ring->tail].tx_desc;
 		if (i == 0)
 			start_tx_desc = tx_desc;
 		else if (tx_desc == start_tx_desc)
@@ -3582,6 +3663,244 @@ static ssize_t uet_recv_api_common(
 	}
 
 	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
+
+	return FI_SUCCESS;
+}
+
+/* common function for recv api's                    */
+/*   - the recv_api determines which parms are valid */
+static ssize_t uet_recvv_api_common(
+	uet_recv_api_t recv_api, uet_ep_handle_t ep_handle, uint32_t job_id,
+	struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+	uet_addr_handle_t src_addr_handle, uint64_t tag, uint64_t ignore,
+	void *context)
+{
+	struct uet_ep *uet_ep;
+	struct uet_rx_desc *rx_desc;
+	struct uet_av_entry *av_entry;
+	size_t msg_len = 0;
+
+
+	uet_ep = (struct uet_ep *) ep_handle;
+
+	/* check that rx completion queue is bound to endpoint */
+	if (uet_ep->recv_cq.cq_state == UET_CQ_DOWN) {
+		UET_API_ERR("No RX Completion Q");
+		return -FI_EIO;
+	}
+
+	if (recv_api == UET_TRECV_API) {
+		/* check that ignore bits are not specified */
+		if (ignore != UET_EXACT_MATCH) {
+			UET_API_ERR(
+				"Wildcard Tags Not Supported for uet_trecv()");
+			return -FI_EINVAL;
+		}
+	}
+
+	for (size_t i = 0; i < count; i++) {
+		msg_len += iov[i].iov_len;
+	}
+
+	/* allocate rx descriptor */
+	rx_desc = uet_rx_desc_list_pop(uet_ep);
+	if (rx_desc == NULL)
+		return -FI_EAGAIN;
+
+	/* init msg descriptor */
+	memset(rx_desc, 0, sizeof(struct uet_rx_desc));
+	rx_desc->desc_flags = UET_RX_DESC_FLAG_POST_CQ;
+	rx_desc->buf_desc.type = UET_MSG_BUF_TYPE_IOV;
+	rx_desc->buf_desc.iov.iov = iov;
+	rx_desc->buf_desc.iov.iov_count = count;
+	rx_desc->buf_desc.len = msg_len;
+	rx_desc->context = context;
+	rx_desc->ses_rc = UET_RC_OK;
+	rx_desc->uet_ep = uet_ep;
+
+	switch (recv_api) {
+	case UET_RECV_API:
+		rx_desc->cq_flags = FI_RECV | FI_MSG;
+
+		/* insert msg descriptor in rx ring of endpoint */
+		uet_rx_desc_ring_insert(rx_desc);
+
+		if (uet_ep->untagged_gen_disabled) {
+			/* re-enable generation */
+			uet_ep->untagged_gen++;
+			uet_ep->untagged_gen_disabled = false;
+		}
+		break;
+	case UET_TRECV_API:
+		rx_desc->cq_flags = FI_RECV | FI_TAGGED;
+
+		/* insert msg descriptor in tag buffer hash table of endpoint */
+		memset(&rx_desc->tag_key, 0,
+		       sizeof(struct uet_tag_initiator_key));
+		rx_desc->tag_key.tag = htonll(tag);
+		if (src_addr_handle == UET_NULL_HANDLE) {
+			rx_desc->tag_key.initiator_invalid = true;
+			rx_desc->tag_key.initiator = UET_INITIATOR_NONE;
+		} else {
+			av_entry = (struct uet_av_entry *) src_addr_handle;
+			rx_desc->tag_key.initiator_invalid = false;
+			rx_desc->tag_key.initiator =
+				htonl(av_entry->addr->initiator_id);
+		}
+		uet_tag_initiator_hash_insert(uet_ep, rx_desc);
+
+		if (uet_ep->tagged_gen_disabled) {
+			/* re-enable generation */
+			uet_ep->tagged_gen++;
+			uet_ep->tagged_gen_disabled = false;
+		}
+		break;
+	default:
+		break;
+	}
+
+	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
+
+	return FI_SUCCESS;
+}
+
+
+/* common function for api's that send requests          */
+/*   - the send_req_api determines which parms are valid */
+static ssize_t uet_sendv_req_api_common(
+	uet_send_req_api_t send_req_api, uet_ep_handle_t ep_handle,
+	uint32_t job_id, struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
+	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
+{
+	int rc;
+	uint16_t msg_id;	
+	uint32_t msg_len = 0;
+	struct uet_instance *uet;
+	struct uet_ep *uet_ep;
+	struct uet_tx_desc *tx_desc;
+	struct uet_rx_desc *rx_desc;
+	struct uet_av_entry *av_entry;
+
+	uet_ep = (struct uet_ep *) ep_handle;
+	uet = uet_ep->uet_domain->uet;
+	av_entry = (struct uet_av_entry *) dst_addr_handle;
+
+	/* check that tx completion queue is bound to endpoint */
+	if (uet_ep->send_cq.cq_state == UET_CQ_DOWN) {
+		UET_API_ERR("No TX Completion Q");
+		return -FI_EIO;
+	}
+
+	/* check next-hop mac address */
+	if (!(av_entry->flags & UET_NH_MAC_ADDR_V)) {
+		rc = uet_nic_get_ipv4_nh(UET_NIC(uet), av_entry->addr->fa.v4,
+					 av_entry->nh_mac_addr);
+		if (rc != FI_SUCCESS)
+			return rc;
+		av_entry->flags |= UET_NH_MAC_ADDR_V;
+	}
+
+	/* allocate msg id */
+	rc = uet_alloc_msg_id(uet, &msg_id);
+	if (rc != FI_SUCCESS)
+		return rc;
+
+	/* allocate tx descriptor */
+	tx_desc = uet_tx_desc_list_pop(uet_ep);
+	if (tx_desc == NULL) {
+		uet_dealloc_msg_id(uet, msg_id);
+		return -FI_EAGAIN;
+	}
+
+	for (int i = 0;i < count;i++) {
+		msg_len += iov[i].iov_len;
+	}
+
+	/* allocate rx descriptor for read */
+	if (send_req_api == UET_READ_API) {
+		rx_desc = uet_rx_desc_list_pop(uet_ep);
+		if (rx_desc == NULL) {
+			uet_dealloc_msg_id(uet, msg_id);
+			uet_tx_desc_list_insert(tx_desc);
+			return -FI_EAGAIN;
+		}
+		/* init rx descriptor */
+		memset(rx_desc, 0, sizeof(struct uet_rx_desc));
+		rx_desc->desc_flags =
+			UET_RX_DESC_FLAG_POST_CQ | UET_RX_DESC_FLAG_READ_RSP;
+		rx_desc->buf_desc.type = UET_MSG_BUF_TYPE_IOV;
+		rx_desc->buf_desc.iov.iov = iov;
+		rx_desc->buf_desc.iov.iov_count = count;
+		rx_desc->buf_desc.len = msg_len;
+		rx_desc->msg_len = msg_len;
+		rx_desc->remaining_bytes = msg_len;
+		rx_desc->context = context;
+		rx_desc->ses_rc = UET_RC_OK;
+		rx_desc->uet_ep = uet_ep;
+		rx_desc->tx_desc = tx_desc;
+		rx_desc->msg_key.msg_id = msg_id;
+		uet_set_msg_id_rx_desc(uet, msg_id, rx_desc);
+		uet_rx_desc_active_list_insert(rx_desc);
+	}
+
+	/* init tx descriptor for msg */
+	memset(tx_desc, 0, sizeof(struct uet_tx_desc));
+	tx_desc->desc_flags = UET_TX_DESC_FLAG_MSG_ID_ALLOCATED |
+			      UET_TX_DESC_FLAG_POST_CQ;
+	tx_desc->buf_desc.type = UET_MSG_BUF_TYPE_IOV;
+	tx_desc->buf_desc.iov.iov = iov;
+	tx_desc->buf_desc.iov.iov_count = count;
+	tx_desc->buf_desc.len = msg_len;
+	tx_desc->remaining_bytes = msg_len;
+	tx_desc->context = context;
+	tx_desc->dst_addr_handle = dst_addr_handle;
+	tx_desc->job_id = job_id;
+	tx_desc->msg_id = msg_id;
+	tx_desc->uet_ep = uet_ep;
+	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
+	tx_desc->pds_mode = uet_get_pds_mode(uet_ep);
+	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
+		tx_desc->seq_num = uet_alloc_av_msg_seq_num(av_entry);
+	uet_gettime(&tx_desc->tx_time);
+
+	switch (send_req_api) {
+	case UET_SEND_API:
+		tx_desc->cq_flags = FI_SEND | FI_MSG;
+		break;
+	case UET_TSEND_API:
+		tx_desc->cq_flags = FI_SEND | FI_TAGGED;
+		tx_desc->tag_or_immdata = tag;
+		break;
+	case UET_WRITE_API:
+		if (imm_data) {
+			tx_desc->desc_flags |= UET_TX_DESC_FLAG_IMM_DATA_VALID;
+			tx_desc->tag_or_immdata = *imm_data;
+		}
+		tx_desc->cq_flags = FI_RMA | FI_WRITE;
+		tx_desc->remote_start_off = remote_mem_addr;
+		tx_desc->remote_key = remote_key;
+		break;
+	case UET_READ_API:
+		tx_desc->desc_flags |= UET_TX_DESC_FLAG_READ_REQ;
+		tx_desc->cq_flags = FI_RMA | FI_READ;
+		tx_desc->remote_start_off = remote_mem_addr;
+		tx_desc->remote_key = remote_key;
+		tx_desc->rx_desc = rx_desc;
+		break;
+	default:
+		break;
+	}
+
+	/* insert descriptor for msg in tx ring of endpoint */
+	uet_tx_desc_ring_insert(tx_desc);
+
+	/* do the send */
+	if (uet_ring_entry_cnt(&uet_ep->tx_ring) == 1)
+		uet_tx_msg(tx_desc);
+
+	uet_ep->num_active_sends++;
+	av_entry->num_active_ops++;
 
 	return FI_SUCCESS;
 }
@@ -4400,6 +4719,30 @@ ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 				    UET_NO_IGNORE_BITS, context));
 }
 
+// TODO: Find similar functionlity function for other providers
+//       and provide similar API description in heder file
+ssize_t uet_recvv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t src_addr_handle, void *context)
+{
+	return (uet_recvv_api_common(UET_RECV_API, ep_handle, job_id, iov, count,
+				    mr_handle, src_addr_handle, UET_NO_TAG,
+				    UET_NO_IGNORE_BITS, context));
+}
+
+// TODO: Process similary to uet_recvv:
+// TODO: Find similar functionlity function for other providers
+//       and provide similar API description in heder file
+ssize_t uet_trecvv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t src_addr_handle, uint64_t tag,
+		  uint64_t ignore, void *context)
+{
+	return (uet_recvv_api_common(UET_TRECV_API, ep_handle, job_id, iov, count,
+				    mr_handle, src_addr_handle, tag, ignore,
+				    context));
+}
+
 ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context)
@@ -4409,6 +4752,35 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
 }
+
+// TODO: Process similary to uet_recvv
+// TODO: Find similar functionlity function for other providers
+//       and provide similar API description in heder file
+ssize_t uet_sendv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t dst_addr_handle, void *context)
+{
+	return (uet_sendv_req_api_common(
+			UET_SEND_API, ep_handle, job_id, iov, count, mr_handle,
+			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+}
+
+// TODO: Process similary to uet_recvv
+// TODO: Find similar functionlity function for other providers
+//       and provide similar API description in heder file
+ssize_t uet_tsendv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  struct iovec *iov, size_t count, uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t dst_addr_handle, uint64_t tag,
+		  void *context)
+{
+	return (uet_sendv_req_api_common(
+			UET_TSEND_API, ep_handle, job_id, iov, count, mr_handle,
+			dst_addr_handle, tag, UET_NO_IMM_DATA,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+}
+
+
 
 ssize_t uet_trecv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uet_mr_handle_t mr_handle,

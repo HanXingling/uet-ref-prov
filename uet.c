@@ -87,6 +87,10 @@ typedef enum {
 #define UET_PACKED __attribute__((__packed__))
 #endif
 
+#define UET_WARN(fmt, ...)                                                      \
+	fprintf(stdout, "[%s] %s:%-4d: " fmt "\n", "warning",                    \
+		__FILE__, __LINE__, ##__VA_ARGS__)
+
 #define UET_ERR(fmt, ...)                                                      \
 	fprintf(stderr, "[%s] %s:%-4d: " fmt "\n", "error",                    \
 		__FILE__, __LINE__, ##__VA_ARGS__)
@@ -110,6 +114,7 @@ struct uet_cfg {
 	bool test;				    /* true => run test suite */
 	bool unexpected_msg_test;  /* true => this is unexpected message test */
 	bool dsend_test;			/* true => this is dsend test */
+	bool iov_test;				/* true => test uses iov*/
 	int num_iterations;                 /* number of messages to exchange */
 	size_t msg_size;                         /* size of messages in bytes */
 	char *peer_ip_addr_string;             /* peer ip addr in string form */
@@ -148,6 +153,10 @@ struct uet_context {
 	uint8_t *tx_msg;                      /* ptr to uet tx message buffer */
 	uint8_t *rx_msg;                      /* ptr to uet rx message buffer */
 	uint8_t *mr_buf;                /* ptr to local memory region bufffer */
+	struct iovec *tx_iov;
+	uint8_t tx_count;
+	struct iovec *rx_iov;
+	uint8_t rx_count;
 	uet_mr_handle_t mr_handle;           /*handle for local memory region */
 	/* buf addr and key for memory regions */
 	struct uet_mem_region_info local_mr, remote_mr;
@@ -552,6 +561,28 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		UET_ERR("Error allocating message buffer");
 		goto exit;
 	}
+
+	ssize_t remaining_size = ctx->cfg.msg_size;
+	ctx->rx_iov = malloc(UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+	ctx->tx_iov = malloc(UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+
+	while (remaining_size > 0 && ctx->tx_count < UET_IOV_LIMIT_MAX) {
+		size_t buffer_size = rand() % (remaining_size / 2 + 1) + 1; 
+		if (ctx->tx_count + 1 == UET_IOV_LIMIT_MAX) {
+			buffer_size = remaining_size; 
+		}
+		ctx->tx_iov[ctx->tx_count].iov_base = malloc(buffer_size);
+
+		ctx->tx_iov[ctx->tx_count].iov_len = buffer_size;
+
+		remaining_size -= buffer_size;
+
+		memset(ctx->tx_iov[ctx->tx_count].iov_base, (uint8_t)1, buffer_size);
+
+		ctx->tx_count++;
+	}
+	memcpy(ctx->rx_iov, ctx->tx_iov, UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+	ctx->rx_count = ctx->tx_count;
 
 	rc = UET_SUCCESS_RC;
 
@@ -1003,50 +1034,97 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 	ssize_t ret;
 	struct fi_cq_data_entry cq_entry;
 	uet_addr_handle_t addr_handle;
+	if(ctx->cfg.iov_test) {
+		if (ctx->cfg.tag) {
+			if (ctx->cfg.tag_any_src)
+				addr_handle = UET_NULL_HANDLE;
+			else
+				addr_handle = ctx->peer_addr_handle;
 
-	if (ctx->cfg.tag) {
-		if (ctx->cfg.tag_any_src)
-			addr_handle = UET_NULL_HANDLE;
-		else
-			addr_handle = ctx->peer_addr_handle;
+			/* post tagged rx buffer */
+			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
+					ctx->rx_count, UET_NULL_HANDLE,
+					addr_handle, UET_DEFAULT_TAG,
+					UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 
-		/* post tagged rx buffer */
-		ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
-				ctx->cfg.msg_size, UET_NULL_HANDLE,
-				addr_handle, UET_DEFAULT_TAG,
-				UET_EXACT_MATCH, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
-		}
+			/* transmit tagged message to server */
+			ret = uet_tsendv(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->tx_iov, ctx->tx_count,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_tsend: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* post rx buffer */
+			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
+					ctx->rx_count, UET_NULL_HANDLE,
+					UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 
-		/* transmit tagged message to server */
-		ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id,
-				ctx->tx_msg, ctx->cfg.msg_size,
-				UET_NULL_HANDLE, ctx->peer_addr_handle,
-				UET_DEFAULT_TAG, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_tsend: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
+			/* transmit message to server */
+			ret = uet_sendv(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->tx_iov, ctx->tx_count,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 		}
 	} else {
-		/* post rx buffer */
-		ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
-			       ctx->cfg.msg_size, UET_NULL_HANDLE,
-			       UET_NULL_HANDLE, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_recv: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
-		}
+		if (ctx->cfg.tag) {
+			if (ctx->cfg.tag_any_src)
+				addr_handle = UET_NULL_HANDLE;
+			else
+				addr_handle = ctx->peer_addr_handle;
 
-		/* transmit message to server */
-		ret = uet_send(ctx->ep_handle, ctx->cfg.job_id,
-			       ctx->tx_msg, ctx->cfg.msg_size,
-			       UET_NULL_HANDLE, ctx->peer_addr_handle,
-			       NULL);
-		if (ret < 0) {
-			UET_ERR("uet_send: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
+			/* post tagged rx buffer */
+			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
+					ctx->cfg.msg_size, UET_NULL_HANDLE,
+					addr_handle, UET_DEFAULT_TAG,
+					UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+
+			/* transmit tagged message to server */
+			ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->tx_msg, ctx->cfg.msg_size,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_tsend: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* post rx buffer */
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
+					ctx->cfg.msg_size, UET_NULL_HANDLE,
+					UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+
+			/* transmit message to server */
+			ret = uet_send(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->tx_msg, ctx->cfg.msg_size,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 		}
 	}
 
@@ -1082,29 +1160,58 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	struct fi_cq_data_entry cq_entry;
 	uet_addr_handle_t addr_handle;
 
-	if (ctx->cfg.tag) {
-		if (ctx->cfg.tag_any_src)
-			addr_handle = UET_NULL_HANDLE;
-		else
-			addr_handle = ctx->peer_addr_handle;
+	if (ctx->cfg.iov_test) {
+		if (ctx->cfg.tag) {
+			if (ctx->cfg.tag_any_src)
+				addr_handle = UET_NULL_HANDLE;
+			else
+				addr_handle = ctx->peer_addr_handle;
 
-		/* post tagged rx buffer */
-		ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
-				ctx->cfg.msg_size, UET_NULL_HANDLE,
-				addr_handle, UET_DEFAULT_TAG,
-				UET_EXACT_MATCH, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_trecv: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
+			/* post tagged rx buffer */
+			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
+					ctx->rx_count, UET_NULL_HANDLE,
+					addr_handle, UET_DEFAULT_TAG,
+					UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* post rx buffer */
+			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
+					ctx->rx_count, UET_NULL_HANDLE,
+					UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 		}
-	} else {
-		/* post rx buffer */
-		ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
-			       ctx->cfg.msg_size, UET_NULL_HANDLE,
-			       UET_NULL_HANDLE, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_recv: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
+	}
+	else {
+		if (ctx->cfg.tag) {
+			if (ctx->cfg.tag_any_src)
+				addr_handle = UET_NULL_HANDLE;
+			else
+				addr_handle = ctx->peer_addr_handle;
+
+			/* post tagged rx buffer */
+			ret = uet_trecv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
+					ctx->cfg.msg_size, UET_NULL_HANDLE,
+					addr_handle, UET_DEFAULT_TAG,
+					UET_EXACT_MATCH, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* post rx buffer */
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_msg,
+					ctx->cfg.msg_size, UET_NULL_HANDLE,
+					UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 		}
 	}
 
@@ -1115,28 +1222,56 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	}
 
 	/* validate buffer contents */
-	if (uet_validate_msg(ctx, ctx->rx_msg) != UET_SUCCESS_RC) {
-		UET_ERR("Invalid buffer contents");
-		return UET_ERR_RC;
-	}
-
-	if (ctx->cfg.tag) {
-		/* echo tagged message back to client */
-		ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_msg,
-				cq_entry.len, UET_NULL_HANDLE,
-				ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_send: %s", fi_strerror(-ret));
+	if(ctx->cfg.iov_test) {
+		// FIXME: provide a way to validate message so that test actually
+		//        verify data integrity
+		UET_WARN("Message validation isn't implemented yet for iov mode");
+	} else {
+		if (uet_validate_msg(ctx, ctx->rx_msg) != UET_SUCCESS_RC) {
+			UET_ERR("Invalid buffer contents");
 			return UET_ERR_RC;
 		}
+	}
+
+	if (ctx->cfg.iov_test) {
+		if (ctx->cfg.tag) {
+			/* echo tagged message back to client */
+			ret = uet_tsendv(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_iov,
+					ctx->rx_count, UET_NULL_HANDLE,
+					ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* echo message back to client */
+			ret = uet_sendv(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->rx_iov, ctx->rx_count, UET_NULL_HANDLE,
+					ctx->peer_addr_handle, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		}
 	} else {
-		/* echo message back to client */
-		ret = uet_send(ctx->ep_handle, ctx->cfg.job_id,
-			       ctx->rx_msg, cq_entry.len, UET_NULL_HANDLE,
-			       ctx->peer_addr_handle, NULL);
-		if (ret < 0) {
-			UET_ERR("uet_send: %s", fi_strerror(-ret));
-			return UET_ERR_RC;
+		if (ctx->cfg.tag) {
+			/* echo tagged message back to client */
+			ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_msg,
+					cq_entry.len, UET_NULL_HANDLE,
+					ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+		} else {
+			/* echo message back to client */
+			ret = uet_send(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->rx_msg, cq_entry.len, UET_NULL_HANDLE,
+					ctx->peer_addr_handle, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
 		}
 	}
 
@@ -1154,6 +1289,7 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 {
 	uet_rc_t rc;
 	int iteration = 0;
+	int use_iov = 0;
 
 	/* init config parms */
 	rc = uet_init_cfg(argc, argv, ctx);
@@ -1161,49 +1297,53 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		UET_USAGE(argv[0]);
 		goto exit;
 	}
-
 	/* init transport */
 	rc = uet_init_transport(ctx);
 	if (rc != UET_SUCCESS_RC)
 		goto exit;
+		
+	for (use_iov = 0; use_iov <= 1; use_iov++) {
+		printf("Starting in %s\n", (use_iov == 1) ? "iov_mode" : "buf_mode");
+		ctx->cfg.iov_test = (use_iov == 1);
 
-	/* perform control message exchange */
-	if (ctx->cfg.rma) {
-		if (ctx->cfg.client) {
-			rc = uet_rma_client_ctrl_exchange(ctx);
-			if (rc != UET_SUCCESS_RC)
-				goto exit;
-		} else {
-			rc = uet_rma_server_ctrl_exchange(ctx);
-			if (rc != UET_SUCCESS_RC)
-				goto exit;
-		}
-	}
-
-	/* perform data transfer */
-	for (; iteration < ctx->cfg.num_iterations; iteration++) {
-		if (ctx->cfg.client) {
-			if (ctx->cfg.rma) {
-				rc = uet_rma_client(ctx);
+		/* perform control message exchange */
+		if (ctx->cfg.rma) {
+			if (ctx->cfg.client) {
+				rc = uet_rma_client_ctrl_exchange(ctx);
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			} else {
-				if (ctx->cfg.unexpected_msg_test)
-					rc = uet_msg_client_unexpected(ctx);
-				else
-					rc = uet_msg_client(ctx);
+				rc = uet_rma_server_ctrl_exchange(ctx);
 				if (rc != UET_SUCCESS_RC)
 					goto exit;
 			}
-		} else { /* server */
-			if (ctx->cfg.rma) {
-				rc = uet_rma_server(ctx);
-				if (rc != UET_SUCCESS_RC)
-					goto exit;
-			} else {
-				rc = uet_msg_server(ctx);
-				if (rc != UET_SUCCESS_RC)
-					goto exit;
+		}
+
+		/* perform data transfer */
+		for (iteration = 0; iteration < ctx->cfg.num_iterations; iteration++) {
+			if (ctx->cfg.client) {
+				if (ctx->cfg.rma) {
+					rc = uet_rma_client(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				} else {
+					if (ctx->cfg.unexpected_msg_test)
+						rc = uet_msg_client_unexpected(ctx);
+					else
+						rc = uet_msg_client(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				}
+			} else { /* server */
+				if (ctx->cfg.rma) {
+					rc = uet_rma_server(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				} else {
+					rc = uet_msg_server(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				}
 			}
 		}
 	}
