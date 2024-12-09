@@ -4319,6 +4319,17 @@ int uet_cq_close(uet_cq_handle_t cq_handle)
 	struct uet_cq *uet_cq;
 	struct uet_ep *uet_ep;
 
+
+	/*
+	 * This check is necessary to handle scenarios where the completion
+	 * queue (cq) is opened and closed without being bind. In such cases,
+	 * the handle will be NULL, and attempting to access it would result
+	 * in a segmentation fault.
+	 * Example of such a scenario is fi_cq_test fabtest
+	 */
+	if (!cq_handle)
+		return FI_SUCCESS;
+
 	uet_cq = (struct uet_cq *) cq_handle;
 	uet_ep = uet_cq->uet_ep;
 
@@ -4450,7 +4461,7 @@ uint64_t uet_mr_format_key(uint64_t rkey, bool idempotent_safe)
 	return formatted_key;
 }
 
-int uet_mr_reg(uet_domain_handle_t domain_handle, void *buf, size_t len,
+int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 	       uint64_t access, uint64_t requested_key, uint64_t flags,
 	       void *context, uet_mr_handle_t *mr_handle)
 {
