@@ -869,6 +869,30 @@ ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 uet_addr_handle_t src_addr_handle, void *context);
 
 /*
+ * simple api to post iov to receive queue of an endpoint
+ *
+ * parms:
+ *   ep_handle       - handle identifying uet endpoint instance
+ *   job_id          - job id associated with buffer for access
+ *                     authorization, UET_JOB_ID_ANY => buffer can be used
+ *                     by any job id
+ *   iov             - Pointer to an array of IO vectors that describe the memory buffers for receiving data.
+ *   iov_count       - Number of IO vectors in the iov array.
+ *   mr_handle       - handle identifying memory region associated with
+ *                     buffer, may be UET_NULL_HANDLE
+ *   src_addr_handle - handle identifying source uet address to receive from,
+ *                     may be UET_NULL_HANDLE
+ *   context         - user specified pointer to associate with the operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+ssize_t uet_recvv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 const struct iovec *iov, size_t iov_count, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t src_addr_handle, void *context);
+
+/*
  * flexible api to post buffer to receive queue of an endpoint
  *
  * parms:
@@ -919,6 +943,31 @@ ssize_t uet_recvmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  */
 ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t dst_addr_handle, void *context);
+
+/*
+ * simple api for transmission of a message to an endpoint
+ *
+ * parms:
+ *   ep_handle       - handle identifying local uet endpoint instance
+ *   job_id          - job id associated with message
+ *   iov             - Pointer to an array of IO vectors that describe the memory buffers for sending data.
+ *   iov_count       - Number of IO vectors in the iov array.
+ *   mr_handle       - handle identifying memory region associated with
+ *                     buffer, may be UET_NULL_HANDLE
+ *   dst_addr_handle - handle identifying uet destination address
+ *   context         - user specified pointer to associate with the operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ *
+ * notes:
+ *   - can be used to implement the following libfabric fi_msg api’s:
+ *     - fi_send
+ */
+ssize_t uet_sendv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 const struct iovec *iov, size_t iov_count, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context);
 
 /*
@@ -988,6 +1037,32 @@ ssize_t uet_trecv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  uint64_t ignore, void *context);
 
 /*
+ * simple api to post tagged iov to receive queue of an endpoint
+ *
+ * parms:
+ *   ep_handle       - handle identifying uet endpoint instance
+ *   job_id          - job id associated with buffer for access
+ *                     authorization, UET_JOB_ID_ANY => buffer can be used
+ *                     by any job id
+ *   iov             - Pointer to an array of IO vectors that describe
+ *                     the memory buffers for receiving data.
+ *   iov_count       - Number of IO vectors in the iov array.
+ *   mr_handle       - handle identifying memory region associated with
+ *                     buffer, may be UET_NULL_HANDLE
+ *   src_addr_handle - handle identifying source uet address to receive from
+ *   tag             - tag associated with message
+ *   ignore          - mask of bits to ignore applied to the tag
+ *   context         - user specified pointer to associate with the operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+ssize_t uet_trecvv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  const struct iovec *iov, size_t iov_count, uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t src_addr_handle, uint64_t tag,
+		  uint64_t ignore, void *context);
+/*
  * flexible api to post tagged buffer to receive queue of an endpoint
  *
  * parms:
@@ -1039,6 +1114,31 @@ ssize_t uet_trecvmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  */
 ssize_t uet_tsend(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t dst_addr_handle, uint64_t tag,
+		  void *context);
+
+/*
+ * simple api for transmission of a tagged message to an endpoint
+ *
+ * parms:
+ *   ep_handle       - handle identifying local uet endpoint instance
+ *   job_id          - job id associated with message
+ *   iov             - Pointer to an array of IO vectors that describe
+ *                     the memory buffers for receiving data.
+ *   iov_count       - Number of IO vectors in the iov array
+ *   mr_handle       - handle identifying memory region associated with
+ *                     buffer, may be UET_NULL_HANDLE
+ *   dst_addr_handle - handle identifying uet destination address
+ *   tag             - tag associated with message
+ *   context         - user specified pointer to associate with the operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ *
+ */
+ssize_t uet_tsendv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  const struct iovec *iov,size_t iov_count, uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle, uint64_t tag,
 		  void *context);
 

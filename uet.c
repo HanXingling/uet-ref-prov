@@ -258,6 +258,14 @@ static void uet_free_res(struct uet_context *ctx)
 		free(ctx->mr_buf);
 		ctx->mr_buf = NULL;
 	}
+
+	if (ctx->tx_iov) {
+		for (int i = 0; i < ctx->tx_count; i++) {
+			free(ctx->tx_iov[i].iov_base);
+		}
+		free(ctx->tx_iov);
+		ctx->tx_iov = NULL;
+	}
 }
 
 /* initialize config parms */
@@ -343,6 +351,30 @@ static void uet_init_msg_buf(struct uet_context *ctx, uint8_t *buf)
 	for (i = 0; i < ctx->cfg.msg_size; i++)
 		buf[i] = (uint8_t) i;
 }
+
+// FIXME: Remove print prior to making pull request to upstream
+static void print_data_as_hex(const void *data, size_t size) {
+    const unsigned char *byte = (const unsigned char *)data;
+    for (size_t i = 0; i < size; i++) {
+        printf("%02X ", byte[i]);
+        if ((i + 1) % 16 == 0) printf("\n"); 
+    }
+    printf("\n");
+}
+
+// TODO: remove prints, describe intention
+static void uet_init_iov_buf(size_t size, uint8_t *buf)
+{
+	size_t i;
+
+	for (i = 0; i < size; i++) 
+		buf[i] = (uint8_t) i;
+	
+	print_data_as_hex(buf,size);
+
+	printf("**********************\n");
+}
+
 
 /* validate message buffer contents */
 static uet_rc_t uet_validate_msg(struct uet_context *ctx, uint8_t *buf)
@@ -563,25 +595,30 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	}
 
 	ssize_t remaining_size = ctx->cfg.msg_size;
-	ctx->rx_iov = malloc(UET_IOV_LIMIT_MAX * sizeof(struct iovec));
-	ctx->tx_iov = malloc(UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+	ctx->rx_iov = calloc(UET_IOV_LIMIT_MAX, sizeof(struct iovec));
+	ctx->tx_iov = calloc(UET_IOV_LIMIT_MAX, sizeof(struct iovec));
 
 	while (remaining_size > 0 && ctx->tx_count < UET_IOV_LIMIT_MAX) {
-		size_t buffer_size = rand() % (remaining_size / 2 + 1) + 1; 
+		size_t buffer_size = rand() % (remaining_size ) + 1; 
 		if (ctx->tx_count + 1 == UET_IOV_LIMIT_MAX) {
 			buffer_size = remaining_size; 
 		}
-		ctx->tx_iov[ctx->tx_count].iov_base = malloc(buffer_size);
+		ctx->tx_iov[ctx->tx_count].iov_base = calloc(buffer_size, sizeof(char));
 
 		ctx->tx_iov[ctx->tx_count].iov_len = buffer_size;
 
 		remaining_size -= buffer_size;
 
-		memset(ctx->tx_iov[ctx->tx_count].iov_base, (uint8_t)1, buffer_size);
+		if (!(ctx->cfg.rma) && ctx->cfg.client)
+			uet_init_iov_buf(buffer_size,ctx->tx_iov[ctx->tx_count].iov_base);
 
 		ctx->tx_count++;
 	}
+
+	// FIXME: this is dirty hack made for fast functionality bootstrap
+	//        Will be changed to proper allocation ASAP
 	memcpy(ctx->rx_iov, ctx->tx_iov, UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+
 	ctx->rx_count = ctx->tx_count;
 
 	rc = UET_SUCCESS_RC;
