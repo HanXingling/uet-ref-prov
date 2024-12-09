@@ -87,8 +87,8 @@ typedef enum {
 #define UET_PACKED __attribute__((__packed__))
 #endif
 
-#define UET_WARN(fmt, ...)                                                      \
-	fprintf(stdout, "[%s] %s:%-4d: " fmt "\n", "warning",                    \
+#define UET_WARN(fmt, ...)                                                     \
+	fprintf(stdout, "[%s] %s:%-4d: " fmt "\n", "warning",                  \
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_ERR(fmt, ...)                                                      \
@@ -114,7 +114,7 @@ struct uet_cfg {
 	bool test;				    /* true => run test suite */
 	bool unexpected_msg_test;  /* true => this is unexpected message test */
 	bool dsend_test;			/* true => this is dsend test */
-	bool iov_test;				/* true => test uses iov*/
+	bool iov_test;				     /* true => test uses iov */
 	int num_iterations;                 /* number of messages to exchange */
 	size_t msg_size;                         /* size of messages in bytes */
 	char *peer_ip_addr_string;             /* peer ip addr in string form */
@@ -260,11 +260,21 @@ static void uet_free_res(struct uet_context *ctx)
 	}
 
 	if (ctx->tx_iov) {
-		for (int i = 0; i < ctx->tx_count; i++) {
+
+		for (int i = 0; i < ctx->tx_count; i++)
 			free(ctx->tx_iov[i].iov_base);
-		}
+
 		free(ctx->tx_iov);
 		ctx->tx_iov = NULL;
+	}
+
+	if (ctx->rx_iov) {
+
+		for (int i = 0; i < ctx->rx_count; i++)
+			free(ctx->rx_iov[i].iov_base);
+
+		free(ctx->rx_iov);
+		ctx->rx_iov = NULL;
 	}
 }
 
@@ -352,27 +362,13 @@ static void uet_init_msg_buf(struct uet_context *ctx, uint8_t *buf)
 		buf[i] = (uint8_t) i;
 }
 
-// FIXME: Remove print prior to making pull request to upstream
-static void print_data_as_hex(const void *data, size_t size) {
-    const unsigned char *byte = (const unsigned char *)data;
-    for (size_t i = 0; i < size; i++) {
-        printf("%02X ", byte[i]);
-        if ((i + 1) % 16 == 0) printf("\n"); 
-    }
-    printf("\n");
-}
-
-// TODO: remove prints, describe intention
+/* initialize IO vector`s buffer contents */
 static void uet_init_iov_buf(size_t size, uint8_t *buf)
 {
 	size_t i;
 
 	for (i = 0; i < size; i++) 
 		buf[i] = (uint8_t) i;
-	
-	print_data_as_hex(buf,size);
-
-	printf("**********************\n");
 }
 
 
@@ -389,6 +385,38 @@ static uet_rc_t uet_validate_msg(struct uet_context *ctx, uint8_t *buf)
 	return UET_SUCCESS_RC;
 }
 
+static uet_rc_t uet_validate_iov_msg(struct uet_context *ctx)
+{
+    size_t rx_idx = 0, tx_idx = 0;
+    size_t rx_offset = 0, tx_offset = 0;
+	uint8_t *rx_buf = ctx->rx_iov[rx_idx].iov_base;
+	uint8_t *tx_buf = ctx->tx_iov[tx_idx].iov_base;
+    while (rx_idx < ctx->rx_count && tx_idx < ctx->tx_count) {
+        if (rx_buf[rx_offset] != tx_buf[tx_offset]) {
+			return UET_ERR_RC;
+		}
+        rx_offset++;
+        tx_offset++;
+        if (rx_offset >= ctx->rx_iov[rx_idx].iov_len) {
+            rx_offset = 0;
+            rx_idx++;
+			rx_buf = ctx->rx_iov[rx_idx].iov_base;
+        }
+        if (tx_offset >= ctx->tx_iov[tx_idx].iov_len) {
+            tx_offset = 0;
+            tx_idx++;
+			tx_buf = ctx->tx_iov[tx_idx].iov_base;
+        }
+    }
+
+    // Ensure both buffers were fully validated
+    if (rx_idx < ctx->rx_count || tx_idx < ctx->tx_count) {
+        return UET_ERR_RC;
+    }
+
+    return UET_SUCCESS_RC;
+}
+
 /* initialize uet transport */
 static uet_rc_t uet_init_transport(struct uet_context *ctx)
 {
@@ -398,6 +426,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	struct fi_info *hints = NULL, *info;
 	struct uet_addr *uet_addr;
 	uet_rc_t rc = UET_ERR_RC;
+	ssize_t remaining_size;
 
 	/* FIXME: Hack used to configure client/server security mode */
 	if (!ctx->cfg.client)
@@ -594,38 +623,81 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		goto exit;
 	}
 
-	ssize_t remaining_size = ctx->cfg.msg_size;
-	ctx->rx_iov = calloc(UET_IOV_LIMIT_MAX, sizeof(struct iovec));
+	/* Allocate IO Vectors for Transmit */
 	ctx->tx_iov = calloc(UET_IOV_LIMIT_MAX, sizeof(struct iovec));
-
+	if (ctx->tx_iov == NULL) {
+		UET_PRINT_ERRNO("calloc");
+		UET_ERR("Error allocating IO vector");
+		goto exit;
+	}
+	remaining_size = ctx->cfg.msg_size;
 	while (remaining_size > 0 && ctx->tx_count < UET_IOV_LIMIT_MAX) {
-		size_t buffer_size = rand() % (remaining_size ) + 1; 
-		if (ctx->tx_count + 1 == UET_IOV_LIMIT_MAX) {
-			buffer_size = remaining_size; 
-		}
-		ctx->tx_iov[ctx->tx_count].iov_base = calloc(buffer_size, sizeof(char));
+		size_t buffer_size = rand() % (remaining_size) + 1; 
 
-		ctx->tx_iov[ctx->tx_count].iov_len = buffer_size;
+		/* if last IOV, allocate all remaining data in this last IOV */
+		if (ctx->tx_count == UET_IOV_LIMIT_MAX - 1)
+			buffer_size = remaining_size;
 
 		remaining_size -= buffer_size;
 
-		if (!(ctx->cfg.rma) && ctx->cfg.client)
-			uet_init_iov_buf(buffer_size,ctx->tx_iov[ctx->tx_count].iov_base);
+		ctx->tx_iov[ctx->tx_count].iov_base =
+			calloc(buffer_size, sizeof(char));
+
+		if (ctx->tx_iov[ctx->tx_count].iov_base == NULL) {
+			UET_PRINT_ERRNO("calloc");
+			UET_ERR("Error allocating IO vector");
+			goto exit;
+		}
+
+		ctx->tx_iov[ctx->tx_count].iov_len = buffer_size;
+
+
+		if (!(ctx->cfg.rma) && ctx->cfg.client) {
+			uet_init_iov_buf(
+				buffer_size,
+				ctx->tx_iov[ctx->tx_count].iov_base);
+		}
 
 		ctx->tx_count++;
 	}
 
-	// FIXME: this is dirty hack made for fast functionality bootstrap
-	//        Will be changed to proper allocation ASAP
-	memcpy(ctx->rx_iov, ctx->tx_iov, UET_IOV_LIMIT_MAX * sizeof(struct iovec));
+	/* Allocate IO Vectors for Receive */
+	ctx->rx_iov = calloc(UET_IOV_LIMIT_MAX, sizeof(struct iovec));
+	if (ctx->rx_iov == NULL) {
+		UET_PRINT_ERRNO("calloc");
+		UET_ERR("Error allocating IO vector");
+		goto exit;
+	}
+	remaining_size = ctx->cfg.msg_size;
+	while (remaining_size > 0 && ctx->rx_count < UET_IOV_LIMIT_MAX) {
+		size_t buffer_size = rand() % (remaining_size ) + 1; 
 
-	ctx->rx_count = ctx->tx_count;
+		/* if last IOV, allocate all remaining data in this last IOV */
+		if (ctx->rx_count + 1 == UET_IOV_LIMIT_MAX)
+			buffer_size = remaining_size; 
+
+		remaining_size -= buffer_size;
+
+		ctx->rx_iov[ctx->rx_count].iov_base =
+			calloc(buffer_size, sizeof(char));
+
+		if (ctx->rx_iov[ctx->rx_count].iov_base == NULL) {
+			UET_PRINT_ERRNO("calloc");
+			UET_ERR("Error allocating IO vector");
+			goto exit;
+		}
+
+		ctx->rx_iov[ctx->rx_count].iov_len = buffer_size;
+
+		ctx->rx_count++;
+	}
 
 	rc = UET_SUCCESS_RC;
 
 exit:
 	if (hints)
 		fi_freeinfo(hints);
+
 	return rc;
 }
 
@@ -1079,10 +1151,10 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 				addr_handle = ctx->peer_addr_handle;
 
 			/* post tagged rx buffer */
-			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
-					ctx->rx_count, UET_NULL_HANDLE,
-					addr_handle, UET_DEFAULT_TAG,
-					UET_EXACT_MATCH, NULL);
+			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, addr_handle,
+					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
@@ -1099,9 +1171,9 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 			}
 		} else {
 			/* post rx buffer */
-			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
-					ctx->rx_count, UET_NULL_HANDLE,
-					UET_NULL_HANDLE, NULL);
+			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_recv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
@@ -1177,6 +1249,14 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 		return UET_ERR_RC;
 	}
 
+	/* Message validation for IOV*/
+	if(ctx->cfg.iov_test) {
+		if (uet_validate_iov_msg(ctx) != UET_SUCCESS_RC) {
+			UET_ERR("Invalid iov data in RX-iov");
+			return UET_ERR_RC;
+		}
+	}
+
 	if (cq_entry.len != ctx->cfg.msg_size) {
 		UET_ERR("Received bad message size = %lu", cq_entry.len);
 		return UET_ERR_RC;
@@ -1205,26 +1285,25 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 				addr_handle = ctx->peer_addr_handle;
 
 			/* post tagged rx buffer */
-			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
-					ctx->rx_count, UET_NULL_HANDLE,
-					addr_handle, UET_DEFAULT_TAG,
-					UET_EXACT_MATCH, NULL);
+			ret = uet_trecvv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, addr_handle,
+					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		} else {
 			/* post rx buffer */
-			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY, ctx->rx_iov,
-					ctx->rx_count, UET_NULL_HANDLE,
-					UET_NULL_HANDLE, NULL);
+			ret = uet_recvv(ctx->ep_handle, UET_JOB_ID_ANY,
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_recv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		}
-	}
-	else {
+	} else {
 		if (ctx->cfg.tag) {
 			if (ctx->cfg.tag_any_src)
 				addr_handle = UET_NULL_HANDLE;
@@ -1259,11 +1338,8 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	}
 
 	/* validate buffer contents */
-	if(ctx->cfg.iov_test) {
-		// FIXME: provide a way to validate message so that test actually
-		//        verify data integrity
-		UET_WARN("Message validation isn't implemented yet for iov mode");
-	} else {
+	/* IOV message validation will be in the CLIENT side*/
+	if(!ctx->cfg.iov_test) {
 		if (uet_validate_msg(ctx, ctx->rx_msg) != UET_SUCCESS_RC) {
 			UET_ERR("Invalid buffer contents");
 			return UET_ERR_RC;
@@ -1273,9 +1349,10 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	if (ctx->cfg.iov_test) {
 		if (ctx->cfg.tag) {
 			/* echo tagged message back to client */
-			ret = uet_tsendv(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_iov,
-					ctx->rx_count, UET_NULL_HANDLE,
-					ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
+			ret = uet_tsendv(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_send: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
@@ -1283,8 +1360,9 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 		} else {
 			/* echo message back to client */
 			ret = uet_sendv(ctx->ep_handle, ctx->cfg.job_id,
-					ctx->rx_iov, ctx->rx_count, UET_NULL_HANDLE,
-					ctx->peer_addr_handle, NULL);
+					ctx->rx_iov, ctx->rx_count,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					NULL);
 			if (ret < 0) {
 				UET_ERR("uet_send: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
@@ -1293,9 +1371,10 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 	} else {
 		if (ctx->cfg.tag) {
 			/* echo tagged message back to client */
-			ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id, ctx->rx_msg,
-					cq_entry.len, UET_NULL_HANDLE,
-					ctx->peer_addr_handle, UET_DEFAULT_TAG, NULL);
+			ret = uet_tsend(ctx->ep_handle, ctx->cfg.job_id,
+					ctx->rx_msg, cq_entry.len,
+					UET_NULL_HANDLE, ctx->peer_addr_handle,
+					UET_DEFAULT_TAG, NULL);
 			if (ret < 0) {
 				UET_ERR("uet_send: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
@@ -1340,8 +1419,14 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		goto exit;
 		
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
-		printf("Starting in %s\n", (use_iov == 1) ? "iov_mode" : "buf_mode");
+		printf("Starting in %s\n",
+				(use_iov == 1) ? "iov_mode" : "buf_mode");
 		ctx->cfg.iov_test = (use_iov == 1);
+		/* TODO: IOV support for SNG mode */
+		if ((strcmp(getenv(UET_PDS), "sng") == 0) && (use_iov == 1)) {
+			UET_WARN("IOV test for SNG mode is not implemented");
+			continue;
+		}
 
 		/* perform control message exchange */
 		if (ctx->cfg.rma) {
