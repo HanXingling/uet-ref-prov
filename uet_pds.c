@@ -1931,6 +1931,31 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		    pdc->pdc_id, pdc->rx_bm_base_psn, pdc_pkt->pkt_pp.pds_psn,
 		    (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn));
 
+	/*
+	 * Previous Behavior and Bug Description:
+	 * - When handling unexpected messages, if the Receiver has not yet
+	 *   posted a buffer, the SES sets the `gtd_del` flag to 1.
+	 * - In such cases, the Client-side RX bitmap's `base_psn` does not update
+	 *   and remains set to its default value. This leads to test failures
+	 *   and inconsistency in packet handling.
+	 *
+	 * Fix Description:
+	 * - To resolve this, we now check if a `clear_psn` value exists that is
+	 *   greater than the RX bitmap's current `base_psn`.
+	 * - If such a `clear_psn` is found, the `base_psn` is updated to match
+	 *   the `clear_psn`, ensuring proper synchronization and preventing
+	 *   test failures.
+	 *
+	 * Note for Review:
+	 * - Refer to the Packet Delivery Sublayer documentation, Section 1.1.9.4.2,
+	 *   for additional context. (The last comment can be removed after the review.)
+	 */
+	while (pdc->rx_bm_base_psn < pdc_pkt->pkt_pp.pds_clear_psn) {
+		bm_unset(pdc->rx_bm,
+		   pdc_pkt->pkt_pp.pds_clear_psn - pdc->rx_bm_base_psn);
+		pdc->rx_bm_base_psn++;
+	}
+
 	bm_set(pdc->rx_bm, (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn),
 	       pdc_pkt);
 
