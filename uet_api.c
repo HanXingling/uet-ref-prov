@@ -3724,7 +3724,7 @@ static ssize_t uet_send_req_api_common(
 	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
 {
 	int rc;
-	uint16_t msg_id;	
+	uint16_t msg_id;
 	uint32_t msg_len = 0;
 	struct uet_instance *uet;
 	struct uet_ep *uet_ep;
