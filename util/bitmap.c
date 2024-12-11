@@ -103,7 +103,7 @@ bool bm_get(const struct bitmap *bm, int i, void **data)
 		return false; /* could assert() here */
 
 	if ((i < 0) || (i >= bm->size))
-		return NULL; /* could assert() here */
+		return false; /* could assert() here */
 
 	if (data)
 		*data = bm->data_arr[i];
