@@ -4463,8 +4463,8 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, void *buf, size_t len,
 }
 
 int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
-	       size_t iov_count,uint64_t access, uint64_t requested_key,
-		   uint64_t flags,void *context, uet_mr_handle_t *mr_handle)
+	       size_t iov_count, uint64_t access, uint64_t requested_key,
+		   uint64_t flags, void *context, uet_mr_handle_t *mr_handle)
 {
 	int rc;
 	uint64_t key, rkey;
