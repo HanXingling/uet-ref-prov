@@ -2023,7 +2023,7 @@ static void scatter_buffer_to_iov(
 	size_t iov_buf_offset = 0;
 
 	while (payload_offset > 0) {
-		if (iov[iov_index].iov_len < payload_offset) {
+		if (iov[iov_index].iov_len <= payload_offset) {
 			payload_offset -= iov[iov_index].iov_len;
 			iov_index++;
 		} else {
@@ -2038,10 +2038,9 @@ static void scatter_buffer_to_iov(
 				payload + buf_offset,
 				iov[iov_index].iov_len - iov_buf_offset);
 
-			remaining_bytes -= iov[iov_index].iov_len -
-								iov_buf_offset;
-
-			buf_offset += iov[iov_index].iov_len - iov_buf_offset;
+			remaining_bytes -= (iov[iov_index].iov_len -
+								iov_buf_offset);
+			buf_offset += (iov[iov_index].iov_len - iov_buf_offset);
 			iov_index++;
 			iov_buf_offset = 0;
 		} else {
@@ -3287,7 +3286,8 @@ static void *gather_iov_to_buffer(
 
 			break;
 		}
-		*saved_offset = 0;
+		if (copied < payload_len && current_len <= to_copy)
+			*saved_offset = 0;
 	}
 	return pkt_buf;
 }

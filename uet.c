@@ -410,7 +410,7 @@ static uet_rc_t uet_validate_iov_msg(struct uet_context *ctx)
 		}
 	}
 
-	// Ensure both buffers were fully validated
+	/* Ensure both buffers were fully validated */
 	if (rx_idx < ctx->rx_count || tx_idx < ctx->tx_count)
 		return UET_ERR_RC;
 
@@ -673,7 +673,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		size_t buffer_size = rand() % (remaining_size) + 1;
 
 		/* if last IOV, allocate all remaining data in this last IOV */
-		if (ctx->rx_count + 1 == UET_IOV_LIMIT_MAX)
+		if (ctx->rx_count == UET_IOV_LIMIT_MAX - 1)
 			buffer_size = remaining_size;
 
 		remaining_size -= buffer_size;
@@ -1158,7 +1158,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 					UET_NULL_HANDLE, addr_handle,
 					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				UET_ERR("uet_trecvv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 
@@ -1168,7 +1168,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 					UET_NULL_HANDLE, ctx->peer_addr_handle,
 					UET_DEFAULT_TAG, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_tsend: %s", fi_strerror(-ret));
+				UET_ERR("uet_tsendv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		} else {
@@ -1177,7 +1177,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 					ctx->rx_iov, ctx->rx_count,
 					UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				UET_ERR("uet_recvv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 
@@ -1187,7 +1187,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 					UET_NULL_HANDLE, ctx->peer_addr_handle,
 					NULL);
 			if (ret < 0) {
-				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				UET_ERR("uet_sendv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		}
@@ -1292,7 +1292,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 					UET_NULL_HANDLE, addr_handle,
 					UET_DEFAULT_TAG, UET_EXACT_MATCH, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_trecv: %s", fi_strerror(-ret));
+				UET_ERR("uet_trecvv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		} else {
@@ -1301,7 +1301,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 					ctx->rx_iov, ctx->rx_count,
 					UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_recv: %s", fi_strerror(-ret));
+				UET_ERR("uet_recvv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		}
@@ -1356,7 +1356,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 					UET_NULL_HANDLE, ctx->peer_addr_handle,
 					UET_DEFAULT_TAG, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				UET_ERR("uet_tsendv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		} else {
@@ -1366,7 +1366,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 					UET_NULL_HANDLE, ctx->peer_addr_handle,
 					NULL);
 			if (ret < 0) {
-				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				UET_ERR("uet_sendv: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		}
@@ -1378,7 +1378,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 					UET_NULL_HANDLE, ctx->peer_addr_handle,
 					UET_DEFAULT_TAG, NULL);
 			if (ret < 0) {
-				UET_ERR("uet_send: %s", fi_strerror(-ret));
+				UET_ERR("uet_tsend: %s", fi_strerror(-ret));
 				return UET_ERR_RC;
 			}
 		} else {
