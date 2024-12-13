@@ -3281,9 +3281,12 @@ static void *gather_iov_to_buffer(
 		copied += to_copy;
 
 		if (copied == payload_len) {
-			if (current_len > to_copy)
+			if (current_len > to_copy) {
 				*saved_offset += to_copy;
-
+			} else if (current_len == to_copy) {
+				*saved_offset = 0;
+				(*iov_index)++;
+			}
 			break;
 		}
 		if (copied < payload_len && current_len <= to_copy)
