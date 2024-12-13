@@ -632,7 +632,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	}
 	remaining_size = ctx->cfg.msg_size;
 	while (remaining_size > 0 && ctx->tx_count < UET_IOV_LIMIT_MAX) {
-		size_t buffer_size = rand() % (remaining_size) + 1;
+		size_t buffer_size = lrand48() % (remaining_size) + 1;
 
 		/* if last IOV, allocate all remaining data in this last IOV */
 		if (ctx->tx_count == UET_IOV_LIMIT_MAX - 1)
@@ -670,8 +670,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	}
 	remaining_size = ctx->cfg.msg_size;
 	while (remaining_size > 0 && ctx->rx_count < UET_IOV_LIMIT_MAX) {
-		size_t buffer_size = rand() % (remaining_size) + 1;
-
+		size_t buffer_size = lrand48() % (remaining_size) + 1;
 		/* if last IOV, allocate all remaining data in this last IOV */
 		if (ctx->rx_count == UET_IOV_LIMIT_MAX - 1)
 			buffer_size = remaining_size;
