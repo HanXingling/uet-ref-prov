@@ -2017,10 +2017,11 @@ static void scatter_buffer_to_iov(
 	const struct iovec *iov, size_t iov_count, const void *payload,
 	size_t payload_len, int payload_offset)
 {
-    	size_t iov_index = 0;
+	size_t iov_index = 0;
 	size_t remaining_bytes = payload_len;
 	size_t buf_offset = 0;
 	size_t iov_buf_offset = 0;
+
 	while (payload_offset > 0) {
 		if (iov[iov_index].iov_len < payload_offset) {
 			payload_offset -= iov[iov_index].iov_len;
@@ -2047,7 +2048,7 @@ static void scatter_buffer_to_iov(
 			memcpy(iov[iov_index].iov_base + iov_buf_offset,
 				payload + buf_offset,
 				remaining_bytes);
-			remaining_bytes -= remaining_bytes;			
+			remaining_bytes -= remaining_bytes;
 		}
 	}
 }
@@ -3263,23 +3264,27 @@ static void *gather_iov_to_buffer(
 	void *pkt_buf = calloc(payload_len, sizeof(char));
 
 	if (!pkt_buf)
-		return NULL; 
+		return NULL;
 
 	size_t pkt_buf_offset = 0;
 	size_t copied = 0;
+
 	for (; *iov_index < iov_count; (*iov_index)++) {
-		void *current_buf = (void *)(iov[*iov_index].iov_base + *saved_offset);
+		void *current_buf = (void *)(iov[*iov_index].iov_base +
+				*saved_offset);
 		size_t current_len = iov[*iov_index].iov_len - *saved_offset;
 		size_t still_to_send = payload_len - pkt_buf_offset;
-		size_t to_copy = (current_len < still_to_send) ? current_len : still_to_send;
+		size_t to_copy = (current_len < still_to_send) ?
+			current_len : still_to_send;
+
 		memcpy(pkt_buf + pkt_buf_offset, current_buf, to_copy);
 		pkt_buf_offset += to_copy;
 		copied += to_copy;
 
 		if (copied == payload_len) {
-			if (current_len > to_copy) {
+			if (current_len > to_copy)
 				*saved_offset += to_copy;
-			}
+
 			break;
 		}
 		*saved_offset = 0;
@@ -3341,7 +3346,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			ses_len = sizeof(struct uet_ses_req_std);
 		}
 
-		if (tx_desc -> buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
+		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
 			pkt_buf = gather_iov_to_buffer(
 					tx_desc->buf_desc.iov.iov,
 					tx_desc->buf_desc.iov.iov_count,
@@ -3369,9 +3374,9 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 					  flags, pds_info, tx_desc->msg_id,
 					  next_hdr, ses, ses_len,
 					  pkt_buf, pkt_len, false);
-		if (tx_desc -> buf_desc.type == UET_MSG_BUF_TYPE_IOV ) {
+		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV)
 			free(pkt_buf);
-		}
+
 		if (rc == FI_SUCCESS) {
 			tx_desc->unack_pkts++;
 			/* TODO: add iov support */
@@ -3603,13 +3608,14 @@ initiate_rtr:
 	uet_tx_desc_ring_insert(tx_desc);
 }
 
-/* common function for recv api's
+/*
+ * common function for recv api's
  *   - the recv_api determines which parms are valid
  * This function supports both IO vector (iov) mode and buffer mode:
- * 	- In **iov mode**, an array of `struct iovec` is provided to describe
- * 	  multiple non-contiguous memory regions for receiving data.
- * 	- In **buffer mode**, a single buffer can be specified using one
- * 	  `struct iovec` with its base address and size.
+ *   - In **iov mode**, an array of `struct iovec` is provided to describe
+ *     multiple non-contiguous memory regions for receiving data.
+ *   - In **buffer mode**, a single buffer can be specified using one
+ *     `struct iovec` with its base address and size.
  */
 static ssize_t uet_recv_api_common(
 	uet_recv_api_t recv_api, uet_ep_handle_t ep_handle, uint32_t job_id,
@@ -3709,13 +3715,14 @@ static ssize_t uet_recv_api_common(
 	return FI_SUCCESS;
 }
 
-/* common function for api's that send requests
+/*
+ * common function for api's that send requests
  *   - the send_req_api determines which parms are valid
  * This function supports both IO vector (iov) mode and buffer mode:
- * 	- In **iov mode**, an array of `struct iovec` is provided to describe
- * 	  multiple non-contiguous memory regions for receiving data.
- * 	- In **buffer mode**, a single buffer can be specified as single
- * 	  `struct iovec` with its base address and size.
+ *   - In **iov mode**, an array of `struct iovec` is provided to describe
+ *     multiple non-contiguous memory regions for receiving data.
+ *   - In **buffer mode**, a single buffer can be specified as single
+ *     `struct iovec` with its base address and size.
  */
 static ssize_t uet_send_req_api_common(
 	uet_send_req_api_t send_req_api, uet_ep_handle_t ep_handle,
@@ -3763,7 +3770,7 @@ static ssize_t uet_send_req_api_common(
 		return -FI_EAGAIN;
 	}
 
-	for (int i = 0;i < iov_count;i++)
+	for (int i = 0; i < iov_count; i++)
 		msg_len += iov[i].iov_len;
 
 	/* allocate rx descriptor for read */

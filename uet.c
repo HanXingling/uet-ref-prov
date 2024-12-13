@@ -387,34 +387,34 @@ static uet_rc_t uet_validate_msg(struct uet_context *ctx, uint8_t *buf)
 
 static uet_rc_t uet_validate_iov_msg(struct uet_context *ctx)
 {
-    size_t rx_idx = 0, tx_idx = 0;
-    size_t rx_offset = 0, tx_offset = 0;
+	size_t rx_idx = 0, tx_idx = 0;
+	size_t rx_offset = 0, tx_offset = 0;
 	uint8_t *rx_buf = ctx->rx_iov[rx_idx].iov_base;
 	uint8_t *tx_buf = ctx->tx_iov[tx_idx].iov_base;
-    while (rx_idx < ctx->rx_count && tx_idx < ctx->tx_count) {
-        if (rx_buf[rx_offset] != tx_buf[tx_offset]) {
+
+	while (rx_idx < ctx->rx_count && tx_idx < ctx->tx_count) {
+		if (rx_buf[rx_offset] != tx_buf[tx_offset])
 			return UET_ERR_RC;
-		}
-        rx_offset++;
-        tx_offset++;
-        if (rx_offset >= ctx->rx_iov[rx_idx].iov_len) {
-            rx_offset = 0;
-            rx_idx++;
+
+		rx_offset++;
+		tx_offset++;
+		if (rx_offset >= ctx->rx_iov[rx_idx].iov_len) {
+			rx_offset = 0;
+			rx_idx++;
 			rx_buf = ctx->rx_iov[rx_idx].iov_base;
-        }
-        if (tx_offset >= ctx->tx_iov[tx_idx].iov_len) {
-            tx_offset = 0;
-            tx_idx++;
+		}
+		if (tx_offset >= ctx->tx_iov[tx_idx].iov_len) {
+			tx_offset = 0;
+			tx_idx++;
 			tx_buf = ctx->tx_iov[tx_idx].iov_base;
-        }
-    }
+		}
+	}
 
-    // Ensure both buffers were fully validated
-    if (rx_idx < ctx->rx_count || tx_idx < ctx->tx_count) {
-        return UET_ERR_RC;
-    }
+	// Ensure both buffers were fully validated
+	if (rx_idx < ctx->rx_count || tx_idx < ctx->tx_count)
+		return UET_ERR_RC;
 
-    return UET_SUCCESS_RC;
+	return UET_SUCCESS_RC;
 }
 
 /* initialize uet transport */
@@ -670,7 +670,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	}
 	remaining_size = ctx->cfg.msg_size;
 	while (remaining_size > 0 && ctx->rx_count < UET_IOV_LIMIT_MAX) {
-		size_t buffer_size = rand() % (remaining_size ) + 1;
+		size_t buffer_size = rand() % (remaining_size) + 1;
 
 		/* if last IOV, allocate all remaining data in this last IOV */
 		if (ctx->rx_count + 1 == UET_IOV_LIMIT_MAX)
@@ -967,7 +967,7 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 	uet_addr_handle_t addr_handle;
 	int prev_descr_count, attempt_count;
 	struct dlist_entry *active_list;
-	struct dlist_entry * dummy_item;
+	struct dlist_entry *dummy_item;
 	int descr_count;
 
 	if (ctx->cfg.tag) {
@@ -1091,7 +1091,8 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 
 			prev_descr_count = descr_count;
 
-			if (attempt_count >= 5) break;
+			if (attempt_count >= 5)
+				break;
 
 			uet_gettime(&now);
 		}
@@ -1143,7 +1144,8 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 	ssize_t ret;
 	struct fi_cq_data_entry cq_entry;
 	uet_addr_handle_t addr_handle;
-	if(ctx->cfg.iov_test) {
+
+	if (ctx->cfg.iov_test) {
 		if (ctx->cfg.tag) {
 			if (ctx->cfg.tag_any_src)
 				addr_handle = UET_NULL_HANDLE;
@@ -1250,7 +1252,7 @@ static uet_rc_t uet_msg_client(struct uet_context *ctx)
 	}
 
 	/* Message validation for IOV*/
-	if(ctx->cfg.iov_test) {
+	if (ctx->cfg.iov_test) {
 		if (uet_validate_iov_msg(ctx) != UET_SUCCESS_RC) {
 			UET_ERR("Invalid iov data in RX-iov");
 			return UET_ERR_RC;
@@ -1339,7 +1341,7 @@ static uet_rc_t uet_msg_server(struct uet_context *ctx)
 
 	/* validate buffer contents */
 	/* IOV message validation will be in the CLIENT side*/
-	if(!ctx->cfg.iov_test) {
+	if (!ctx->cfg.iov_test) {
 		if (uet_validate_msg(ctx, ctx->rx_msg) != UET_SUCCESS_RC) {
 			UET_ERR("Invalid buffer contents");
 			return UET_ERR_RC;
