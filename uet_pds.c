@@ -1034,12 +1034,12 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	pdc_pkt->psn = pdc->next_psn++;
 	pds_hdr->psn = htonl(pdc_pkt->psn);
 
-        /*
-         * Set the clear_psn to the left edge (-1) of the tx_bm which moves
+	/*
+	 * Set the clear_psn to the left edge (-1) of the tx_bm which moves
 	 * forward as ACKs are received. Note that this is considered a
 	 * cumulative clear value.
-         */
-        pds_hdr->clear_psn_offset =
+	 */
+	pds_hdr->clear_psn_offset =
 		htons(psn_2c_offset(pdc_pkt->psn,
 				    (pdc->tx_bm_base_psn - 1)));
 
@@ -1588,8 +1588,57 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 	struct uet_pdc_pkt *pdc_pkt;
 	bool shifted = false;
 	int rc;
+	int max_rx_psn_offset;
+	int clear_to_base_diff;
 
 	while (true) {
+
+		/*
+		 * Previous Behavior and Bug Description:
+		 * - When handling unexpected messages, if the Receiver has not
+		 *   yet posted a buffer, the SES sets the `gtd_del` flag to 1.
+		 * - In such cases, the Client-side RX bitmap's `base_psn` does
+		 *   not update and remains set to its default value. This leads
+		 *   to test failures and inconsistency in packet handling.
+		 *
+		 * Fix Description:
+		 * - To resolve this, we now check if a `clear_psn` value exists
+		 *   that is greater than the RX bitmap's current `base_psn`.
+		 * - If such a `clear_psn` is found, the `base_psn` is updated
+		 *   to match the `clear_psn`, ensuring proper synchronization
+		 *   and preventing test failures.
+		 *
+		 * Note for Review:
+		 * - Refer to the Packet Delivery Sublayer documentation,
+		 *   Section 1.1.9.4.2, for additional context.
+		 */
+
+		/*
+		 * Extracting the last settled PDC packet PSN from the RX bitmap
+		 */
+		max_rx_psn_offset = bm_max(pdc->rx_bm);
+		if (!bm_get(pdc->rx_bm, max_rx_psn_offset, (void **)&pdc_pkt))
+			break;
+
+		clear_to_base_diff =
+			pdc_pkt->pkt_pp.pds_clear_psn - pdc->rx_bm_base_psn;
+
+		if (clear_to_base_diff > UET_DEFAULT_MPR ||
+				clear_to_base_diff < -UET_DEFAULT_MPR) {
+			UET_PDS_WARN("invalid CLEAR PSN %u on PDC %u "
+					"(outside MPR %u[+-%u])",
+					pdc_pkt->pkt_pp.pds_clear_psn,
+					pdc_pkt->pkt_pp.pds_dpdcid,
+					pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
+			return -FI_EINVAL;
+
+		}
+
+		if (clear_to_base_diff > 0) {
+			bm_shift_right(pdc->rx_bm, clear_to_base_diff);
+			pdc->rx_bm_base_psn += clear_to_base_diff;
+		}
+
 		if (!bm_get(pdc->rx_bm, 0, (void **)&pdc_pkt))
 			break;
 
