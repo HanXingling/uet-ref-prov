@@ -984,7 +984,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	}
 
 	/* parse security header */
-	pds_prlg = (struct uet_pds_prlg *) p;
+	pds_prlg = (struct uet_pds_prlg *)p;
 	rc = uet_parse_chk_next_field(pp, cur_len, sizeof(struct uet_pds_prlg));
 	if (rc != FI_SUCCESS)
 		return rc;
