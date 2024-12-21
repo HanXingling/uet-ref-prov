@@ -1457,13 +1457,19 @@ static bool uet_domain_has_ep(struct uet_domain *uet_dom)
 static void uet_domain_free(struct uet_domain *uet_dom)
 {
 	struct dlist_entry *item;
+	struct iovec *iov;
 
 	item = &uet_dom->domain_list_entry;
+	iov = (struct iovec *)uet_dom->mr_desc->buf_desc.iov.iov;
 	dlist_remove(item);
 	if (uet_dom->mr_desc_alloc_cb.state)
 		free(uet_dom->mr_desc_alloc_cb.state);
-	if (uet_dom->mr_desc)
+	if (uet_dom->mr_desc) {
+		if (iov)
+			free(iov);
+
 		free(uet_dom->mr_desc);
+	}
 	free(uet_dom);
 }
 
@@ -4064,6 +4070,7 @@ int uet_domain(uet_handle_t handle, struct fid_fabric *fabric,
 		uet_dom->num_mr = info->domain_attr->mr_cnt;
 	else
 		uet_dom->num_mr = UET_DEF_MR_CNT;
+
 	uet_dom->mr_desc = calloc(uet_dom->num_mr,
 				 sizeof(struct uet_mr_desc));
 	if (uet_dom->mr_desc == NULL) {
@@ -4687,12 +4694,25 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 	       uint64_t access, uint64_t requested_key, uint64_t flags,
 	       void *context, uet_mr_handle_t *mr_handle)
 {
+	struct iovec iov;
+
+	iov.iov_base = (void *)buf;
+	iov.iov_len = len;
+	return uet_mr_regv(domain_handle, &iov, 1, access, requested_key,
+			   flags, context, mr_handle);
+}
+
+int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
+	       size_t iov_count, uint64_t access, uint64_t requested_key,
+		   uint64_t flags, void *context, uet_mr_handle_t *mr_handle)
+{
 	int rc;
 	uint64_t key, rkey;
 	bool desc_allocated;
 	size_t mr_index;
 	struct uet_domain *uet_dom;
 	struct uet_mr_desc *mr_desc;
+	struct iovec *iov_handle;
 
 	uet_dom = (struct uet_domain *) domain_handle;
 
@@ -4742,14 +4762,24 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 			return rc;
 	}
 
+	iov_handle = calloc(iov_count, sizeof(struct iovec));
+	for (int i = 0; i < iov_count; i++)
+		iov_handle[i] = iov[i];
+
 	/* init memory region descriptor */
 	mr_desc = &uet_dom->mr_desc[mr_index];
 	memset(mr_desc, 0, sizeof(struct uet_mr_desc));
 	mr_desc->state = UET_MR_DESC_STATE_DISABLED_REG;
 	mr_desc->uet_dom = uet_dom;
-	mr_desc->buf_desc.type = UET_MR_BUF_TYPE_CONTIG;
-	mr_desc->buf_desc.buf = buf;
-	mr_desc->buf_desc.len = len;
+	if (iov_count == 1) {
+		mr_desc->buf_desc.type = UET_MR_BUF_TYPE_CONTIG;
+		mr_desc->buf_desc.buf = iov->iov_base;
+		mr_desc->buf_desc.len = iov->iov_len;
+	} else {
+		mr_desc->buf_desc.type = UET_MR_BUF_TYPE_IOV;
+		mr_desc->buf_desc.iov.iov = iov_handle;
+		mr_desc->buf_desc.iov.iov_count = iov_count;
+	}
 	mr_desc->access = access;
 	mr_desc->flags = flags;
 	mr_desc->context = context;
@@ -4757,6 +4787,7 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 	mr_desc->hash_key.rkey = rkey;
 
 	*mr_handle = mr_desc;
+
 	return FI_SUCCESS;
 }
 

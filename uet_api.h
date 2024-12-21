@@ -209,6 +209,35 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 	       void *context, uet_mr_handle_t *mr_handle);
 
 /*
+ * simple API to register a memory region supporting scatter-gather with a
+ * domain
+ *
+ * parms:
+ *   domain_handle - handle identifying uet domain instance
+ *   iov           - address of scatter-gather list
+ *   iov_count     - number of elements in scatter-gather list
+ *   access        - memory access permissions, see fi_mr
+ *   requested_key - requested remote key, ignored if the
+ *                   FI_MR_PROV_KEY flag is set in the
+ *                   domain mr_mode bits
+ *   flags         - operational flags, see fi_mr
+ *   context       - user specified context associated with mr
+ *   mr_handle     - ptr to location where uet endpoint handle is
+ *                   returned, the uet provider can use the mr_handle
+ *                   as the memory region descriptor
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ *
+ * notes:
+ *   - can be used to implement the following libfabric fi_mr api's:
+ *     - fi_mr_reg
+ */
+int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
+	       size_t iov_count, uint64_t access, uint64_t requested_key,
+		   uint64_t flags, void *context, uet_mr_handle_t *mr_handle);
+
+/*
  * flexible api to register a memory region with a domain
  *
  * parms:
