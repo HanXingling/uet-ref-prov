@@ -30,7 +30,6 @@
  *   - not designed for high performance
  */
 
-#include <bits/types/struct_iovec.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -960,28 +959,31 @@ static void uet_desc_free(struct uet_ep *uet_ep)
 {
 	size_t i;
 	struct uet_tx_desc *tx_desc;
+	struct uet_rx_desc *rx_desc;
 	struct iovec *iov;
 
 	if (uet_ep == NULL)
 		return;
 
 	if (uet_ep->rx_desc) {
-		iov = (struct iovec *)uet_ep->rx_desc[0].buf_desc.iov.iov;
-		if (iov)
-			free(iov);
+		for (i = 0; i < uet_ep->num_rx_desc; i++) {
+			rx_desc = &uet_ep->rx_desc[i];
+			iov = (struct iovec *)rx_desc->buf_desc.iov.iov;
+			if (iov)
+				free(iov);
+		}
 		free(uet_ep->rx_desc);
 	}
 
 	if (uet_ep->tx_desc) {
 		for (i = 0; i < uet_ep->num_tx_desc; i++) {
 			tx_desc = &uet_ep->tx_desc[i];
-			iov = (struct iovec *)uet_ep->tx_desc[i].buf_desc.iov.iov;
+			iov = (struct iovec *)(tx_desc->buf_desc.iov.iov);
 			if (iov)
 				free(iov);
 			if (tx_desc->desc_flags &
-			    UET_TX_DESC_FLAG_MSG_ID_ALLOCATED)
-				uet_dealloc_msg_id(uet_ep->uet_domain->uet,
-						   tx_desc->msg_id);
+					UET_TX_DESC_FLAG_MSG_ID_ALLOCATED)
+				uet_dealloc_msg_id(uet_ep->uet_domain->uet, tx_desc->msg_id);
 			uet_dealloc_tx_rtr_token(tx_desc);
 			uet_tx_desc_buf_rtr_list_remove(tx_desc);
 		}
@@ -3645,6 +3647,7 @@ static ssize_t uet_recv_api_common(
 	struct uet_av_entry *av_entry;
 	struct iovec *iov_handle;
 	size_t msg_len = 0;
+	size_t i;
 
 	uet_ep = (struct uet_ep *) ep_handle;
 
@@ -3663,12 +3666,11 @@ static ssize_t uet_recv_api_common(
 		}
 	}
 
-	for (size_t i = 0; i < iov_count; i++)
-		msg_len += iov[i].iov_len;
-
 	iov_handle = calloc(iov_count, sizeof(struct iovec));
-	for (int i = 0; i < iov_count; i++)
+	for (i = 0; i < iov_count; i++) {
+		msg_len += iov[i].iov_len;
 		iov_handle[i] = iov[i];
+	}
 
 	/* allocate rx descriptor */
 	rx_desc = uet_rx_desc_list_pop(uet_ep);
@@ -3752,6 +3754,7 @@ static ssize_t uet_send_req_api_common(
 	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
 	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
 {
+	size_t i;
 	int rc;
 	uint16_t msg_id;
 	uint32_t msg_len = 0;
@@ -3793,12 +3796,11 @@ static ssize_t uet_send_req_api_common(
 		return -FI_EAGAIN;
 	}
 
-	for (int i = 0; i < iov_count; i++)
-		msg_len += iov[i].iov_len;
-
 	iov_handle = calloc(iov_count, sizeof(struct iovec));
-	for (int i = 0; i < iov_count; i++)
+	for (i = 0; i < iov_count; i++) {
+		msg_len += iov[i].iov_len;
 		iov_handle[i] = iov[i];
+	}
 
 	/* allocate rx descriptor for read */
 	if (send_req_api == UET_READ_API) {
