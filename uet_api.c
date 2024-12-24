@@ -4355,6 +4355,27 @@ int uet_ep_bind_cq(uet_ep_handle_t ep_handle, struct fi_cq_attr *attr,
 	return FI_SUCCESS;
 }
 
+int uet_mr_disable(uet_mr_handle_t mr_handle)
+{
+	int rc;
+	struct uet_mr_desc *mr_desc;
+
+	mr_desc = (struct uet_mr_desc *) mr_handle;
+
+	if (mr_desc->state != UET_MR_DESC_STATE_ENABLED) {
+		UET_API_ERR("Bad MR state for disable");
+		return -FI_EINVAL;
+	}
+
+	if (mr_desc->uet_ep->uet_domain->info->domain_attr->mr_mode &
+			FI_MR_PROV_KEY)
+		uet_mr_list_finalize(mr_desc->uet_ep);
+	else
+		uet_mr_hash_finalize(mr_desc->uet_ep);
+
+	return FI_SUCCESS;
+}
+
 int uet_ep_enable(uet_ep_handle_t ep_handle)
 {
 	struct uet_ep *uet_ep;
@@ -4373,10 +4394,6 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	uet_ep = (struct uet_ep *) ep_handle;
 	pds = &uet_ep->uet_domain->uet->pds;
 
-	if (uet_ep_has_cq(uet_ep)) {
-		UET_API_ERR("Completion Q is associated with EP being closed");
-		return -FI_EBUSY;
-	}
 
 	if (uet_ep->uet_domain->info->domain_attr->mr_mode & FI_MR_PROV_KEY)
 		uet_mr_list_finalize(uet_ep);
@@ -4502,8 +4519,12 @@ int uet_cq_close(uet_cq_handle_t cq_handle)
 		return -FI_EBUSY;
 	}
 
+	if (uet_ep_has_cq(uet_ep)) {
+		UET_API_ERR("There is opened endpoint");
+		return -FI_EBUSY;
+	}
+
 	uet_cq->cq_state = UET_CQ_DOWN;
-	uet_ring_free_entries(&uet_cq->ring);
 
 	return FI_SUCCESS;
 }

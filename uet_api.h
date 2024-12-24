@@ -329,6 +329,18 @@ uint64_t uet_mr_refresh(uet_mr_handle_t mr_handle,
 int uet_mr_enable(uet_mr_handle_t mr_handle);
 
 /*
+ * disable MR state and remove all entries
+ *
+ * parms:
+ *   mr_handle - handle identifying uet memory region instance
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+int uet_mr_disable(uet_mr_handle_t mr_handle);
+
+/*
  * close a memory region
  *
  * parms:

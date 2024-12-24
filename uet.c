@@ -192,6 +192,14 @@ static void uet_free_res(struct uet_context *ctx)
 		ctx->peer_addr_handle = UET_NULL_HANDLE;
 	}
 
+
+	if (ctx->ep_handle != UET_NULL_HANDLE) {
+		rc = uet_ep_close(ctx->ep_handle);
+		if (rc)
+			UET_ERR("uet_endpoint_close: %s", fi_strerror(-rc));
+		ctx->ep_handle = UET_NULL_HANDLE;
+	}
+
 	if (ctx->tx_cq_handle != UET_NULL_HANDLE) {
 		rc = uet_cq_close(ctx->tx_cq_handle);
 		if (rc)
@@ -204,13 +212,6 @@ static void uet_free_res(struct uet_context *ctx)
 		if (rc)
 			UET_ERR("uet_cq_close: %s", fi_strerror(-rc));
 		ctx->rx_cq_handle = UET_NULL_HANDLE;
-	}
-
-	if (ctx->ep_handle != UET_NULL_HANDLE) {
-		rc = uet_ep_close(ctx->ep_handle);
-		if (rc)
-			UET_ERR("uet_endpoint_close: %s", fi_strerror(-rc));
-		ctx->ep_handle = UET_NULL_HANDLE;
 	}
 
 	if (ctx->mr_handle != UET_NULL_HANDLE) {
