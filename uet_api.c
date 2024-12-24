@@ -30,7 +30,6 @@
  *   - not designed for high performance
  */
 
-#include <bits/types/struct_iovec.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -187,13 +186,13 @@ static int uet_alloc_opt_mr_desc(struct uet_domain *uet_dom, size_t *mr_index)
 static void uet_dealloc_mr_desc(struct uet_domain *uet_dom,
 				struct uet_mr_desc *mr_desc)
 {
-	uint8_t *offset;
+	size_t offset;
 	size_t mr_index;
 
 	mr_desc->state = UET_MR_DESC_STATE_INACTIVE;
 
 	offset = ((uint8_t *) mr_desc) - ((uint8_t *) uet_dom->mr_desc);
-	mr_index = ((size_t) offset) / sizeof(struct uet_mr_desc);
+	mr_index = offset / sizeof(struct uet_mr_desc);
 	uet_dom->mr_desc_alloc_cb.state[mr_index] = UET_MR_DESC_AVAILABLE;
 }
 
@@ -673,8 +672,6 @@ static void uet_mr_hash_finalize(struct uet_ep *uet_ep)
 
 	HASH_ITER(mr_hh, uet_ep->mr_hash_table, current, tmp) {
 		HASH_DELETE(mr_hh, uet_ep->mr_hash_table, current);
-		uet_nic_mr_dereg(UET_NIC(uet_ep->uet_domain->uet),
-				 current->nic_mr_handle);
 		current->state = UET_MR_DESC_STATE_DISABLED_REG;
 		current->uet_ep = NULL;
 	}
@@ -1388,6 +1385,7 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 	uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
 
 	free(uet_ep);
+	uet_ep = NULL; /* To prevent use after free */
 }
 
 /* free resources associated with all endpoints of a domain */
@@ -2640,7 +2638,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
 					false, true, gtd_del);
 		if (ses_rc == UET_RC_UNCOR_TRNSNT)
-			ses_nack = true;
+			*ses_nack = true;
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
 		break;
 	case UET_READ:
@@ -2649,7 +2647,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		if (ses_rc != UET_RC_OK) {
 			*gtd_del = true;
 			if (ses_rc == UET_RC_UNCOR_TRNSNT)
-				ses_nack = true;
+				*ses_nack = true;
 		} else if (ack_d_info.valid)
 			goto build_response_w_data;
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
@@ -3740,6 +3738,7 @@ static ssize_t uet_send_req_api_common(
 	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
 {
 	int rc;
+	size_t i;
 	uint16_t msg_id;
 	uint32_t msg_len = 0;
 	struct uet_instance *uet;
@@ -4368,7 +4367,7 @@ int uet_mr_disable(uet_mr_handle_t mr_handle)
 	}
 
 	if (mr_desc->uet_ep->uet_domain->info->domain_attr->mr_mode &
-			FI_MR_PROV_KEY)
+	    FI_MR_PROV_KEY)
 		uet_mr_list_finalize(mr_desc->uet_ep);
 	else
 		uet_mr_hash_finalize(mr_desc->uet_ep);
@@ -4394,6 +4393,11 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	uet_ep = (struct uet_ep *) ep_handle;
 	pds = &uet_ep->uet_domain->uet->pds;
 
+	/* Error if there are outstanding msg transmits */
+	if ((uet_ep->num_active_sends)) {
+		UET_API_ERR("Outstanding sends associated with EP being closed");
+		return -FI_EBUSY;
+	}
 
 	if (uet_ep->uet_domain->info->domain_attr->mr_mode & FI_MR_PROV_KEY)
 		uet_mr_list_finalize(uet_ep);
@@ -4513,14 +4517,12 @@ int uet_cq_close(uet_cq_handle_t cq_handle)
 	uet_cq = (struct uet_cq *) cq_handle;
 	uet_ep = uet_cq->uet_ep;
 
-	/* fail if closing tx cq & there are outstanding msg transmits */
-	if ((uet_cq == &uet_ep->send_cq) && (uet_ep->num_active_sends)) {
-		UET_API_ERR("Outstanding sends associated with CQ being closed");
-		return -FI_EBUSY;
-	}
-
-	if (uet_ep_has_cq(uet_ep)) {
-		UET_API_ERR("There is opened endpoint");
+	/*
+	 * At this point their must not be any associated ep with cq,
+	 * we check if there is one like that
+	 */
+	if ((uet_ep) && uet_ep_has_cq(uet_ep)) {
+		UET_API_ERR("There is opened endpoint associated with cq");
 		return -FI_EBUSY;
 	}
 
@@ -4856,10 +4858,12 @@ int uet_mr_enable(uet_mr_handle_t mr_handle)
 		return -FI_EINVAL;
 	}
 
-	rc = uet_nic_mr_reg(UET_NIC(mr_desc->uet_ep->uet_domain->uet),
-			    &mr_desc->buf_desc, &mr_desc->nic_mr_handle);
-	if (rc != FI_SUCCESS)
-		return rc;
+	if (mr_desc->buf_desc.type != UET_MR_BUF_TYPE_CONTIG) {
+		UET_API_ERR("MR reg only supported for contiguous buf type");
+		return -FI_EINVAL;
+	}
+
+	mr_desc->buf_desc.contig.dma_addr = (uet_dma_addr_t) mr_desc->buf_desc.buf;
 
 	if (mr_desc->uet_ep->uet_domain->info->domain_attr->mr_mode &
 	    FI_MR_PROV_KEY)
