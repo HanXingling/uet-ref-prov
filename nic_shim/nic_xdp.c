@@ -462,27 +462,6 @@ int nic_xdp_rx_poll(struct uet_nic *nic)
 	return 0;
 }
 
-/* register memory region with nic */
-int nic_xdp_mr_reg(struct uet_nic *nic,
-		   struct uet_mr_buf_desc *desc,
-		   uet_nic_mr_handle_t *handle)
-{
-	if (desc->type != UET_MR_BUF_TYPE_CONTIG) {
-		UET_API_ERR("MR reg only supported for contiguous buf type");
-		return -FI_EINVAL;
-	}
-
-	desc->contig.dma_addr = desc->buf;
-	return FI_SUCCESS;
-}
-
-/* deregister memory region that was registered with nic */
-int nic_xdp_mr_dereg(struct uet_nic *nic,
-		     uet_nic_mr_handle_t handle)
-{
-	return FI_SUCCESS;
-}
-
 static struct xsk_umem_info *nic_xdp_xsk_configure_umem(void *mem,
 							uint64_t mem_size)
 {

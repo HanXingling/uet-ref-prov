@@ -27,8 +27,6 @@
 
 #define UET_NIC(uet) (&(uet)->nic)
 
-typedef void *uet_nic_mr_handle_t;      /* nic handle for memory region */
-
 struct uet_mr_buf_desc;
 struct uet_instance;
 
