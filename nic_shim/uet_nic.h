@@ -27,8 +27,6 @@
 
 #define UET_NIC(uet) (&(uet)->nic)
 
-typedef void *uet_nic_mr_handle_t;      /* nic handle for memory region */
-
 struct uet_mr_buf_desc;
 struct uet_instance;
 
@@ -71,11 +69,6 @@ struct uet_nic {
 			  void *pkt,
 			  size_t pkt_buf_size,
 			  size_t *rx_pkt_size);
-	int (*nic_mr_reg)(struct uet_nic *nic,
-			  struct uet_mr_buf_desc *desc,
-			  uet_nic_mr_handle_t *handle);
-	int (*nic_mr_dereg)(struct uet_nic *nic,
-			    uet_nic_mr_handle_t handle);
 	int (*nic_rx_poll)(struct uet_nic *nic);
 	void (*nic_finalize)(struct uet_nic *nic);
 	int (*nic_initialize)(struct uet_nic *nic);
@@ -220,49 +213,6 @@ static inline int uet_nic_rx_poll(struct uet_nic *nic)
 		assert(0);
 
 	return nic->nic_rx_poll(nic);
-}
-
-/*
- * register a memory region with nic
- *
- * parms:
- *      uet    - ptr to uet nic struct
- *      desc   - ptr to buffer info struct for memory region
- *      handle - ptr to location where nic handle for registered
- *               memory region is to be returned
- *
- * returns:
- *      FI_SUCCESS on success,
- *      negative value corresponding to fabric errno on error
- */
-static inline int uet_nic_mr_reg(struct uet_nic *nic,
-				 struct uet_mr_buf_desc *desc,
-				 uet_nic_mr_handle_t *handle)
-{
-	if (!nic || !desc || !handle)
-		assert(0);
-
-	return nic->nic_mr_reg(nic, desc, handle);
-}
-
-/*
- * deregister memory region that was registered with nic
- *
- * parms:
- *      uet    - ptr to uet nic struct
- *      handle - nic handle for registered memory region
- *
- * returns:
- *      FI_SUCCESS on success,
- *      negative value corresponding to fabric errno on error
- */
-static inline int uet_nic_mr_dereg(struct uet_nic *nic,
-				   uet_nic_mr_handle_t handle)
-{
-	if (!nic || !handle)
-		assert(0);
-
-	return nic->nic_mr_dereg(nic, handle);
 }
 
 #endif /* _UET_NIC_H_ */

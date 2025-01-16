@@ -50,11 +50,6 @@ extern int nic_rawsock_rx_pkt(struct uet_nic *nic,
 			      size_t pkt_buf_size,
 			      size_t *rx_pkt_size);
 extern int nic_rawsock_rx_poll(struct uet_nic *nic);
-extern int nic_rawsock_mr_reg(struct uet_nic *nic,
-			      struct uet_mr_buf_desc *desc,
-			      uet_nic_mr_handle_t *handle);
-extern int nic_rawsock_mr_dereg(struct uet_nic *nic,
-				uet_nic_mr_handle_t handle);
 extern void nic_rawsock_finalize(struct uet_nic *nic);
 extern int nic_rawsock_initialize(struct uet_nic *nic);
 
@@ -74,11 +69,6 @@ extern int nic_xdp_rx_pkt(struct uet_nic *nic,
 			  size_t pkt_buf_size,
 			  size_t *rx_pkt_size);
 extern int nic_xdp_rx_poll(struct uet_nic *nic);
-extern int nic_xdp_mr_reg(struct uet_nic *nic,
-			  struct uet_mr_buf_desc *desc,
-			  uet_nic_mr_handle_t *handle);
-extern int nic_xdp_mr_dereg(struct uet_nic *nic,
-			    uet_nic_mr_handle_t handle);
 extern void nic_xdp_finalize(struct uet_nic *nic);
 extern int nic_xdp_initialize(struct uet_nic *nic);
 #endif
@@ -103,8 +93,6 @@ int uet_nic_initialize(struct uet_nic *nic)
 		nic->nic_tx_pkt      = nic_rawsock_tx_pkt;
 		nic->nic_rx_pkt      = nic_rawsock_rx_pkt;
 		nic->nic_rx_poll     = nic_rawsock_rx_poll;
-		nic->nic_mr_reg      = nic_rawsock_mr_reg;
-		nic->nic_mr_dereg    = nic_rawsock_mr_dereg;
 		nic->nic_finalize    = nic_rawsock_finalize;
 		nic->nic_initialize  = nic_rawsock_initialize;
 #if ENABLE_XDP
@@ -114,8 +102,6 @@ int uet_nic_initialize(struct uet_nic *nic)
 		nic->nic_tx_pkt      = nic_xdp_tx_pkt;
 		nic->nic_rx_pkt      = nic_xdp_rx_pkt;
 		nic->nic_rx_poll     = nic_xdp_rx_poll;
-		nic->nic_mr_reg      = nic_xdp_mr_reg;
-		nic->nic_mr_dereg    = nic_xdp_mr_dereg;
 		nic->nic_finalize    = nic_xdp_finalize;
 		nic->nic_initialize  = nic_xdp_initialize;
 #endif

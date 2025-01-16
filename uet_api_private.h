@@ -152,7 +152,6 @@ struct uet_mr_desc {
 	uet_mr_desc_state_t state;                 /* state of the descriptor */
 	struct uet_domain *uet_dom;   /* domain descriptor is associated with */
 	struct uet_ep *uet_ep;      /* endpoint descriptor is associated with */
-	uet_nic_mr_handle_t nic_mr_handle;    /* nic handle for memory region */
 	struct uet_mr_buf_desc buf_desc;   /* memory region buffer descriptor */
 	uint64_t full_key;                      /* full key for memory region */
 	uint64_t access;            /* operations supported for memory region */
