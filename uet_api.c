@@ -3753,7 +3753,6 @@ static ssize_t uet_send_req_api_common(
 	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
 	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
 {
-	size_t i;
 	int rc;
 	size_t i;
 	uint16_t msg_id;
