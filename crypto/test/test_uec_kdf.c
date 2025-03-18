@@ -49,7 +49,7 @@
 #include "../kdf_ctr_cmac_aes.h"
 
 #define UEC_KEY_SIZE      256 /* bits */
-#define UEC_KDF_KEY_SIZE  384 /* bits */
+#define UEC_KDF_KEY_SIZE  352 /* bits */
 #define UEC_IVMASK_SIZE   96  /* bits */
 #define UEC_CTR_SIZE      8   /* bits */
 #define UEC_IPV4_CTX_SIZE 10  /* bytes */
@@ -74,16 +74,16 @@ uint8_t ipv4[4] = { 0 };
 #define IPV6 "20010cb0000000000fc0000000000abc"
 uint8_t ipv6[16] = { 0 };
 
-#define IPV4_SDK "7f5a75d8443dd43b369891be04235da1eace45d98e2ead6a0f8601a0025c1978"
+#define IPV4_SDK "151b4ddb30112971ddeff3213000ee74d8f18aac2135601f1e5215e505fed449"
 uint8_t ipv4_sdk[UEC_KEY_SIZE / 8] = { 0 };
 
-#define IPV6_SDK "8d7149716f44864f2dbbcfbbb6941f8b91dc06585e58043d01f86ecb3f726ea6"
+#define IPV6_SDK "55d1ee8647bd53fad0e5325795af18e7559b7d42a895edf70f9c170341e8f767"
 uint8_t ipv6_sdk[UEC_KEY_SIZE / 8] = { 0 };
 
-#define IPV4_SERVER_SDK "c48fdbf8c58d8705a014b59583341ca2c4a5085f6f3911e0307a4d75cb9de6c6"
+#define IPV4_SERVER_SDK "245e67ab286218530edd53c26ea9ec33c96b35192d0a0eb54d08be281c5d304b"
 uint8_t ipv4_server_sdk[UEC_KEY_SIZE / 8] = { 0 };
 
-#define IPV6_SERVER_SDK "9a0196ab59a979aedf8a9f6cb2206cb1167aa4ef4b2196f0f58772a8aa8a00c3"
+#define IPV6_SERVER_SDK "b59002ad3e6a9ae5864878730070f8916e43e5011acaa4be3504256185f24d97"
 uint8_t ipv6_server_sdk[UEC_KEY_SIZE / 8] = { 0 };
 
 void hex_to_uint8_array(char    *hex_string,
