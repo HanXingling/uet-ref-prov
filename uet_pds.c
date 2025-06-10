@@ -1331,7 +1331,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 				 ((pdc->sec_enabled)
 				  ? (UET_SEC_MAX_HDR_LEN +
 				     UET_SEC_TAG_LEN)
-				  : 0)) *
+				  : CRC64_LEN)) *
 				((pdc->sec_enabled) ? 2 : 1));
 	pdc_pkt->ack_buf = calloc(1, pdc_pkt->ack_buf_len);
 	if (pdc_pkt->ack_buf == NULL) {
@@ -1390,7 +1390,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			     ((pdc->sec_enabled)
 			      ? (UET_SEC_MAX_HDR_LEN +
 				 UET_SEC_TAG_LEN)
-			      : 0)) *
+			      : CRC64_LEN)) *
 			   ((pdc->sec_enabled) ? 2 : 1));
 	def_rsp_buf = calloc(1, def_rsp_buf_len);
 	if (def_rsp_buf == NULL) {
