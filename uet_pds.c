@@ -74,12 +74,16 @@ struct uet_pdc_pkt {
 };
 
 /* The PDC key used for hash table lookups. */
-struct uet_pdc_key {
+struct uet_pdc_ini_key {
 	pdc_type_t    type;
 	uint32_t      job_id;
 	struct uet_fa dst_ip;
 	uint8_t       tc;
-	uint16_t      spdcid; /* only used for receive side lookups */
+};
+
+struct uet_pdc_tgt_key {
+	struct uet_fa src_ip;
+	uint16_t      spdcid;
 };
 
 struct uet_pdc {
@@ -92,8 +96,10 @@ struct uet_pdc {
 	uint16_t            dpdcid; /* peer PDC identifier */
 	uint32_t            open_msg_cnt; /* can only free the PDC if zero */
 
-	struct uet_pdc_key  hkey;
-	UT_hash_handle      pdc_hh; /* hash handle for the PDC */
+	struct uet_pdc_ini_key ini_hkey;
+	UT_hash_handle         pdc_ini_hh; /* initiator hash handle for the PDC */
+	struct uet_pdc_tgt_key tgt_hkey;
+	UT_hash_handle         pdc_tgt_hh; /* target hash handle for the PDC */
 
 	struct dlist_entry  tx_pkt_list_head; /* 'tx_time' order (for rtx) */
 
@@ -125,7 +131,8 @@ struct uet_pds_state {
 	struct uet_pdc        pdc[UET_PDC_MAX];
 	struct dlist_entry    pdc_alloc_head;
 	struct dlist_entry    pdc_free_head;
-	struct uet_pdc       *pdc_ht; /* key = "type|job_id|dst_ip|tc" */
+	struct uet_pdc       *pdc_ini_ht; /* key = "type|job_id|dst_ip|tc" */
+	struct uet_pdc       *pdc_tgt_ht; /* key = "src_addr|spdcid" */
 	struct uet_msgid_map *pdc_msgid_ht; /* key = "msg_id" */
 	struct dlist_entry    pending_pkts_head; /* TODO: not implemented yet */
 };
@@ -476,7 +483,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 					       struct uet_addr *dst_addr,
 					       uet_pds_mode_t mode)
 {
-	struct uet_pdc_key pdc_key;
+	struct uet_pdc_ini_key pdc_key;
 	struct uet_pdc *pdc;
 
 	PDS_GO();
@@ -490,8 +497,8 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	pdc_key.tc = UET_DEFAULT_TC;
 	memcpy(&pdc_key.dst_ip, &dst_addr->fa, sizeof(struct uet_fa));
 
-	HASH_FIND(pdc_hh, pds_state.pdc_ht, &pdc_key,
-		  sizeof(struct uet_pdc_key), pdc);
+	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
+		  sizeof(pdc_key), pdc);
 	if (pdc) {
 		UET_PDS_DBG("lookup found initiator PDC %u", pdc->pdc_id);
 		return pdc;
@@ -509,9 +516,9 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;
 	pdc->rx_bm_base_psn = UET_DEFAULT_START_PSN;
-	memcpy(&pdc->hkey, &pdc_key, sizeof(struct uet_pdc_key));
-	HASH_ADD(pdc_hh, pds_state.pdc_ht, hkey,
-		 sizeof(struct uet_pdc_key), pdc);
+	memcpy(&pdc->ini_hkey, &pdc_key, sizeof(pdc_key));
+	HASH_ADD(pdc_ini_hh, pds_state.pdc_ini_ht, ini_hkey,
+		 sizeof(pdc_key), pdc);
 
 	uet_pdsm_get_sdi(pdc);
 
@@ -524,7 +531,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 {
 	struct uet_ses_req_cmn *ses_cmn = (struct uet_ses_req_cmn *)pp->ses;
 	struct iphdr *ipv4 = (struct iphdr *)pp->ip; /* TODO: IPv6 support */
-	struct uet_pdc_key pdc_key;
+	struct uet_pdc_tgt_key pdc_key;
 	struct uet_pdc *pdc;
 
 	if ((pp->pds_type != UET_PDS_TYPE_RUD_REQ) &&
@@ -540,23 +547,12 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 		return NULL;
 
 	memset(&pdc_key, 0, sizeof(pdc_key));
-
-	pdc_key.type =
-		((pp->pds_type == UET_PDS_TYPE_RUD_REQ) ? PDC_TYPE_RUD :
-		 (pp->pds_type == UET_PDS_TYPE_ROD_REQ) ? PDC_TYPE_ROD :
-							  PDC_TYPE_NONE);
-	pdc_key.job_id = uet_get_std_req_job_id(
-		(struct uet_ses_req_std *)ses_cmn);
-
-	pdc_key.tc = UET_DEFAULT_TC;
-
 	/* TODO: IPv6 support */
-	pdc_key.dst_ip.v4 = ntohl(ipv4->daddr);
-
+	pdc_key.src_ip.v4 = ntohl(ipv4->saddr);
 	pdc_key.spdcid = pp->pds_spdcid; /* target side needs spdcid */
 
-	HASH_FIND(pdc_hh, pds_state.pdc_ht, &pdc_key,
-		  sizeof(struct uet_pdc_key), pdc);
+	HASH_FIND(pdc_tgt_hh, pds_state.pdc_tgt_ht, &pdc_key,
+		  sizeof(pdc_key), pdc);
 	if (pdc) {
 		UET_PDS_DBG("lookup found target PDC %u", pdc->pdc_id);
 
@@ -589,9 +585,9 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc->rx_bm_base_psn = (pp->pds_psn - pp->pds_syn_off);
 	pdc->tx_bm_base_psn = pdc->rx_bm_base_psn;
 	pdc->next_psn       = pdc->tx_bm_base_psn;
-	memcpy(&pdc->hkey, &pdc_key, sizeof(struct uet_pdc_key));
-	HASH_ADD(pdc_hh, pds_state.pdc_ht, hkey,
-		 sizeof(struct uet_pdc_key), pdc);
+	memcpy(&pdc->tgt_hkey, &pdc_key, sizeof(pdc_key));
+	HASH_ADD(pdc_tgt_hh, pds_state.pdc_tgt_ht, tgt_hkey,
+		 sizeof(pdc_key), pdc);
 
 	uet_pdsm_get_sdi(pdc);
 
@@ -766,7 +762,8 @@ int uet_pds_initialize(struct uet_instance *uet)
 
 	dlist_init(&pds_state.pdc_alloc_head);
 	dlist_init(&pds_state.pdc_free_head);
-	pds_state.pdc_ht = NULL;
+	pds_state.pdc_ini_ht = NULL;
+	pds_state.pdc_tgt_ht = NULL;
 	pds_state.pdc_msgid_ht = NULL;
 
 	for (i = 0; i < UET_PDC_MAX; i++) {
@@ -822,7 +819,10 @@ void uet_pds_finalize(struct uet_instance *uet)
 	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
 		dlist_pop_front(&pds_state.pdc_alloc_head,
 				struct uet_pdc, pdc, node);
-		HASH_DELETE(pdc_hh, pds_state.pdc_ht, pdc);
+		if (pdc->is_initiator)
+			HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
+		else
+			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
 		if (pdc->tx_bm)
 			bm_destroy(pdc->tx_bm);
 		if (pdc->ack_bm)

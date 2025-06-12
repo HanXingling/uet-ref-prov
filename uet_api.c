@@ -556,11 +556,15 @@ static struct uet_ep *uet_ipv4_ep_hash_lookup(struct uet_instance *uet,
 static void uet_rx_msg_key_init(struct uet_rx_msg_key *key,
 				struct uet_parsed_pkt *pp)
 {
+	struct iphdr *ipv4 = (struct iphdr *)pp->ip; /* TODO: IPv6 support */
 	struct uet_ses_req_std *ses;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
 	memset(key, 0, sizeof(struct uet_rx_msg_key));
+	/* TODO: IPv6 support */
+	key->src_ip.v4 = ntohl(ipv4->saddr);
+	key->spdcid = pp->pds_spdcid;
 	key->initiator = ses->initiator;
 	key->msg_id = ses->cmn.msg_id;
 }

@@ -164,6 +164,8 @@ struct uet_mr_desc {
 
 /* hash lookup key for received messages */
 struct uet_rx_msg_key {
+	struct uet_fa src_ip;
+	uint16_t spdcid;
 	uint32_t initiator;
 	uint16_t msg_id;
 };
