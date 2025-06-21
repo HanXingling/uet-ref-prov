@@ -45,18 +45,21 @@
 
 /* uet pds packet types (prologue) */
 typedef enum {
-	UET_PDS_TYPE_RESERVED  = 0x00,
-	UET_PDS_TYPE_SECURITY  = 0x01,
-	UET_PDS_TYPE_RUD_REQ   = 0x02,
-	UET_PDS_TYPE_ROD_REQ   = 0x03,
-	UET_PDS_TYPE_RUDI_REQ  = 0x04,
-	UET_PDS_TYPE_RUDI_RESP = 0x05,
-	UET_PDS_TYPE_UUD_REQ   = 0x06,
-	UET_PDS_TYPE_ACK       = 0x07,
-	UET_PDS_TYPE_ACK_CC    = 0x08,
-	UET_PDS_TYPE_ACK_CCX   = 0x09,
-	UET_PDS_TYPE_NACK      = 0x0a,
-	UET_PDS_TYPE_CTRL      = 0x0b,
+	UET_PDS_TYPE_RESERVED   = 0x00,
+	UET_PDS_TYPE_SECURITY   = 0x01,
+	UET_PDS_TYPE_RUD_REQ    = 0x02,
+	UET_PDS_TYPE_ROD_REQ    = 0x03,
+	UET_PDS_TYPE_RUDI_REQ   = 0x04,
+	UET_PDS_TYPE_RUDI_RESP  = 0x05,
+	UET_PDS_TYPE_UUD_REQ    = 0x06,
+	UET_PDS_TYPE_ACK        = 0x07,
+	UET_PDS_TYPE_ACK_CC     = 0x08,
+	UET_PDS_TYPE_ACK_CCX    = 0x09,
+	UET_PDS_TYPE_NACK       = 0x0a,
+	UET_PDS_TYPE_CTRL       = 0x0b,
+	UET_PDS_TYPE_NACK_CCX   = 0x0c,
+	UET_PDS_TYPE_RUD_CC_REQ = 0x0d,
+	UET_PDS_TYPE_ROD_CC_REQ = 0x0e,
 } uet_pds_pkt_type_t;
 
 /* uet next header types */
@@ -68,7 +71,6 @@ typedef enum {
 	UET_HDR_RSP            = 0x4, /* SES response header */
 	UET_HDR_RSP_DATA       = 0x5, /* SES response header with data */
 	UET_HDR_RSP_DATA_SMALL = 0x6, /* SES tiny response header with data */
-	UET_HDR_PDS            = 0xf, /* PDS Prologue (security header) */
 } uet_next_hdr_t;
 
 /* vlan tag */
@@ -78,56 +80,51 @@ struct uet_vlan_tag {
 };
 
 /****************************************************************************/
+/*                               ENTROPY                                    */
+/****************************************************************************/
+
+/* uet entropy header - used when running directory over IPv4/IPv6 */
+struct UET_PACKED uet_entropy {
+	uint16_t entropy;
+	uint16_t rsvd;
+};
+
+/****************************************************************************/
 /*                              SECURITY                                    */
 /****************************************************************************/
 
 /* uet security header (w/o the ssi) */
 struct UET_PACKED uet_sec {
-	uint16_t entropy;
-#define UET_SEC_TYPE_MASK            0xf000 /* set to UET_PDS_TYPE_SECURITY */
-#define UET_SEC_TYPE_SHIFT           12
-#define UET_SEC_NEXT_HDR_MASK        0x0f80 /* set to UET_HDR_PDS */
-#define UET_SEC_NEXT_HDR_SHIFT       7
-#define UET_SEC_VER_MASK             0x0060
-#define UET_SEC_VER_SHIFT            5
-#define UET_SEC_VER_1                0
-#define UET_SEC_SP_MASK              0x0010
-#define UET_SEC_SP_SHIFT             4
-#define UET_SEC_SP                   1 /* ssi field exists */
-#define UET_SEC_ENC_TYPE_MASK        0x000f
-#define UET_SEC_ENC_TYPE_SHIFT       0
-#define UET_SEC_ENC_TYPE_AES_GCM_256 0
-	uint16_t type_next_flags;
-#define UET_SEC_AN_MASK   0x80000000
-#define UET_SEC_AN_SHIFT  31
-#define UET_SEC_SDI_MASK  0x7fffffff
-#define UET_SEC_SDI_SHIFT 0
-	uint32_t an_sdi;
-	uint64_t tsc;
+#define UET_SEC_TYPE_MASK  0xf8000000 /* set to UET_PDS_TYPE_SECURITY */
+#define UET_SEC_TYPE_SHIFT 27
+#define UET_SEC_SP_MASK    0x04000000
+#define UET_SEC_SP_SHIFT   26
+#define UET_SEC_SP         1 /* ssi field exists */
+#define UET_SEC_AN_MASK    0x01000000
+#define UET_SEC_AN_SHIFT   24
+#define UET_SEC_SDI_MASK   0x00ffffff
+#define UET_SEC_SDI_SHIFT  0
+	uint32_t type_flags_sdi;
+#define UET_SEC_EPOCH_MASK  0xffff000000000000ULL
+#define UET_SEC_EPOCH_SHIFT 48
+#define UET_SEC_TSC_MASK    0x0000ffffffffffffULL
+#define UET_SEC_TSC_SHIFT   0
+	uint64_t epoch_tsc;
 };
 
 /* uet security header (w/ the ssi), same defines from uet_sec */
 struct UET_PACKED uet_sec_ssi {
-	uint16_t entropy;
-	uint16_t type_next_flags;
-	uint32_t an_sdi;
+	uint32_t type_flags_sdi;
 	uint32_t ssi; /* if UET_SEC_SP */
-	uint64_t tsc;
+	uint64_t epoch_tsc;
 };
 
 /****************************************************************************/
 /*                             RELIABLITY (PDS)                             */
 /****************************************************************************/
 
-/* uet pds entropy header - used when running directory over IPv4/IPv6 */
-struct UET_PACKED uet_pds_entropy {
-	uint16_t entropy;
-	uint16_t rsvd;
-};
-
 /* uet pds prologue header */
 struct UET_PACKED uet_pds_prlg {
-	uint16_t entropy;
 #define UET_PDS_TYPE_MASK       0xf800
 #define UET_PDS_TYPE_SHIFT      11
 #define UET_PDS_NEXT_HDR_MASK   0x0780

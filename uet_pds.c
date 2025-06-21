@@ -222,8 +222,10 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 int16_t psn_2c_offset(uint32_t base_psn, uint32_t psn)
 {
 	int32_t offset;
+
 	offset = (~(base_psn - psn) + 1); /* two's complement */
 	assert((base_psn + offset) == psn);
+
 	return offset;
 }
 
@@ -1019,7 +1021,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	/* fill in the PDS header */
 
-	pds_hdr->prlg.entropy = htons(UET_DEFAULT_ENTROPY);
+	// FIXME
+	//pds_hdr->prlg.entropy = htons(UET_DEFAULT_ENTROPY);
 
 	pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
 		     (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
@@ -1279,7 +1282,8 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 			   (!pdc->sec_enabled &&
 			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
 
-	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
+	// FIXME
+	//ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
 	/* TODO: support ACK_CC and ACK_CCX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
@@ -1430,7 +1434,8 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			   (!pdc->sec_enabled &&
 			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
 
-	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
+	// FIXME
+	//ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	ack_pds->prlg.type_next_flags =
@@ -1623,15 +1628,14 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 		clear_to_base_diff =
 			pdc_pkt->pkt_pp.pds_clear_psn - pdc->rx_bm_base_psn;
 
-		if (clear_to_base_diff > UET_DEFAULT_MPR ||
-				clear_to_base_diff < -UET_DEFAULT_MPR) {
+		if ((clear_to_base_diff > UET_DEFAULT_MPR) ||
+		    (clear_to_base_diff < -UET_DEFAULT_MPR)) {
 			UET_PDS_WARN("invalid CLEAR PSN %u on PDC %u "
-					"(outside MPR %u[+-%u])",
-					pdc_pkt->pkt_pp.pds_clear_psn,
-					pdc_pkt->pkt_pp.pds_dpdcid,
-					pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
+				     "(outside MPR %u[+-%u])",
+				     pdc_pkt->pkt_pp.pds_clear_psn,
+				     pdc_pkt->pkt_pp.pds_dpdcid,
+				     pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
 			return -FI_EINVAL;
-
 		}
 
 		if (clear_to_base_diff > 0) {

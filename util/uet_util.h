@@ -76,6 +76,7 @@ struct uet_parsed_pkt {
 	uint32_t sec_sdi;
 	bool sec_ssi_valid;
 	uint32_t sec_ssi;
+	uint16_t sec_epoch;
 	uint64_t sec_tsc;
 	void *pds;
 	uint16_t pds_len;

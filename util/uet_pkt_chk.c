@@ -26,32 +26,30 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 					 sizeof(struct ethhdr) +
 					 sizeof(struct iphdr));
 
+	/* FIXME skip over entropy header */
+
 	pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
 		     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);
-	next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
-		     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
 
 	if (pds_type == UET_PDS_TYPE_SECURITY) {
-		if (next_hdr != UET_HDR_PDS)
-			return false;
-
 		/* TODO: IPv6 support */
 		sec_hdr = (struct uet_sec *)pds_hdr;
-		if (ntohs(sec_hdr->type_next_flags) & UET_SEC_SP_MASK) {
-			pds_hdr =
-				(struct uet_pds_req *)((uint8_t *)sec_hdr +
-						       sizeof(struct uet_sec_ssi));
+		if (ntohl(sec_hdr->type_flags_sdi) & UET_SEC_SP_MASK) {
+			pds_hdr = (struct uet_pds_req *)
+				      ((uint8_t *)sec_hdr +
+				       sizeof(struct uet_sec_ssi));
 		} else {
-			pds_hdr =
-				(struct uet_pds_req *)((uint8_t *)sec_hdr +
-						        sizeof(struct uet_sec));
+			pds_hdr = (struct uet_pds_req *)
+				      ((uint8_t *)sec_hdr +
+				       sizeof(struct uet_sec));
 		}
 
 		pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
 			     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);
-		next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
-			     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
 	}
+
+	next_hdr = ((ntohs(pds_hdr->prlg.type_next_flags) &
+		     UET_PDS_NEXT_HDR_MASK) >> UET_PDS_NEXT_HDR_SHIFT);
 
 	switch (pds_type) {
 	case UET_PDS_TYPE_ROD_REQ:

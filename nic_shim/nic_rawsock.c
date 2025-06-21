@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <linux/if_packet.h>
 
+#include "uet_api.h"
 #include "uet_nic.h"
 #include "uet_api_private.h"
 
