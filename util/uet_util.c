@@ -259,6 +259,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
 
+	if (pp->entropy) {
+		printf("  Entropy Header (%d)\n", pp->entropy_len);
+		printf("    Entropy:              0x%04x\n", pp->entropy_val);
+	}
+
 	if (pp->sec) {
 		printf("  USP Header (%d)\n", pp->sec_len);
 		printf("    USP AN:               %d\n", pp->sec_an);
@@ -267,6 +272,7 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			printf("    USP SSI:              0x%08x\n",
 			       pp->sec_ssi);
 		}
+		printf("    USP EPOCH:            0x%04x\n", pp->sec_epoch);
 		printf("    USP TSC:              0x%016lx\n", pp->sec_tsc);
 	}
 
@@ -521,6 +527,7 @@ void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp)
 	printf("UET Packet Headers (pkt_len=%d)\n", pp->pkt_len);
 	uet_print_mac_hdr((struct ethhdr *) pp->eth);
 	uet_print_ipv4_hdr((struct iphdr *) pp->ip); /* TODO: IPv6 support */
+	/* TODO: UDP support */
 	uet_print_uet_hdr(pp);
 }
 
@@ -879,6 +886,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	bool done = false;
 	struct iphdr *ipv4;
 	struct udphdr *udp;
+	struct uet_entropy *entropy;
 	struct uet_sec *sec;
 	struct uet_sec_ssi *sec_ssi;
 	struct uet_pds_prlg *pds_prlg;
@@ -964,8 +972,12 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 
 	/* parse the entropy or udp header */
 	if (pp->ip_protocol == uet->uet_ipproto) {
-		/* FIXME parse entropy header */
-		pp->entropy = 0;
+		pp->entropy = p;
+		entropy = (struct uet_entropy *) p;
+		pp->entropy_val = ntohs(entropy->entropy);
+		pp->entropy_len = sizeof(struct uet_entropy);
+		cur_len += pp->entropy_len;
+		p = ((uint8_t *) pkt) + cur_len;
 	} else {
 		switch (pp->ip_protocol) {
 		case IPPROTO_UDP:

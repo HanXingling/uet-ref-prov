@@ -21,12 +21,11 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 	*pkt_is_ack = false;
 	*pkt_is_rd_rsp = false;
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
 	pds_hdr = (struct uet_pds_req *)(pkt +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr));
-
-	/* FIXME skip over entropy header */
+					 sizeof(struct iphdr) +
+					 sizeof(struct uet_entropy));
 
 	pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
 		     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);

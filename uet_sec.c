@@ -84,7 +84,7 @@ static uint8_t def_key[2][UET_SEC_KDF_GEN_SIZE] = {
 #define DEF_SDI         1
 #define DEF_REKEY_MASK  0x0000FFFF00000000UL
 #define DEF_REKEY_SHIFT 32
-#define DEF_AOFF        -8 /* AAD includes source IPv4 address */
+#define DEF_AOFF        -12 /* AAD includes source IPv4 address */
 #define DEF_COFF        12 /* sizeof security header, +4 if using SSI */
 
 static uint8_t fep_key[2][UET_SEC_KEY_SIZE] = {
@@ -138,11 +138,12 @@ int uet_sec_build_hdr(uint32_t sdi,
 		return -FI_EINVAL;
 	}
 
-	/* TODO: IPv6 support */
-	copy_len = (sizeof(struct ethhdr) + sizeof(struct iphdr));
+	/* TODO: IPv6 support and UDP support */
+	copy_len = (sizeof(struct ethhdr) +
+		    sizeof(struct iphdr) +
+		    sizeof(struct uet_entropy));
 
 	/* move the Ethernet and IP headers down */
-	/* FIXME: also move the entropy header if present... */
 	if (sd->use_ssi) {
 		if ((pkt - sizeof(struct uet_sec_ssi)) < pkt_buf) {
 			UET_USP_ERR("no headroom for uet_sec_ssi header\n");
@@ -217,10 +218,11 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 	uint64_t tsc;
 	uint32_t tfs;
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
 	sec = (struct uet_sec *)(pkt +
 				 sizeof(struct ethhdr) +
-				 sizeof(struct iphdr));
+				 sizeof(struct iphdr) +
+				 sizeof(struct uet_entropy));
 	sec_ssi = (struct uet_sec_ssi *)sec;
 
 	tfs = ntohl(sec->type_flags_sdi);
@@ -294,9 +296,12 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	uint64_t tmp_lval;
 	int i, rc, clrtxt_len;
 
-	/* TODO: IPv6 support, requires SSI */
+	/* TODO: IPv6 support (requires SSI) and UDP support */
 	ip = (struct iphdr *)(pkt + sizeof(struct ethhdr));
-	sec_hdr = (pkt + sizeof(struct ethhdr) + sizeof(struct iphdr));
+	sec_hdr = (pkt +
+		   sizeof(struct ethhdr) +
+		   sizeof(struct iphdr) +
+		   sizeof(struct uet_entropy));
 	sec = (struct uet_sec *)sec_hdr;
 	sec_ssi = (struct uet_sec_ssi *)sec_hdr;
 
@@ -361,7 +366,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
-		/* FIXME: support IPv6 w/ large_context, requires SSI */
+		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		memcpy((small_context + 2), (uint8_t *)&rekey, 4);
@@ -385,7 +390,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 			break;
 		}
 
-		/* FIXME: support IPv6 w/ large_context, requires SSI */
+		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
@@ -410,10 +415,10 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 
 	/* encrypt the packet */
 
-	/* FIXME: account for the entropy or UDP header */
+	/* TODO: account for the entropy or UDP header */
 	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
 
-	/* FIXME: support IPv6, requires SSI */
+	/* TODO: support IPv6 (requires SSI) */
 	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 	memcpy(iv, (uint8_t *)&tmp_val, 4);
 	tmp_lval = htonll(tsc);
@@ -478,9 +483,12 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 	uint32_t tfs;
 	int i, rc, clrtxt_len;
 
-	/* TODO: IPv6 support, requires SSI */
+	/* TODO: IPv6 support (requires SSI) and UDP support */
 	ip = (struct iphdr *)(pkt + sizeof(struct ethhdr));
-	sec_hdr = (pkt + sizeof(struct ethhdr) + sizeof(struct iphdr));
+	sec_hdr = (pkt +
+		   sizeof(struct ethhdr) +
+		   sizeof(struct iphdr) +
+		   sizeof(struct uet_entropy));
 	sec = (struct uet_sec *)sec_hdr;
 	sec_ssi = (struct uet_sec_ssi *)sec_hdr;
 
@@ -534,7 +542,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
-		/* FIXME: support IPv6 w/ large_context, requires SSI */
+		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		memcpy((small_context + 2), (uint8_t *)&rekey, 4);
@@ -558,7 +566,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 			break;
 		}
 
-		/* FIXME: support IPv6 w/ large_context, requires SSI */
+		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
@@ -583,10 +591,10 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 
 	/* decrypt the packet */
 
-	/* FIXME: account for the entropy or UDP header */
+	/* TODO: account for the entropy or UDP header */
 	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
 
-	/* FIXME: support IPv6, requires SSI */
+	/* TODO: support IPv6 (requires SSI) */
 	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
 	memcpy(iv, (uint8_t *)&tmp_val, 4);
 	tmp_lval = htonll(tsc);
@@ -649,7 +657,7 @@ static int uet_sec_init_sd(uint32_t sdi,
 	sd->rekey       = rekey;
 	sd->rekey_mask  = DEF_REKEY_MASK;
 	sd->rekey_shift = DEF_REKEY_SHIFT;
-	sd->aoff        = DEF_AOFF; /* FIXME: handle entropy header */
+	sd->aoff        = DEF_AOFF;
 	sd->coff        = (use_ssi) ? (DEF_COFF + 4) : DEF_COFF;
 	sd->alg         = UET_SEC_ALG_AES_GCM_256;
 	sd->epoch       = 1; /* FIXME: init/roll epoch */
@@ -658,14 +666,14 @@ static int uet_sec_init_sd(uint32_t sdi,
 
 	/* for client side of server mode, do KDFs now */
 	if ((mode == UET_SEC_MODE_SERVER) && !getenv(UET_SEC_SERVER)) {
-		/* FIXME: support both SSI and source IPv4 for server mode */
+		/* TODO: support both SSI and source IPv4 for server mode */
 		if (!getenv(UET_SEC_SSI)) {
 			UET_USP_ERR("server mode requires SSI\n");
 			memset(sd, 0, sizeof(*sd));
 			return -FI_EINVAL;
 		}
 
-		/* FIXME: support IPv6 w/ large_context, requires SSI */
+		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&sd->epoch, 2);
 		client_ssi = getenv(UET_SEC_SSI);

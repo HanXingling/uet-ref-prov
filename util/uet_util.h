@@ -70,6 +70,9 @@ struct uet_parsed_pkt {
 	uint8_t ip_protocol;                        /* next protocol after ip */
 	void *udp;
 	uint16_t udp_len;
+	void *entropy;                                  /* uet entropy header */
+	uint16_t entropy_len;
+	uint16_t entropy_val;
 	void *sec;                                     /* uet security header */
 	uint16_t sec_len;
 	uint8_t sec_an;
@@ -80,7 +83,6 @@ struct uet_parsed_pkt {
 	uint64_t sec_tsc;
 	void *pds;
 	uint16_t pds_len;
-	uint16_t entropy;             /* from udp source port or pds_prologue */
 	uint8_t pds_type;
 	uint8_t pds_flags;
 	uint32_t pds_cack_psn;
