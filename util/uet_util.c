@@ -265,15 +265,15 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	}
 
 	if (pp->sec) {
-		printf("  USP Header (%d)\n", pp->sec_len);
-		printf("    USP AN:               %d\n", pp->sec_an);
-		printf("    USP SDI:              0x%08x\n", pp->sec_sdi);
+		printf("  TSS Header (%d)\n", pp->sec_len);
+		printf("    TSS AN:               %d\n", pp->sec_an);
+		printf("    TSS SDI:              0x%08x\n", pp->sec_sdi);
 		if (pp->sec_ssi_valid) {
-			printf("    USP SSI:              0x%08x\n",
+			printf("    TSS SSI:              0x%08x\n",
 			       pp->sec_ssi);
 		}
-		printf("    USP EPOCH:            0x%04x\n", pp->sec_epoch);
-		printf("    USP TSC:              0x%016lx\n", pp->sec_tsc);
+		printf("    TSS EPOCH:            0x%04x\n", pp->sec_epoch);
+		printf("    TSS TSC:              0x%016lx\n", pp->sec_tsc);
 	}
 
 	printf("  PDS Header (%d)\n", pp->pds_len);
