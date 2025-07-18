@@ -5,7 +5,7 @@ This repository provides a reference implementation of the UEC transport
 specifications including:
 - Semantic Sublayer (SES)
 - Packet Delivery Sublayer (PDS) - Reliability and Congestion Management
-- UEC Secure Transport Protocol (USP) - Encryption and Integrity
+- Transport Security Sublayer (TSS) - Encryption and Integrity
 
 See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
 
@@ -22,11 +22,11 @@ See SDR4001 and the UEC Libfabric Mapping Specification for additional details.
 ## Overview
 
 The framework for the UET Reference Provider is layered. The layers include
-SES, PDS, USP, and NIC.
+SES, PDS, TSS, and NIC.
 
 - The SES layer is accessed via UET APIs (see uet_api.h)
 - SES interfaces with PDS via SES-PDS APIs (see uet_pds.h)
-- PDS interfaces with USP via PDS-USP APIs (see uet_sec.h)
+- PDS interfaces with TSS via PDS-TSS APIs (see uet_sec.h)
 - The NIC shim interface is accessed via a set of abstracted APIs (see
 uet_nic.h).
 
@@ -180,9 +180,9 @@ Replace `2` with the desired number of senders.
 
 ## Security
 
-UET communications can be secured using the USP protocol which results in all
+UET communications can be secured using the TSS protocol which results in all
 packets sent by PDS to be encrypted. All four modes of operation defined by
-USP are supported and environment variables are used to select/configure
+TSS are supported and environment variables are used to select/configure
 the mode.
 
 At this stage of the implementation, only a single static Secure Domain (SD)

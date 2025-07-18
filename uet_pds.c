@@ -26,7 +26,7 @@
 #define UET_DEFAULT_TC        0
 #define UET_DEFAULT_MPR       128
 #define UET_DEFAULT_START_PSN 13
-#define UET_DEFAULT_ENTROPY   0
+#define UET_DEFAULT_ENTROPY   0x4242
 
 #define UET_PDC_MAX 64
 
@@ -222,8 +222,10 @@ static void uet_pds_pkt_dbg(struct uet_instance *uet,
 int16_t psn_2c_offset(uint32_t base_psn, uint32_t psn)
 {
 	int32_t offset;
+
 	offset = (~(base_psn - psn) + 1); /* two's complement */
 	assert((base_psn + offset) == psn);
+
 	return offset;
 }
 
@@ -897,6 +899,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	struct uet_pdc_pkt *pdc_pkt;
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_pdc *pdc;
+	struct uet_entropy *entropy_hdr;
 	struct uet_pds_req *pds_hdr;
 	void *ses_hdr, *payload;
 	uint16_t pds_flags;
@@ -994,6 +997,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		return -FI_ENOMEM;
 	}
 
+	/* reserve head space for security header if needed */
 	pdc_pkt->pkt = (pdc->sec_enabled)
 			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
 			: pdc_pkt->pkt_buf;
@@ -1002,24 +1006,31 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			  av_entry->nh_mac_addr,
 			  uet->nic.mac_addr);
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
+	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
+					     sizeof(struct ethhdr) +
+					     sizeof(struct iphdr));
 	pds_hdr = (struct uet_pds_req *)(pdc_pkt->pkt +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr));
+					 sizeof(struct iphdr) +
+					 sizeof(struct uet_entropy));
 	ses_hdr = (pds_hdr + 1);
 	payload = ((uint8_t *)ses_hdr + ses_len);
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
 	hdr_len = (sizeof(struct ethhdr) +
 		   sizeof(struct iphdr) +
+		   sizeof(struct uet_entropy) +
 		   sizeof(struct uet_pds_req) +
 		   ses_len);
 
 	pdc_pkt->pkt_len = (hdr_len + pkt_len);
 
-	/* fill in the PDS header */
+	/* fill in the entropy header */
+	/* TODO: UDP support */
+	entropy_hdr->entropy = htons(UET_DEFAULT_ENTROPY);
 
-	pds_hdr->prlg.entropy = htons(UET_DEFAULT_ENTROPY);
+	/* fill in the PDS header */
 
 	pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
 		     (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
@@ -1056,13 +1067,14 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	}
 
 	/* copy in the SES header and payload */
+	/* TODO: support for gather iov send */
 
 	memcpy(ses_hdr, ses, ses_len);
 	memcpy(payload, pkt, pkt_len);
 
 	/* build the IP header */
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
 	uet_build_ipv4_hdr(uet,
 			   (struct iphdr *)(pdc_pkt->pkt +
 					    sizeof(struct ethhdr)),
@@ -1255,13 +1267,18 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 				  size_t ses_hdr_len)
 {
 	uint8_t flags;
+	struct uet_entropy *entropy_hdr;
 	struct uet_pds_ack *ack_pds;
 	uint8_t *ack_ses;
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
+	entropy_hdr = (struct uet_entropy *)(pdc_pkt->ack +
+					     sizeof(struct ethhdr) +
+					     sizeof(struct iphdr));
 	ack_pds = (struct uet_pds_ack *)(pdc_pkt->ack +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr));
+					 sizeof(struct iphdr) +
+					 sizeof(struct uet_entropy));
 	ack_ses = (uint8_t *)(ack_pds + 1);
 
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->ack,
@@ -1279,7 +1296,8 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 			   (!pdc->sec_enabled &&
 			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
 
-	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
+	/* TODO: UDP support */
+	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
 	/* TODO: support ACK_CC and ACK_CCX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
@@ -1311,16 +1329,18 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	uint16_t ack_data_len;
 	int rc;
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
 	if (next_hdr == UET_HDR_RSP) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    sizeof(struct iphdr) +
+				    sizeof(struct uet_entropy) +
 				    sizeof(struct uet_pds_ack) +
 				    sizeof(struct uet_ses_rsp));
 	} else { /* response w/ data */
 		ack_data_len = (ses_hdr_len - sizeof(struct uet_ses_rsp_d));
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    sizeof(struct iphdr) +
+				    sizeof(struct uet_entropy) +
 				    sizeof(struct uet_pds_ack) +
 				    sizeof(struct uet_ses_rsp_d) +
 				    ack_data_len);
@@ -1339,6 +1359,7 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 		return -FI_ENOMEM;
 	}
 
+	/* reserve head space for security header if needed */
 	pdc_pkt->ack = (pdc->sec_enabled)
 			? (pdc_pkt->ack_buf + UET_SEC_MAX_HDR_LEN)
 			: pdc_pkt->ack_buf;
@@ -1376,12 +1397,15 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	uint8_t *def_rsp;
 	int def_rsp_len;
 	struct uet_pdc_pkt tmp_pdc_pkt;
+	struct uet_entropy *entropy_hdr;
 	struct uet_pds_ack *ack_pds;
 	struct uet_pds_def_rsp *ack_ses;
 	int rc;
 
+	/* TODO: IPv6 support and UDP support */
 	def_rsp_len = (sizeof(struct ethhdr) +
 		       sizeof(struct iphdr) +
+		       sizeof(struct uet_entropy) +
 		       sizeof(struct uet_pds_ack) +
 		       sizeof(struct uet_pds_def_rsp));
 
@@ -1398,6 +1422,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 		return -FI_ENOMEM;
 	}
 
+	/* reserve head space for security header if needed */
 	def_rsp = (pdc->sec_enabled)
 			? (def_rsp_buf + UET_SEC_MAX_HDR_LEN)
 			: def_rsp_buf;
@@ -1409,11 +1434,18 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	tmp_pdc_pkt.ack_len     = def_rsp_len;
 	tmp_pdc_pkt.ack_parsed  = false;
 
-	/* TODO: IPv6 support */
+	/* TODO: IPv6 support and UDP support */
+	entropy_hdr = (struct uet_entropy *)(def_rsp +
+					     sizeof(struct ethhdr) +
+					     sizeof(struct iphdr));
 	ack_pds = (struct uet_pds_ack *)(def_rsp +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr));
+					 sizeof(struct iphdr) +
+					 sizeof(struct uet_entropy));
 	ack_ses = (struct uet_pds_def_rsp *)(ack_pds + 1);
+
+	/* TODO: UDP support */
+	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
 	uet_build_eth_hdr((struct ethhdr *)def_rsp,
 			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
@@ -1429,8 +1461,6 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			   uet->pds.ack_ip_tos,
 			   (!pdc->sec_enabled &&
 			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
-
-	ack_pds->prlg.entropy = htons(pdc_pkt->pkt_pp.entropy);
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	ack_pds->prlg.type_next_flags =
@@ -1623,15 +1653,14 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 		clear_to_base_diff =
 			pdc_pkt->pkt_pp.pds_clear_psn - pdc->rx_bm_base_psn;
 
-		if (clear_to_base_diff > UET_DEFAULT_MPR ||
-				clear_to_base_diff < -UET_DEFAULT_MPR) {
+		if ((clear_to_base_diff > UET_DEFAULT_MPR) ||
+		    (clear_to_base_diff < -UET_DEFAULT_MPR)) {
 			UET_PDS_WARN("invalid CLEAR PSN %u on PDC %u "
-					"(outside MPR %u[+-%u])",
-					pdc_pkt->pkt_pp.pds_clear_psn,
-					pdc_pkt->pkt_pp.pds_dpdcid,
-					pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
+				     "(outside MPR %u[+-%u])",
+				     pdc_pkt->pkt_pp.pds_clear_psn,
+				     pdc_pkt->pkt_pp.pds_dpdcid,
+				     pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
 			return -FI_EINVAL;
-
 		}
 
 		if (clear_to_base_diff > 0) {

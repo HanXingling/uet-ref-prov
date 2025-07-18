@@ -25,6 +25,7 @@
 struct UET_PACKED uet_std_req_pkt {
 	struct ethhdr          eth;
 	struct iphdr           ipv4;
+	struct uet_entropy     entropy;
 	struct uet_pds_req     pds;
 	struct uet_ses_req_std ses;
 	uint8_t                payload[];
@@ -34,6 +35,7 @@ struct UET_PACKED uet_std_req_pkt {
 struct UET_PACKED uet_def_rsp_pkt {
 	struct ethhdr          eth;
 	struct iphdr           ipv4;
+	struct uet_entropy     entropy;
 	struct uet_pds_ack     pds;
 	struct uet_pds_def_rsp ses;
 };
@@ -42,6 +44,7 @@ struct UET_PACKED uet_def_rsp_pkt {
 struct UET_PACKED uet_std_rsp_pkt {
 	struct ethhdr      eth;
 	struct iphdr       ipv4;
+	struct uet_entropy entropy;
 	struct uet_pds_ack pds;
 	struct uet_ses_rsp ses;
 	uint8_t            payload[];
@@ -51,6 +54,7 @@ struct UET_PACKED uet_std_rsp_pkt {
 struct UET_PACKED uet_std_rsp_d_ack_pkt {
 	struct ethhdr        eth;
 	struct iphdr         ipv4;
+	struct uet_entropy   entropy;
 	struct uet_pds_ack   pds;
 	struct uet_ses_rsp_d ses;
 	uint8_t              payload[];
@@ -60,6 +64,7 @@ struct UET_PACKED uet_std_rsp_d_ack_pkt {
 struct UET_PACKED uet_std_rsp_d_req_pkt {
 	struct ethhdr        eth;
 	struct iphdr         ipv4;
+	struct uet_entropy   entropy;
 	struct uet_pds_req   pds;
 	struct uet_ses_rsp_d ses;
 	uint8_t              payload[];
@@ -71,6 +76,7 @@ union UET_PACKED uet_pkt {
 		struct ethhdr eth;
 		struct iphdr  ipv4;
 		struct UET_PACKED {
+			struct uet_entropy  entropy;
 			struct uet_pds_prlg prlg;
 			union {
 				uint16_t clear_psn_offset;
@@ -599,8 +605,12 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 			return -FI_EINVAL;
 		}
 
-		uet_hdr_len = sizeof(struct ethhdr) + sizeof(struct iphdr) +
-			sizeof(struct uet_pds_req) + ses_len;
+		/* TODO: IPv6 support and UDP support */
+		uet_hdr_len = (sizeof(struct ethhdr) +
+			       sizeof(struct iphdr) +
+			       sizeof(struct uet_entropy) +
+			       sizeof(struct uet_pds_req) +
+			       ses_len);
 
 		if (next_hdr == UET_HDR_REQ_STD) {
 			pds = &uet_pkt->std_req.pds;

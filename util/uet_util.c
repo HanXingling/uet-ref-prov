@@ -259,15 +259,21 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
 
+	if (pp->entropy) {
+		printf("  Entropy Header (%d)\n", pp->entropy_len);
+		printf("    Entropy:              0x%04x\n", pp->entropy_val);
+	}
+
 	if (pp->sec) {
-		printf("  USP Header (%d)\n", pp->sec_len);
-		printf("    USP AN:               %d\n", pp->sec_an);
-		printf("    USP SDI:              0x%08x\n", pp->sec_sdi);
+		printf("  TSS Header (%d)\n", pp->sec_len);
+		printf("    TSS AN:               %d\n", pp->sec_an);
+		printf("    TSS SDI:              0x%08x\n", pp->sec_sdi);
 		if (pp->sec_ssi_valid) {
-			printf("    USP SSI:              0x%08x\n",
+			printf("    TSS SSI:              0x%08x\n",
 			       pp->sec_ssi);
 		}
-		printf("    USP TSC:              0x%016lx\n", pp->sec_tsc);
+		printf("    TSS EPOCH:            0x%04x\n", pp->sec_epoch);
+		printf("    TSS TSC:              0x%016lx\n", pp->sec_tsc);
 	}
 
 	printf("  PDS Header (%d)\n", pp->pds_len);
@@ -521,6 +527,7 @@ void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp)
 	printf("UET Packet Headers (pkt_len=%d)\n", pp->pkt_len);
 	uet_print_mac_hdr((struct ethhdr *) pp->eth);
 	uet_print_ipv4_hdr((struct iphdr *) pp->ip); /* TODO: IPv6 support */
+	/* TODO: UDP support */
 	uet_print_uet_hdr(pp);
 }
 
@@ -875,9 +882,11 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	int rc, num_vlan_tags = 0;
 	uint8_t *p, ip_ver;
 	uint16_t cur_len, *etype_p, ethertype, pds_type_next_flags;
+	uint32_t sec_type_flags_sdi;
 	bool done = false;
 	struct iphdr *ipv4;
 	struct udphdr *udp;
+	struct uet_entropy *entropy;
 	struct uet_sec *sec;
 	struct uet_sec_ssi *sec_ssi;
 	struct uet_pds_prlg *pds_prlg;
@@ -961,8 +970,15 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	cur_len += pp->ip_len;
 	p = ((uint8_t *) pkt) + cur_len;
 
-	/* parse udp header */
-	if (pp->ip_protocol != uet->uet_ipproto) {
+	/* parse the entropy or udp header */
+	if (pp->ip_protocol == uet->uet_ipproto) {
+		pp->entropy = p;
+		entropy = (struct uet_entropy *) p;
+		pp->entropy_val = ntohs(entropy->entropy);
+		pp->entropy_len = sizeof(struct uet_entropy);
+		cur_len += pp->entropy_len;
+		p = ((uint8_t *) pkt) + cur_len;
+	} else {
 		switch (pp->ip_protocol) {
 		case IPPROTO_UDP:
 			udp = (struct udphdr *) p;
@@ -988,36 +1004,31 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	rc = uet_parse_chk_next_field(pp, cur_len, sizeof(struct uet_pds_prlg));
 	if (rc != FI_SUCCESS)
 		return rc;
-	if (pp->udp_len == 0)
-		pp->entropy = ntohs(pds_prlg->entropy);
 	pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 	pp->pds_type = ((pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			UET_PDS_TYPE_SHIFT);
 	if (pp->pds_type == UET_PDS_TYPE_SECURITY) {
-		if (((pds_type_next_flags & UET_PDS_NEXT_HDR_MASK) >>
-		      UET_PDS_NEXT_HDR_SHIFT) != UET_HDR_PDS)
-			goto err_exit;
 		pp->sec = pds_prlg;
-		if (pds_type_next_flags & UET_SEC_SP_MASK) {
-			sec_ssi = (struct uet_sec_ssi *)pds_prlg;
-			pp->sec_an = !!(ntohl(sec_ssi->an_sdi) &
-					UET_SEC_AN_MASK);
-			pp->sec_sdi = (ntohl(sec_ssi->an_sdi) &
-				       UET_SEC_SDI_MASK);
+		sec = (struct uet_sec *)pds_prlg;
+		sec_type_flags_sdi = ntohl(sec->type_flags_sdi);
+		pp->sec_an = !!(sec_type_flags_sdi & UET_SEC_AN_MASK);
+		pp->sec_sdi = (sec_type_flags_sdi & UET_SEC_SDI_MASK);
+		if (sec_type_flags_sdi & UET_SEC_SP_MASK) {
+			sec_ssi = (struct uet_sec_ssi *)sec;
 			pp->sec_ssi_valid = true;
 			pp->sec_ssi = ntohl(sec_ssi->ssi);
-			pp->sec_tsc = ntohll(sec_ssi->tsc);
+			pp->sec_tsc = ntohll(sec_ssi->epoch_tsc);
 			pp->sec_len = sizeof(struct uet_sec_ssi);
 		} else {
-			sec = (struct uet_sec *)pds_prlg;
-			pp->sec_an = !!(ntohl(sec->an_sdi) &
-					UET_SEC_AN_MASK);
-			pp->sec_sdi = (ntohl(sec->an_sdi) &
-				       UET_SEC_SDI_MASK);
 			pp->sec_ssi_valid = false;
-			pp->sec_tsc = ntohll(sec->tsc);
+			pp->sec_tsc = ntohll(sec->epoch_tsc);
 			pp->sec_len = sizeof(struct uet_sec);
 		}
+		pp->sec_epoch = (uint16_t)((pp->sec_tsc &
+					    UET_SEC_EPOCH_MASK) >>
+					   UET_SEC_EPOCH_SHIFT);
+		pp->sec_tsc = ((pp->sec_tsc & UET_SEC_TSC_MASK) >>
+			       UET_SEC_TSC_SHIFT);
 		cur_len += pp->sec_len;
 		p = ((uint8_t *) pkt) + cur_len;
 		pds_prlg = (struct uet_pds_prlg *) p;
@@ -1204,3 +1215,4 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 err_exit:
 	return -FI_EINVAL;
 }
+
