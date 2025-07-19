@@ -17,7 +17,7 @@
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
 #include "uet_api_private.h"
-#include "crc64.h"
+#include "crc32c.h"
 
 /* get current time in milliseconds */
 int uet_gettime(time_t *time_ms)
@@ -599,7 +599,7 @@ void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 	ipv4->version = IPVERSION;
 	ipv4->ihl = UET_IPV4_IHL_NO_OPTIONS;
 	ipv4->tos = tos;
-	ipv4->tot_len = htons(tot_len + (crc_en ? CRC64_LEN : 0));
+	ipv4->tot_len = htons(tot_len + (crc_en ? CRC_LEN : 0));
 	ipv4->id = 0;
 	ipv4->frag_off = htons(UET_IPV4_FRAG_OFF_DF);
 	ipv4->ttl = IPDEFTTL;
@@ -1040,6 +1040,9 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			       UET_PDS_TYPE_SHIFT;
 		pp->trailer_len = UET_SEC_ICV_SIZE;
+	} else {
+		/* CRC is auto enabled when security is not used */
+		pp->trailer_len = CRC_LEN;
 	}
 
 	/* parse pds header */
@@ -1057,8 +1060,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_req->spdcid);
 		pp->pds_clear_psn = ((int16_t)ntohs(pds_req->clear_psn_offset) +
 				     pp->pds_psn);
-		if (pp->pds_flags & UET_PDS_REQ_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
 			pp->pds_syn_off = ((ntohs(pds_req->pdc_info_psn_offset) &
 					    UET_PDS_REQ_PSN_OFFSET_MASK) >>
@@ -1079,8 +1080,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			       pp->pds_cack_psn);
 		pp->pds_spdcid = ntohs(pds_ack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
-		if (pp->pds_flags & UET_PDS_ACK_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		break;
 	/* TODO: support for parsing the two extended ACK headers */
 	case UET_PDS_TYPE_NACK:
@@ -1099,8 +1098,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
-		if (pp->pds_flags & UET_PDS_RUDI_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		/* TODO: support for parsing RUDI */
 	default:
 		goto err_exit;
