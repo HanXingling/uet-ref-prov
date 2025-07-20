@@ -405,13 +405,13 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			  UET_SES_REQ_RES_INDEX_MASK) >>
 			 UET_SES_REQ_RES_INDEX_SHIFT);
 		printf("    SES Index:            %u\n", index);
-		job_id = ((ntohl(ses_req_std->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_req_std->cmn.ri_gen_job_id) &
 			   UET_SES_REQ_JOB_ID_MASK) >>
 			  UET_SES_REQ_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
-		gen = (uint8_t)((ntohl(ses_req_std->cmn.index_gen_job_id) &
-				 UET_SES_REQ_INDEX_GEN_MASK) >>
-				UET_SES_REQ_INDEX_GEN_SHIFT);
+		gen = (uint8_t)((ntohl(ses_req_std->cmn.ri_gen_job_id) &
+				 UET_SES_REQ_RI_GEN_MASK) >>
+				UET_SES_REQ_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
 		pid_on_fep = ((ntohl(ses_req_std->cmn.rsvd_pid_on_fep) &
 			       UET_SES_REQ_PID_ON_FEP_MASK) >>
@@ -467,11 +467,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		      UET_SES_RSP_RET_CODE_SHIFT);
 		printf("    SES Return Code:      %u (%s)\n",
 		       rc, uet_ses_rc_to_str(rc));
-		gen = (uint8_t)((ntohl(ses_rsp->cmn.index_gen_job_id) &
-				 UET_SES_RSP_INDEX_GEN_MASK) >>
-				UET_SES_RSP_INDEX_GEN_SHIFT);
+		gen = (uint8_t)((ntohl(ses_rsp->cmn.ri_gen_job_id) &
+				 UET_SES_RSP_RI_GEN_MASK) >>
+				UET_SES_RSP_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
-		job_id = ((ntohl(ses_rsp->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_rsp->cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
@@ -497,11 +497,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		      UET_SES_RSP_RET_CODE_SHIFT);
 		printf("    SES Return Code:      %u\n", rc);
 		gen = (uint8_t)
-			((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
-			  UET_SES_RSP_INDEX_GEN_MASK) >>
-			 UET_SES_RSP_INDEX_GEN_SHIFT);
+			((ntohl(ses_rsp_d->cmn.ri_gen_job_id) &
+			  UET_SES_RSP_RI_GEN_MASK) >>
+			 UET_SES_RSP_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
-		job_id = ((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_rsp_d->cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);

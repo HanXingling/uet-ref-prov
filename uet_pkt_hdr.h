@@ -82,6 +82,8 @@ struct UET_PACKED uet_entropy {
 /*                              SECURITY                                    */
 /****************************************************************************/
 
+#define UET_SEC_ICV_SIZE 16
+
 /* uet security header (w/o the ssi) */
 struct UET_PACKED uet_sec {
 #define UET_SEC_TYPE_MASK  0xf8000000 /* set to UET_PDS_TYPE_SECURITY */
@@ -394,8 +396,6 @@ struct UET_PACKED uet_pds_def_rsp {
 /*                              SEMANTIC (SES)                              */
 /****************************************************************************/
 
-#define UET_SEC_ICV_SIZE	16	/* in bytes */
-
 /* uet ses request opcodes */
 typedef enum {
 	UET_NO_OP              = 0x00,
@@ -441,11 +441,11 @@ struct UET_PACKED uet_ses_req_cmn {
 #define UET_SES_REQ_LEN_SHIFT 0
 		uint16_t rsvd_req_len; /* UET_HDR_REQ_[SMALL|MEDIUM] */
 	};
-#define UET_SES_REQ_INDEX_GEN_MASK  0xff000000
-#define UET_SES_REQ_INDEX_GEN_SHIFT 24
-#define UET_SES_REQ_JOB_ID_MASK     0x00ffffff
-#define UET_SES_REQ_JOB_ID_SHIFT    0
-	uint32_t index_gen_job_id;
+#define UET_SES_REQ_RI_GEN_MASK  0xff000000
+#define UET_SES_REQ_RI_GEN_SHIFT 24
+#define UET_SES_REQ_JOB_ID_MASK  0x00ffffff
+#define UET_SES_REQ_JOB_ID_SHIFT 0
+	uint32_t ri_gen_job_id;
 #define UET_SES_REQ_PID_ON_FEP_MASK  0x0fff
 #define UET_SES_REQ_PID_ON_FEP_SHIFT 0
 	uint16_t rsvd_pid_on_fep;
@@ -469,18 +469,18 @@ struct UET_PACKED uet_ses_req_std {
 	union {
 		uint64_t mem_key;
 		uint64_t match_bits;
-#define UET_SES_REQ_STD_TGT_TOKEN_MASK  0x00000000ffffffffULL
-#define UET_SES_REQ_STD_TGT_TOKEN_SHIFT 0
 #define UET_SES_REQ_STD_INI_TOKEN_MASK  0xffffffff00000000ULL
 #define UET_SES_REQ_STD_INI_TOKEN_SHIFT 32
+#define UET_SES_REQ_STD_TGT_TOKEN_MASK  0x00000000ffffffffULL
+#define UET_SES_REQ_STD_TGT_TOKEN_SHIFT 0
 		uint64_t restart_token_rtr; /* valid for UET_DEFER_RTR */
 	};
 	union { /* header data valid if UET_SES_REQ_FLAG_HD */
 		uint64_t cmpl_data; /* if UET_SES_REQ_FLAG_SOM */
-#define UET_SES_REQ_STD_MSG_OFF_MASK      0x00000000ffffffffULL
-#define UET_SES_REQ_STD_MSG_OFF_SHIFT     0
 #define UET_SES_REQ_STD_PAYLOAD_LEN_MASK  0x00003fff00000000ULL
 #define UET_SES_REQ_STD_PAYLOAD_LEN_SHIFT 32
+#define UET_SES_REQ_STD_MSG_OFF_MASK      0x00000000ffffffffULL
+#define UET_SES_REQ_STD_MSG_OFF_SHIFT     0
 		uint64_t payload_len_msg_off;
 	};
 	uint32_t req_len;
@@ -509,13 +509,13 @@ struct UET_PACKED uet_ses_req_smsg {
 /* uet ses rendezvous extension header */
 struct UET_PACKED uet_ses_rndv_ext {
 	uint32_t eager_len;
-#define UET_SES_RNDV_RD_GEN_MASK         0xff000000
-#define UET_SES_RNDV_RD_GEN_SHIFT        24
+#define UET_SES_RNDV_RD_RI_GEN_MASK         0xff000000
+#define UET_SES_RNDV_RD_RI_GEN_SHIFT        24
 #define UET_SES_RNDV_RD_PID_ON_FEP_MASK  0x00fff000
 #define UET_SES_RNDV_RD_PID_ON_FEP_SHIFT 12
 #define UET_SES_RNDV_RD_RES_INDEX_MASK   0x00000fff
 #define UET_SES_RNDV_RD_RES_INDEX_SHIFT  0
-	uint32_t rd_gen_pid_on_fep_res_index;
+	uint32_t rd_ri_gen_pid_on_fep_res_index;
 	uint64_t rd_offset;
 	uint64_t rd_mem_key;
 };
@@ -584,14 +584,6 @@ struct UET_PACKED uet_ses_atomic_cmpswp_ext {
 	uint64_t swp_val_lo;
 };
 
-/* uet ses inc output extension header */
-struct UET_PACKED uet_ses_inc_output_ext {
-	uint32_t write_len;
-	uint32_t rsvd;
-	uint64_t write_off;
-	uint64_t write_mem_key;
-};
-
 /* uet ses response opcodes */
 typedef enum {
 	UET_DEFAULT_RESPONSE = 0x00,
@@ -639,6 +631,7 @@ typedef enum {
 	UET_RC_TOO_LONG             = 0x22,
 	UET_RC_INITIATOR_ERR        = 0x23,
 	UET_RC_DROPPED              = 0x24,
+	UET_RC_DEFER_SEND           = 0xff  /* internal use */
 } uet_ses_rc_t;
 
 typedef enum {
@@ -662,11 +655,11 @@ struct UET_PACKED uet_ses_rsp_cmn {
 #define UET_SES_RSP_DS_PAYLOAD_LEN_SHIFT 0
 		uint16_t rsvd_payload_len; /* valid for UET_HDR_RSP_DATA_SMALL*/
 	};
-#define UET_SES_RSP_INDEX_GEN_MASK  0xff000000 /* valid for UET_HDR_RSP */
-#define UET_SES_RSP_INDEX_GEN_SHIFT 24
-#define UET_SES_RSP_JOB_ID_MASK     0x00ffffff
-#define UET_SES_RSP_JOB_ID_SHIFT    0
-	uint32_t index_gen_job_id;
+#define UET_SES_RSP_RI_GEN_MASK  0xff000000 /* valid for UET_HDR_RSP */
+#define UET_SES_RSP_RI_GEN_SHIFT 24
+#define UET_SES_RSP_JOB_ID_MASK  0x00ffffff
+#define UET_SES_RSP_JOB_ID_SHIFT 0
+	uint32_t ri_gen_job_id;
 };
 
 /* uet ses response header (UET_HDR_RSP) */
@@ -707,11 +700,11 @@ struct UET_PACKED uet_ses_rsp_ds {
 /* get job id from standard request packet */
 static inline uint32_t uet_get_std_req_job_id(struct uet_ses_req_std *ses)
 {
-	uint32_t index_gen_job_id;
+	uint32_t ri_gen_job_id;
 
-	index_gen_job_id = ntohl(ses->cmn.index_gen_job_id);
+	ri_gen_job_id = ntohl(ses->cmn.ri_gen_job_id);
 
-	return ((index_gen_job_id & UET_SES_REQ_JOB_ID_MASK) <<
+	return ((ri_gen_job_id & UET_SES_REQ_JOB_ID_MASK) <<
 		UET_SES_REQ_JOB_ID_SHIFT);
 }
 

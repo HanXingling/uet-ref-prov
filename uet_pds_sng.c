@@ -185,7 +185,7 @@ static bool uet_pds_ep_addr_match(
 		if (!pds_state->tx.tx_active)
 			return false;
 
-		job_id = ((ntohl(pkt->std_rsp.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_rsp.ses.cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -197,7 +197,7 @@ static bool uet_pds_ep_addr_match(
 			return false;
 		match_info->msg_id_match = true;
 	} else if (pkt_is_rd_rsp) {
-		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -215,7 +215,7 @@ static bool uet_pds_ep_addr_match(
 			return false;
 		match_info->msg_id_match = true;
 	} else {
-		job_id = ((ntohl(pkt->std_req.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_req.ses.cmn.ri_gen_job_id) &
 			   UET_SES_REQ_JOB_ID_MASK) >>
 			  UET_SES_REQ_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -473,7 +473,7 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 				(ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
 	ses.cmn.msg_id = pkt->std_req.ses.cmn.msg_id;
 	ses.mod_len = 0;
-	ses.cmn.index_gen_job_id = pkt->std_req.ses.cmn.index_gen_job_id;
+	ses.cmn.ri_gen_job_id = pkt->std_req.ses.cmn.ri_gen_job_id;
 
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, (union uet_pkt *) ack, ack_pkt_len,
