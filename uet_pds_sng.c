@@ -113,7 +113,7 @@ struct uet_pds_sng_tx_state {
 		bool pds_info_valid;
 		struct uet_pds_info pds_info;
 		uint16_t msg_id;
-		uet_next_hdr_t next_hdr;
+		uet_pds_next_hdr_t next_hdr;
 		void *pkt;
 		size_t pkt_len;
 		bool dma_rdy;
@@ -335,8 +335,8 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
  */
 static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 				  union uet_pkt *ack, uint16_t ack_pkt_len,
-				  uet_next_hdr_t next_hdr, size_t ses_hdr_len,
-				  void *ses_hdr)
+				  uet_pds_next_hdr_t next_hdr,
+				  size_t ses_hdr_len, void *ses_hdr)
 {
 	uint16_t tot_len;
 	void *ack_ses;
@@ -385,7 +385,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
  *      negative value corresponding to fabric errno on error
  */
 static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
-			      uet_next_hdr_t next_hdr, size_t ses_hdr_len,
+			      uet_pds_next_hdr_t next_hdr, size_t ses_hdr_len,
 			      void *ses_hdr)
 {
 	int rc;
@@ -549,7 +549,7 @@ void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		       uet_pds_tx_flags_t flags, struct uet_pds_info *pds_info,
-		       uint16_t msg_id, uet_next_hdr_t next_hdr, void *ses,
+		       uint16_t msg_id, uet_pds_next_hdr_t next_hdr, void *ses,
 		       size_t ses_len, void *pkt, size_t pkt_len, bool dma_rdy)
 {
 	int rc;
@@ -794,7 +794,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	struct uet_pds_info pds_info;
 	void *rsp_ses_hdr;
 	size_t rsp_ses_hdr_len;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	struct uet_pds_sng_state *pds_state;
 
 	/* check if packet is available */

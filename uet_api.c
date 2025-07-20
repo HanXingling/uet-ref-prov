@@ -2552,7 +2552,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				 struct uet_instance *uet,
 				 struct uet_parsed_pkt *pp,
 				 struct uet_pds_info *pds_info,
-				 uet_next_hdr_t *rsp_next_hdr,
+				 uet_pds_next_hdr_t *rsp_next_hdr,
 				 void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
 				 bool *ses_nack, bool *gtd_del)
 {
@@ -3325,7 +3325,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	uet_pds_tx_flags_t flags;
 	size_t payload_len, max_payload_len, ses_len, pkt_len;
 	void *ses, *pkt_buf;
-	uet_next_hdr_t next_hdr;
+	uet_pds_next_hdr_t next_hdr;
 	struct uet_pds_info *pds_info;
 	size_t iov_index = 0;
 	size_t saved_offset = 0;

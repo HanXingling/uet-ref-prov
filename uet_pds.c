@@ -863,7 +863,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		   uet_pds_tx_flags_t flags,
 		   struct uet_pds_info *pds_info,
 		   uint16_t msg_id,
-		   uet_next_hdr_t next_hdr,
+		   uet_pds_next_hdr_t next_hdr,
 		   void *ses,
 		   size_t ses_len,
 		   void *pkt,
@@ -1239,7 +1239,7 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 				  struct uet_pdc *pdc,
 				  struct uet_pdc_pkt *pdc_pkt,
-				  uet_next_hdr_t next_hdr,
+				  uet_pds_next_hdr_t next_hdr,
 				  void *ses_hdr,
 				  size_t ses_hdr_len)
 {
@@ -1296,7 +1296,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 			      struct uet_pdc *pdc,
 			      struct uet_pdc_pkt *pdc_pkt,
-			      uet_next_hdr_t next_hdr,
+			      uet_pds_next_hdr_t next_hdr,
 			      size_t ses_hdr_len,
 			      void *ses_hdr,
 			      bool gtd_del)
@@ -1534,7 +1534,7 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				     struct uet_pdc_pkt *pdc_pkt)
 {
 	struct uet_pds_info pds_info;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	void *rsp_ses_hdr;
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del;
@@ -2023,7 +2023,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
 	struct uet_pds_info pds_info;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	void *rsp_ses_hdr = NULL;
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del, rtx;

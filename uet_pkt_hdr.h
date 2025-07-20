@@ -121,14 +121,13 @@ typedef enum {
 	UET_HDR_RSP            = 0x4, /* SES response header */
 	UET_HDR_RSP_DATA       = 0x5, /* SES response header with data */
 	UET_HDR_RSP_DATA_SMALL = 0x6, /* SES tiny response header with data */
-} uet_next_hdr_t;
-// FIXME rename to uet_pds_next_hdr_t
+} uet_pds_next_hdr_t;
 
 /* uet pds prologue header */
 struct UET_PACKED uet_pds_prlg {
 #define UET_PDS_TYPE_MASK       0xf800
 #define UET_PDS_TYPE_SHIFT      11
-#define UET_PDS_NEXT_HDR_MASK   0x0780 /* uet_next_hdr_t */
+#define UET_PDS_NEXT_HDR_MASK   0x0780 /* uet_pds_next_hdr_t */
 #define UET_PDS_NEXT_HDR_SHIFT  7
 #define UET_PDS_CTRL_TYPE_MASK  UET_PDS_NEXT_HDR_MASK /* uet_pds_ctrl_type_t */
 #define UET_PDS_CTRL_TYPE_SHIFT UET_PDS_NEXT_HDR_SHIFT
@@ -415,7 +414,6 @@ typedef enum {
 	UET_TSEND_ATOMIC       = 0x0d,
 	UET_TSEND_FETCH_ATOMIC = 0x0e,
 	UET_MSG_ERR            = 0x0f,
-	UET_INC_PUH            = 0x10,
 } uet_ses_req_opcode_t;
 
 #define UET_SES_OPCODE_MASK	0x3f
@@ -600,7 +598,6 @@ typedef enum {
 	UET_RESPONSE         = 0x01,
 	UET_RESPONSE_W_DATA  = 0x02,
 	UET_NO_RESPONSE      = 0x03,
-	UET_INC_ERR_RESPONSE = 0x04,
 } uet_ses_rsp_opcode_t;
 
 /* uet ses return codes */
@@ -642,7 +639,6 @@ typedef enum {
 	UET_RC_TOO_LONG             = 0x22,
 	UET_RC_INITIATOR_ERR        = 0x23,
 	UET_RC_DROPPED              = 0x24,
-	UET_RC_DEFER_SEND           = 0xff  /* internal use */
 } uet_ses_rc_t;
 
 typedef enum {
