@@ -272,10 +272,12 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 		new_pkt_len = *pkt_len;
 
-		/* calculate the CRC */
-		crc = crc32c(pp->pds, (pp->pkt_len -
-				       ((uint8_t *)pp->pds -
-					(uint8_t *)pp->eth)));
+		/* calculate the CRC (include src/dst IP and UDP) */
+		/* TODO: IPv6 support */
+		crc = crc32c(((uint8_t *)pp->ip + 12),
+			     (pp->pkt_len -
+			      ((uint8_t *)pp->pds -
+			       (uint8_t *)pp->eth)));
 
 		/* append the CRC and adjust the transmit length */
 		memcpy((*pkt + *pkt_len), &crc, CRC_LEN);
@@ -2051,10 +2053,12 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	}
 
 	if (!pp.sec) {
-		/* calculate the CRC */
-		crc = crc32c(pp.pds, (pp.pkt_len - CRC_LEN -
-				      ((uint8_t *)pp.pds -
-				       (uint8_t *)pp.eth)));
+		/* calculate the CRC (include src/dst IP and UDP) */
+		/* TODO: IPv6 support */
+		crc = crc32c(((uint8_t *)pp.ip + 12),
+			     (pp.pkt_len - CRC_LEN -
+			      ((uint8_t *)pp.pds -
+			       (uint8_t *)pp.eth)));
 
 		/* verify the CRC */
 		if (memcmp(&crc, (pkt + pkt_len - CRC_LEN), CRC_LEN) != 0) {
