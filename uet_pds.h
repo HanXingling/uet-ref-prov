@@ -155,7 +155,7 @@ struct uet_ses_to_pds_funcs {
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		      uet_pds_tx_flags_t flags,
 		      struct uet_pds_info *pds_info, uint16_t msg_id,
-		      uet_next_hdr_t next_hdr, void *ses, size_t ses_len,
+		      uet_pds_next_hdr_t next_hdr, void *ses, size_t ses_len,
 		      void *pkt, size_t pkt_len, bool dma_rdy);
 
 	/*
@@ -256,7 +256,7 @@ struct uet_pds_to_ses_funcs {
 	 */
 	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_instance *uet,
 		      struct uet_parsed_pkt *pp, struct uet_pds_info *pds_info,
-		      uet_next_hdr_t *rsp_next_hdr, void *rsp_ses_hdr,
+		      uet_pds_next_hdr_t *rsp_next_hdr, void *rsp_ses_hdr,
 		      size_t *rsp_ses_hdr_len, bool *ses_nack, bool *gtd_del);
 
 	/*

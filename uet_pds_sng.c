@@ -16,6 +16,7 @@
 #include "uet_api_private.h"
 #include "uet_pkt_chk.h"
 #include "uet_nic.h"
+#include "crc32c.h"
 
 /****************************************************************************/
 /*                      FULL HEADER STACKS (UTILITY)                        */
@@ -113,7 +114,7 @@ struct uet_pds_sng_tx_state {
 		bool pds_info_valid;
 		struct uet_pds_info pds_info;
 		uint16_t msg_id;
-		uet_next_hdr_t next_hdr;
+		uet_pds_next_hdr_t next_hdr;
 		void *pkt;
 		size_t pkt_len;
 		bool dma_rdy;
@@ -185,7 +186,7 @@ static bool uet_pds_ep_addr_match(
 		if (!pds_state->tx.tx_active)
 			return false;
 
-		job_id = ((ntohl(pkt->std_rsp.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_rsp.ses.cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -197,7 +198,7 @@ static bool uet_pds_ep_addr_match(
 			return false;
 		match_info->msg_id_match = true;
 	} else if (pkt_is_rd_rsp) {
-		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_rsp_d.ses.cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -215,7 +216,7 @@ static bool uet_pds_ep_addr_match(
 			return false;
 		match_info->msg_id_match = true;
 	} else {
-		job_id = ((ntohl(pkt->std_req.ses.cmn.index_gen_job_id) &
+		job_id = ((ntohl(pkt->std_req.ses.cmn.ri_gen_job_id) &
 			   UET_SES_REQ_JOB_ID_MASK) >>
 			  UET_SES_REQ_JOB_ID_SHIFT);
 		if (job_id != uet_ep->job_id)
@@ -335,8 +336,8 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, union uet_pkt *pkt,
  */
 static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 				  union uet_pkt *ack, uint16_t ack_pkt_len,
-				  uet_next_hdr_t next_hdr, size_t ses_hdr_len,
-				  void *ses_hdr)
+				  uet_pds_next_hdr_t next_hdr,
+				  size_t ses_hdr_len, void *ses_hdr)
 {
 	uint16_t tot_len;
 	void *ack_ses;
@@ -355,7 +356,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 	tot_len = ack_pkt_len - ((uint16_t) uet->nic.l2_hdr_size);
 	uet_build_ipv4_hdr(uet, &ack->common.ipv4, pkt->common.ipv4.saddr,
 			   pkt->common.ipv4.daddr, tot_len,
-			   uet->pds.ack_ip_tos, false);
+			   uet->pds.ack_ip_tos, true);
 
 	ack->common.pds.prlg.type_next_flags = htons(
 		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
@@ -385,7 +386,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
  *      negative value corresponding to fabric errno on error
  */
 static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
-			      uet_next_hdr_t next_hdr, size_t ses_hdr_len,
+			      uet_pds_next_hdr_t next_hdr, size_t ses_hdr_len,
 			      void *ses_hdr)
 {
 	int rc;
@@ -396,6 +397,8 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
 	union uet_pkt *ack;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	uet = uet_ep->uet_domain->uet;
 
@@ -419,6 +422,17 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, ack, ack_pkt_len, next_hdr,
 			      ses_hdr_len, ses_hdr);
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&ack->common.ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (ack_pkt_len -
+		      (crc_start - (uint8_t *)&ack->common.eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)ack + ack_pkt_len), &crc, CRC_LEN);
+	ack_pkt_len += CRC_LEN;
 
 	/* send ack packet */
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, ack, ack_pkt_len, "TX ACK PACKET");
@@ -456,6 +470,8 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	uint16_t ack_pkt_len;
 	struct uet_std_rsp_pkt *ack;
 	struct uet_ses_rsp ses;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
 
@@ -473,11 +489,22 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 				(ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
 	ses.cmn.msg_id = pkt->std_req.ses.cmn.msg_id;
 	ses.mod_len = 0;
-	ses.cmn.index_gen_job_id = pkt->std_req.ses.cmn.index_gen_job_id;
+	ses.cmn.ri_gen_job_id = pkt->std_req.ses.cmn.ri_gen_job_id;
 
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, (union uet_pkt *) ack, ack_pkt_len,
 			      UET_HDR_RSP, sizeof(struct uet_ses_rsp), &ses);
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&ack->ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (ack_pkt_len -
+		      (crc_start - (uint8_t *)&ack->eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)ack + ack_pkt_len), &crc, CRC_LEN);
+	ack_pkt_len += CRC_LEN;
 
 	/* send ack packet */
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, (union uet_pkt *) ack, ack_pkt_len,
@@ -549,7 +576,7 @@ void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		       uet_pds_tx_flags_t flags, struct uet_pds_info *pds_info,
-		       uint16_t msg_id, uet_next_hdr_t next_hdr, void *ses,
+		       uint16_t msg_id, uet_pds_next_hdr_t next_hdr, void *ses,
 		       size_t ses_len, void *pkt, size_t pkt_len, bool dma_rdy)
 {
 	int rc;
@@ -567,6 +594,8 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	struct uet_pds_hdr_overlay *pds_overlay;
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
@@ -645,7 +674,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	};
 
 	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
-			   htonl(uet_ep->ipv4_addr), tot_len, tos, false);
+			   htonl(uet_ep->ipv4_addr), tot_len, tos, true);
 
 	if (!(flags & UET_PDS_FLAG_RETRANSMIT)) {
 		memcpy(state->pkt_parms.ses_hdr, ses, ses_len);
@@ -675,6 +704,17 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	state->pkt_parms.pkt = pkt;
 	state->pkt_parms.pkt_len = pkt_len;
 	state->pkt_parms.dma_rdy = dma_rdy;
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&uet_pkt->common.ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (uet_pkt_len -
+		      (crc_start - (uint8_t *)&uet_pkt->common.eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)uet_pkt + uet_pkt_len), &crc, CRC_LEN);
+	uet_pkt_len += CRC_LEN;
 
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, uet_pkt, uet_pkt_len, "TX PACKET");
 	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, &uet_pkt->common.ipv4,
@@ -794,7 +834,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	struct uet_pds_info pds_info;
 	void *rsp_ses_hdr;
 	size_t rsp_ses_hdr_len;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	struct uet_pds_sng_state *pds_state;
 
 	/* check if packet is available */
@@ -909,7 +949,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 				UET_NIC(uet),
 				ack_state->ack,
 				&((union uet_pkt *)ack_state->ack)->common.ipv4,
-				ack_state->ack_len);
+				(ack_state->ack_len + CRC_LEN));
 			goto exit;
 		}
 

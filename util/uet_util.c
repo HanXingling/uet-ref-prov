@@ -17,7 +17,8 @@
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
 #include "uet_api_private.h"
-#include "crc64.h"
+#include "uet_sec.h"
+#include "crc32c.h"
 
 /* get current time in milliseconds */
 int uet_gettime(time_t *time_ms)
@@ -405,13 +406,13 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 			  UET_SES_REQ_RES_INDEX_MASK) >>
 			 UET_SES_REQ_RES_INDEX_SHIFT);
 		printf("    SES Index:            %u\n", index);
-		job_id = ((ntohl(ses_req_std->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_req_std->cmn.ri_gen_job_id) &
 			   UET_SES_REQ_JOB_ID_MASK) >>
 			  UET_SES_REQ_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
-		gen = (uint8_t)((ntohl(ses_req_std->cmn.index_gen_job_id) &
-				 UET_SES_REQ_INDEX_GEN_MASK) >>
-				UET_SES_REQ_INDEX_GEN_SHIFT);
+		gen = (uint8_t)((ntohl(ses_req_std->cmn.ri_gen_job_id) &
+				 UET_SES_REQ_RI_GEN_MASK) >>
+				UET_SES_REQ_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
 		pid_on_fep = ((ntohl(ses_req_std->cmn.rsvd_pid_on_fep) &
 			       UET_SES_REQ_PID_ON_FEP_MASK) >>
@@ -467,11 +468,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		      UET_SES_RSP_RET_CODE_SHIFT);
 		printf("    SES Return Code:      %u (%s)\n",
 		       rc, uet_ses_rc_to_str(rc));
-		gen = (uint8_t)((ntohl(ses_rsp->cmn.index_gen_job_id) &
-				 UET_SES_RSP_INDEX_GEN_MASK) >>
-				UET_SES_RSP_INDEX_GEN_SHIFT);
+		gen = (uint8_t)((ntohl(ses_rsp->cmn.ri_gen_job_id) &
+				 UET_SES_RSP_RI_GEN_MASK) >>
+				UET_SES_RSP_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
-		job_id = ((ntohl(ses_rsp->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_rsp->cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
@@ -497,11 +498,11 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		      UET_SES_RSP_RET_CODE_SHIFT);
 		printf("    SES Return Code:      %u\n", rc);
 		gen = (uint8_t)
-			((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
-			  UET_SES_RSP_INDEX_GEN_MASK) >>
-			 UET_SES_RSP_INDEX_GEN_SHIFT);
+			((ntohl(ses_rsp_d->cmn.ri_gen_job_id) &
+			  UET_SES_RSP_RI_GEN_MASK) >>
+			 UET_SES_RSP_RI_GEN_SHIFT);
 		printf("    SES Generation:       %u\n", gen);
-		job_id = ((ntohl(ses_rsp_d->cmn.index_gen_job_id) &
+		job_id = ((ntohl(ses_rsp_d->cmn.ri_gen_job_id) &
 			   UET_SES_RSP_JOB_ID_MASK) >>
 			  UET_SES_RSP_JOB_ID_SHIFT);
 		printf("    SES Job ID:           %u\n", job_id);
@@ -599,13 +600,27 @@ void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 	ipv4->version = IPVERSION;
 	ipv4->ihl = UET_IPV4_IHL_NO_OPTIONS;
 	ipv4->tos = tos;
-	ipv4->tot_len = htons(tot_len + (crc_en ? CRC64_LEN : 0));
+	ipv4->tot_len = htons(tot_len + (crc_en ? CRC_LEN : 0));
 	ipv4->id = 0;
 	ipv4->frag_off = htons(UET_IPV4_FRAG_OFF_DF);
 	ipv4->ttl = IPDEFTTL;
 	ipv4->protocol = uet->uet_ipproto;
 	ipv4->saddr = sip;
 	ipv4->daddr = dip;
+	ipv4->check = 0;
+	ipv4->check = uet_ipv4_csum(ipv4);
+}
+
+/*
+ * update ipv4 total length and checksum fields
+ *
+ * parms:
+ *      ipv4    - ptr to location where ipv4 header is located
+ *      tot_len - value for total length field of ipv4 header
+ */
+void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len)
+{
+	ipv4->tot_len = htons(tot_len);
 	ipv4->check = 0;
 	ipv4->check = uet_ipv4_csum(ipv4);
 }
@@ -1039,7 +1054,10 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			       UET_PDS_TYPE_SHIFT;
-		pp->trailer_len = UET_SEC_ICV_SIZE;
+		pp->trailer_len = UET_SEC_TAG_LEN;
+	} else {
+		/* CRC is auto enabled when security is not used */
+		pp->trailer_len = CRC_LEN;
 	}
 
 	/* parse pds header */
@@ -1057,8 +1075,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_req->spdcid);
 		pp->pds_clear_psn = ((int16_t)ntohs(pds_req->clear_psn_offset) +
 				     pp->pds_psn);
-		if (pp->pds_flags & UET_PDS_REQ_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
 			pp->pds_syn_off = ((ntohs(pds_req->pdc_info_psn_offset) &
 					    UET_PDS_REQ_PSN_OFFSET_MASK) >>
@@ -1079,8 +1095,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			       pp->pds_cack_psn);
 		pp->pds_spdcid = ntohs(pds_ack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
-		if (pp->pds_flags & UET_PDS_ACK_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		break;
 	/* TODO: support for parsing the two extended ACK headers */
 	case UET_PDS_TYPE_NACK:
@@ -1099,8 +1113,6 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
-		if (pp->pds_flags & UET_PDS_RUDI_FLAGS_CRC)
-			pp->trailer_len = CRC64_LEN;
 		/* TODO: support for parsing RUDI */
 	default:
 		goto err_exit;

@@ -1897,9 +1897,9 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	}
 
 	/* check for correct generation */
-	rx_gen = (uint32_t)((ntohl(ses->cmn.index_gen_job_id) &
-			     UET_SES_REQ_INDEX_GEN_MASK) >>
-			    UET_SES_REQ_INDEX_GEN_SHIFT);
+	rx_gen = (uint32_t)((ntohl(ses->cmn.ri_gen_job_id) &
+			     UET_SES_REQ_RI_GEN_MASK) >>
+			    UET_SES_REQ_RI_GEN_SHIFT);
 	ep_gen = (uint32_t) uet_ep->untagged_gen;
 	if (rx_gen != ep_gen) {
 		UET_API_ERR("RX: Read Req: Bad Generation");
@@ -2213,9 +2213,9 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		}
 
 		/* check for correct generation */
-		rx_gen = (uint32_t)((ntohl(ses->cmn.index_gen_job_id) &
-				     UET_SES_REQ_INDEX_GEN_MASK) >>
-				    UET_SES_REQ_INDEX_GEN_SHIFT);
+		rx_gen = (uint32_t)((ntohl(ses->cmn.ri_gen_job_id) &
+				     UET_SES_REQ_RI_GEN_MASK) >>
+				    UET_SES_REQ_RI_GEN_SHIFT);
 		if (rx_gen != ep_gen) {
 			UET_API_ERR("RX: Bad Generation");
 			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
@@ -2552,7 +2552,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				 struct uet_instance *uet,
 				 struct uet_parsed_pkt *pp,
 				 struct uet_pds_info *pds_info,
-				 uet_next_hdr_t *rsp_next_hdr,
+				 uet_pds_next_hdr_t *rsp_next_hdr,
 				 void *rsp_ses_hdr, size_t *rsp_ses_hdr_len,
 				 bool *ses_nack, bool *gtd_del)
 {
@@ -2581,7 +2581,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	ep_gen = 0;
 
 	ses_rsp->cmn.msg_id = ses_std_req->cmn.msg_id;
-	ses_rsp->cmn.index_gen_job_id = ses_std_req->cmn.index_gen_job_id;
+	ses_rsp->cmn.ri_gen_job_id = ses_std_req->cmn.ri_gen_job_id;
 
 	switch (pp->next_hdr) {
 	case UET_HDR_REQ_STD:
@@ -2615,7 +2615,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 			goto build_response;
 		}
 		uet_ep = rx_desc->uet_ep;
-		job_id = (ntohl(rx_ses_rsp_d->cmn.index_gen_job_id) &
+		job_id = (ntohl(rx_ses_rsp_d->cmn.ri_gen_job_id) &
 			  UET_SES_RSP_JOB_ID_MASK) >> UET_SES_RSP_JOB_ID_SHIFT;
 		if (uet_ep->job_id != job_id) {
 			UET_API_ERR("RX: Bad Job ID");
@@ -2690,8 +2690,8 @@ build_response:
 				     (ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
 	if (ses_rc == UET_RC_BAD_GENERATION) {
 		/* return correct generation */
-		gen = (ep_gen << UET_SES_RSP_INDEX_GEN_SHIFT);
-		ses_rsp->cmn.index_gen_job_id = htonl(gen | job_id);
+		gen = (ep_gen << UET_SES_RSP_RI_GEN_SHIFT);
+		ses_rsp->cmn.ri_gen_job_id = htonl(gen | job_id);
 	}
 
 	*rsp_ses_hdr_len = sizeof(struct uet_ses_rsp);
@@ -2753,8 +2753,8 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 	ses->cmn.ver_ret_code = ((UET_SES_VER << UET_SES_VER_SHIFT) |
 				 (ses_rc << UET_SES_RSP_RET_CODE_SHIFT));
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
-	ses->cmn.index_gen_job_id = htonl(tx_desc->job_id <<
-					  UET_SES_RSP_JOB_ID_SHIFT);
+	ses->cmn.ri_gen_job_id = htonl(tx_desc->job_id <<
+				       UET_SES_RSP_JOB_ID_SHIFT);
 	ses->rd_msg_id = htons(tx_desc->rd_rsp.req_msg_id);
 	ses->payload_len = htons(payload_len << UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 	ses->mod_len = htonl(tx_desc->rd_rsp.mod_len);
@@ -2797,7 +2797,7 @@ static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
 		UET_SES_REQ_FLAG_REL | UET_SES_REQ_FLAG_EOM |
 		UET_SES_REQ_FLAG_SOM;
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
-	ses->cmn.index_gen_job_id =
+	ses->cmn.ri_gen_job_id =
 		htonl(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT);
 	ses->initiator = htonl(tx_desc->uet_ep->uet_addr.initiator_id);
 	local_token = tx_desc->local_rtr_token;
@@ -2876,8 +2876,8 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 	ses->cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT) | dc |
 		UET_SES_REQ_FLAG_REL | som;
 
-	ses->cmn.index_gen_job_id = htonl(
-		(av->untagged_gen << UET_SES_REQ_INDEX_GEN_SHIFT) |
+	ses->cmn.ri_gen_job_id = htonl(
+		(av->untagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
 		(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
 
 	ses->buf_off = htonll(tx_desc->remote_start_off);
@@ -2904,8 +2904,8 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 		} else
 			opcode = UET_TAGGED_SEND;
 		ses->match_bits = htonll(tx_desc->tag_or_immdata);
-		ses->cmn.index_gen_job_id =
-			htonl((av->tagged_gen << UET_SES_REQ_INDEX_GEN_SHIFT) |
+		ses->cmn.ri_gen_job_id =
+			htonl((av->tagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
 			      (tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
 	} else if (tx_desc->cq_flags & FI_WRITE) {
 		opcode = UET_WRITE;
@@ -3053,9 +3053,9 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 		/* update generation for av and then retransmit */
 		av_entry = (struct uet_av_entry *) tx_desc->dst_addr_handle;
 		rx_gen = (uint32_t)
-			((ntohl(ses_rsp->cmn.index_gen_job_id) &
-			  UET_SES_RSP_INDEX_GEN_MASK) >>
-			 UET_SES_RSP_INDEX_GEN_SHIFT);
+			((ntohl(ses_rsp->cmn.ri_gen_job_id) &
+			  UET_SES_RSP_RI_GEN_MASK) >>
+			 UET_SES_RSP_RI_GEN_SHIFT);
 		av_entry->untagged_gen = rx_gen;
 		tx_desc->delay_retx = false;
 		goto retx_exit;
@@ -3325,7 +3325,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	uet_pds_tx_flags_t flags;
 	size_t payload_len, max_payload_len, ses_len, pkt_len;
 	void *ses, *pkt_buf;
-	uet_next_hdr_t next_hdr;
+	uet_pds_next_hdr_t next_hdr;
 	struct uet_pds_info *pds_info;
 	size_t iov_index = 0;
 	size_t saved_offset = 0;

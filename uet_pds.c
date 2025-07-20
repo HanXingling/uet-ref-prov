@@ -21,7 +21,7 @@
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
 #include "bitmap.h"
-#include "crc64.h"
+#include "crc32c.h"
 
 #define UET_DEFAULT_TC        0
 #define UET_DEFAULT_MPR       128
@@ -173,19 +173,6 @@ static struct uet_pds_state pds_state;
 	 ((n) == UET_HDR_RSP_DATA_SMALL) ? "RSP_DATA_SMALL" : \
 					   "UNKNOWN")
 
-#define PDS_NEED_CRC(pds_type)                     \
-	(((pds_type) == UET_PDS_TYPE_RUD_REQ)   || \
-	 ((pds_type) == UET_PDS_TYPE_ROD_REQ)   || \
-	 ((pds_type) == UET_PDS_TYPE_RUDI_REQ)  || \
-	 ((pds_type) == UET_PDS_TYPE_RUDI_RESP) || \
-	 ((pds_type) == UET_PDS_TYPE_ACK)       || \
-	 ((pds_type) == UET_PDS_TYPE_ACK_CC)    || \
-	 ((pds_type) == UET_PDS_TYPE_ACK_CCX))
-
-#define PDS_HAS_CRC(pp)                             \
-	(PDS_NEED_CRC((pp)->pds_type) &&            \
-	 ((pp)->pds_flags & UET_PDS_REQ_FLAGS_CRC))
-
 #define PDS_DBG_TX(pp, msg)                                      \
 	UET_PDS_DBG("PDC %u [Tx %u] [PSN %u] [%s/%s] - %s (%d)", \
 		    (pp)->pds_spdcid, (pp)->pds_dpdcid,          \
@@ -248,7 +235,9 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	struct uet_parsed_pkt *pp;
 	bool *pp_parsed;
 	struct uet_pds_req *pds_hdr;
-	uint64_t crc;
+	uint32_t crc;
+	uint8_t *crc_start;
+	bool update_ipv4_tl = false;
 	int rc;
 
 	if (tx_pkt) {
@@ -268,8 +257,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	}
 
 	/*
-	 * If security is not enabled, just pass the packet through. If
-	 * the packet hasn't been parsed yet for debug then do it now.
+	 * If security is not enabled, just pass the packet through. The CRC
+	 * will be added and for IPv4, the total length already includes the
+	 * length of the CRC. Lastly, if the packet hasn't been parsed yet for
+	 * debug then do it now.
 	 */
 	if (pdc->sec_enabled == false) {
 		if (*pp_parsed == false) {
@@ -283,24 +274,16 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			*pp_parsed = true;
 		}
 
-		new_pkt_len = *pkt_len;
+		/* calculate the CRC (include src/dst IP and UDP) */
+		/* TODO: IPv6 support */
+		crc_start = ((uint8_t *)pp->ip + 12);
+		crc = crc32c(crc_start,
+			     (pp->pkt_len -
+			      (crc_start - (uint8_t *)pp->eth)));
 
-		if (PDS_NEED_CRC(pp->pds_type)) {
-			/* set the CRC flag in the PDS header */
-			pds_hdr = (struct uet_pds_req *)pp->pds;
-			pds_hdr->prlg.type_next_flags |=
-				htons(UET_PDS_REQ_FLAGS_CRC << UET_PDS_FLAGS_SHIFT);
-			pp->pds_flags |= UET_PDS_REQ_FLAGS_CRC;
-
-			/* calculate the CRC */
-			crc = crc64_be(pp->pds, (pp->pkt_len -
-						 ((uint8_t *)pp->pds -
-						  (uint8_t *)pp->eth)));
-
-			/* append the CRC and adjust the transmit length */
-			memcpy((*pkt + *pkt_len), &crc, CRC64_LEN);
-			new_pkt_len += CRC64_LEN;
-		}
+		/* append the CRC and adjust the transmit length */
+		memcpy((*pkt + *pkt_len), &crc, CRC_LEN);
+		new_pkt_len = (*pkt_len + CRC_LEN);
 
 		if (tx_pkt)
 			uet_gettime(&pdc_pkt->tx_time);
@@ -328,7 +311,11 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			return rc;
 
 		*pkt     = new_pkt;
-		*pkt_len = new_pkt_len;
+		*pkt_len = (new_pkt_len + UET_SEC_TAG_LEN);
+
+		/* for IPv4 the total length and checksum needs fixing */
+		/* TODO: not with IPv6 */
+		update_ipv4_tl = true;
 	}
 
 	/* If the packet hasn't been parsed yet for debug then do it now. */
@@ -342,6 +329,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 		*pp_parsed = true;
 	}
+
+	/* TODO: IPv6 support (don't do this) */
+	if (update_ipv4_tl)
+		uet_update_ipv4_tl(pp->ip, (*pkt_len - uet->nic.l2_hdr_size));
 
 	rc = uet_sec_enc_pkt(pkt_buf,
 			     pkt_buf_len,
@@ -751,8 +742,6 @@ int uet_pds_initialize(struct uet_instance *uet)
 	struct uet_pdc *pdc;
 	int i;
 
-	crc64_generate_table();
-
 	uet->pds.tx_timeout     = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
 	uet->pds.msl            = UET_DEFAULT_MSL;
@@ -886,7 +875,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		   uet_pds_tx_flags_t flags,
 		   struct uet_pds_info *pds_info,
 		   uint16_t msg_id,
-		   uet_next_hdr_t next_hdr,
+		   uet_pds_next_hdr_t next_hdr,
 		   void *ses,
 		   size_t ses_len,
 		   void *pkt,
@@ -1082,7 +1071,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			   htonl(uet_ep->ipv4_addr),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos,
-			   (!pdc->sec_enabled && PDS_NEED_CRC(pds_pkt_type)));
+			   !pdc->sec_enabled);
 
 	/* save some params specific for this packet */
 	pdc_pkt->msg_id        = msg_id;
@@ -1262,7 +1251,7 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 				  struct uet_pdc *pdc,
 				  struct uet_pdc_pkt *pdc_pkt,
-				  uet_next_hdr_t next_hdr,
+				  uet_pds_next_hdr_t next_hdr,
 				  void *ses_hdr,
 				  size_t ses_hdr_len)
 {
@@ -1293,14 +1282,13 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
 			   uet->pds.ack_ip_tos,
-			   (!pdc->sec_enabled &&
-			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
+			   !pdc->sec_enabled);
 
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
 	/* TODO: support ACK_CC and ACK_CCX */
-	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_TGT_CLR
+	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR_CLS
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
 		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
@@ -1320,7 +1308,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 			      struct uet_pdc *pdc,
 			      struct uet_pdc_pkt *pdc_pkt,
-			      uet_next_hdr_t next_hdr,
+			      uet_pds_next_hdr_t next_hdr,
 			      size_t ses_hdr_len,
 			      void *ses_hdr,
 			      bool gtd_del)
@@ -1348,11 +1336,10 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 
 	/* allocate buffer for ack packet */
 	pdc_pkt->ack_buf_len = ((pdc_pkt->ack_len +
-				 ((pdc->sec_enabled)
-				  ? (UET_SEC_MAX_HDR_LEN +
-				     UET_SEC_TAG_LEN)
-				  : CRC64_LEN)) *
-				((pdc->sec_enabled) ? 2 : 1));
+				 (pdc->sec_enabled
+				  ? (UET_SEC_MAX_HDR_LEN + UET_SEC_TAG_LEN)
+				  : CRC_LEN)) *
+				(pdc->sec_enabled ? 2 : 1));
 	pdc_pkt->ack_buf = calloc(1, pdc_pkt->ack_buf_len);
 	if (pdc_pkt->ack_buf == NULL) {
 		UET_PDS_ERR("failed to alloc ACK packet buffer");
@@ -1411,11 +1398,10 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 
 	/* allocate buffer for ack packet */
 	def_rsp_buf_len = ((def_rsp_len +
-			     ((pdc->sec_enabled)
-			      ? (UET_SEC_MAX_HDR_LEN +
-				 UET_SEC_TAG_LEN)
-			      : CRC64_LEN)) *
-			   ((pdc->sec_enabled) ? 2 : 1));
+			    (pdc->sec_enabled
+			     ? (UET_SEC_MAX_HDR_LEN + UET_SEC_TAG_LEN)
+			     : CRC_LEN)) *
+			   (pdc->sec_enabled ? 2 : 1));
 	def_rsp_buf = calloc(1, def_rsp_buf_len);
 	if (def_rsp_buf == NULL) {
 		UET_PDS_ERR("failed to alloc DEF_RSP ACK packet buffer");
@@ -1459,8 +1445,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
 			   (def_rsp_len - uet->nic.l2_hdr_size),
 			   uet->pds.ack_ip_tos,
-			   (!pdc->sec_enabled &&
-			    PDS_NEED_CRC(UET_PDS_TYPE_ACK)));
+			   !pdc->sec_enabled);
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	ack_pds->prlg.type_next_flags =
@@ -1561,7 +1546,7 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				     struct uet_pdc_pkt *pdc_pkt)
 {
 	struct uet_pds_info pds_info;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	void *rsp_ses_hdr;
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del;
@@ -2050,11 +2035,12 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
 	struct uet_pds_info pds_info;
-	uet_next_hdr_t rsp_next_hdr;
+	uet_pds_next_hdr_t rsp_next_hdr;
 	void *rsp_ses_hdr = NULL;
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del, rtx;
-	uint64_t crc;
+	uint32_t crc;
+	uint8_t *crc_start;
 	int rc = FI_SUCCESS;
 
 	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
@@ -2077,15 +2063,16 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 		goto exit_err;
 	}
 
-	if (PDS_HAS_CRC(&pp)) {
-		/* calculate the CRC */
-		crc = crc64_be(pp.pds, (pp.pkt_len - CRC64_LEN -
-					((uint8_t *)pp.pds -
-					 (uint8_t *)pp.eth)));
+	if (!pp.sec) {
+		/* calculate the CRC (include src/dst IP and UDP) */
+		/* TODO: IPv6 support */
+		crc_start = ((uint8_t *)pp.ip + 12);
+		crc = crc32c(crc_start,
+			     (pp.pkt_len - CRC_LEN -
+			      (crc_start - (uint8_t *)pp.eth)));
 
 		/* verify the CRC */
-		if (memcmp(&crc, (pkt + pkt_len - CRC64_LEN),
-			   CRC64_LEN) != 0) {
+		if (memcmp(&crc, (pkt + pkt_len - CRC_LEN), CRC_LEN) != 0) {
 			UET_PDS_WARN("Rx packet CRC mismatch");
 			rc = -FI_EINVAL;
 			goto exit_err;

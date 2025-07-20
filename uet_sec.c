@@ -344,8 +344,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 
 	/* make sure we're not going to overrun the cleartext or pkt_buf */
 	if ((enc_out < (pkt + pkt_len)) ||
-	    ((enc_out + pkt_len + UET_SEC_TAG_LEN) >
-	     (pkt_buf + pkt_buf_len))) {
+	    ((enc_out + pkt_len) > (pkt_buf + pkt_buf_len))) {
 		UET_TSS_ERR("pkt buffer not large enough for crypto out\n");
 		return -FI_EINVAL;
 	}
@@ -437,7 +436,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	gcm_setkey(&gcm, derived_key, (UET_SEC_KEY_SIZE * 8));
 	rc = gcm_crypt_and_tag(&gcm,
 			       GCM_ENCRYPT,
-			       (pkt_len - clrtxt_len),
+			       (pkt_len - clrtxt_len - UET_SEC_TAG_LEN),
 			       iv,
 			       UET_SEC_IV_SIZE,
 			       aad,
@@ -451,10 +450,10 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		return -FI_EINVAL;
 	}
 
-	memcpy((enc_out + pkt_len), tag, UET_SEC_TAG_LEN);
+	memcpy((enc_out + pkt_len - UET_SEC_TAG_LEN), tag, UET_SEC_TAG_LEN);
 
 	*enc_pkt = enc_out;
-	*enc_pkt_len = (pkt_len + UET_SEC_TAG_LEN);
+	*enc_pkt_len = pkt_len;
 
 	return FI_SUCCESS;
 }
