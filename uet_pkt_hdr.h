@@ -82,8 +82,6 @@ struct UET_PACKED uet_entropy {
 /*                              SECURITY                                    */
 /****************************************************************************/
 
-#define UET_SEC_ICV_SIZE 16
-
 /* uet security header (w/o the ssi) */
 struct UET_PACKED uet_sec {
 #define UET_SEC_TYPE_MASK  0xf8000000 /* set to UET_PDS_TYPE_SECURITY */

@@ -597,7 +597,9 @@ function p_uet.dissector(buf, pinfo, root)
 	local offset = 0
 
 	-- if UDP is the parent header then no entropy header
+	local entropy_len = 0
 	if not udp_src() then
+		entropy_len = 4
 		local entropy_subtree = proto_tree:add(fld.entropy, buf:range(offset, 4))
 		entropy_subtree:add(fld.entropy_val, buf(offset, 2))
 		offset = offset + 2
@@ -627,6 +629,8 @@ function p_uet.dissector(buf, pinfo, root)
 		sec_tree:add(fld.sec_epoch, buf(offset, 8))
 		sec_tree:add(fld.sec_tsc, buf(offset, 8))
 		offset = offset + 8
+
+		sec_tree:set_len(offset - entropy_len)
 
 		pinfo.cols.info = PDS_TYPE_STR_MAP[h_type]
 
@@ -699,7 +703,7 @@ function p_uet.dissector(buf, pinfo, root)
 
 		-- TODO: CC (RUD_CC_REQ, ROD_CC_REQ)
 
-		pds_tree:set_len(offset)
+		pds_tree:set_len(offset - entropy_len)
 
 		if do_track then
 			local key = track_key(pinfo.net_src, b_spdcid, b_psn:uint())
@@ -740,7 +744,7 @@ function p_uet.dissector(buf, pinfo, root)
 		pds_tree:add(fld.pds_dpdcid, b_dpdcid)
 		offset = offset + 2
 
-		pds_tree:set_len(offset)
+		pds_tree:set_len(offset - entropy_len)
 
 		-- TODO: CC (ACK_CC, ACK_CCX)
 
@@ -789,7 +793,7 @@ function p_uet.dissector(buf, pinfo, root)
 		pds_tree:add(fld.pds_nack_payload, b_nack_payload)
 		offset = offset + 4
 
-		pds_tree:set_len(offset)
+		pds_tree:set_len(offset - entropy_len)
 
 		-- TODO: CC (NACK_CCX)
 
@@ -845,7 +849,7 @@ function p_uet.dissector(buf, pinfo, root)
 		pds_tree:add(fld.pds_ctrl_payload, b_ctrl_payload)
 		offset = offset + 4
 
-		pds_tree:set_len(offset)
+		pds_tree:set_len(offset - entropy_len)
 
 		if do_track then
 			local key = track_key(pinfo.net_src, b_spdcid, b_psn:uint())

@@ -16,6 +16,7 @@
 #include "uet_api_private.h"
 #include "uet_pkt_chk.h"
 #include "uet_nic.h"
+#include "crc32c.h"
 
 /****************************************************************************/
 /*                      FULL HEADER STACKS (UTILITY)                        */
@@ -355,7 +356,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
 	tot_len = ack_pkt_len - ((uint16_t) uet->nic.l2_hdr_size);
 	uet_build_ipv4_hdr(uet, &ack->common.ipv4, pkt->common.ipv4.saddr,
 			   pkt->common.ipv4.daddr, tot_len,
-			   uet->pds.ack_ip_tos, false);
+			   uet->pds.ack_ip_tos, true);
 
 	ack->common.pds.prlg.type_next_flags = htons(
 		(UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
@@ -396,6 +397,8 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
 	union uet_pkt *ack;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	uet = uet_ep->uet_domain->uet;
 
@@ -419,6 +422,17 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, ack, ack_pkt_len, next_hdr,
 			      ses_hdr_len, ses_hdr);
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&ack->common.ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (ack_pkt_len -
+		      (crc_start - (uint8_t *)&ack->common.eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)ack + ack_pkt_len), &crc, CRC_LEN);
+	ack_pkt_len += CRC_LEN;
 
 	/* send ack packet */
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, ack, ack_pkt_len, "TX ACK PACKET");
@@ -456,6 +470,8 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	uint16_t ack_pkt_len;
 	struct uet_std_rsp_pkt *ack;
 	struct uet_ses_rsp ses;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	ack_pkt_len = sizeof(struct uet_std_rsp_pkt);
 
@@ -478,6 +494,17 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	/* build ack packet */
 	uet_pds_build_ack_pkt(uet, pkt, (union uet_pkt *) ack, ack_pkt_len,
 			      UET_HDR_RSP, sizeof(struct uet_ses_rsp), &ses);
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&ack->ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (ack_pkt_len -
+		      (crc_start - (uint8_t *)&ack->eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)ack + ack_pkt_len), &crc, CRC_LEN);
+	ack_pkt_len += CRC_LEN;
 
 	/* send ack packet */
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, (union uet_pkt *) ack, ack_pkt_len,
@@ -567,6 +594,8 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	struct uet_pds_hdr_overlay *pds_overlay;
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *)uet_ep->pds;
+	uint32_t crc;
+	uint8_t *crc_start;
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
@@ -645,7 +674,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	};
 
 	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
-			   htonl(uet_ep->ipv4_addr), tot_len, tos, false);
+			   htonl(uet_ep->ipv4_addr), tot_len, tos, true);
 
 	if (!(flags & UET_PDS_FLAG_RETRANSMIT)) {
 		memcpy(state->pkt_parms.ses_hdr, ses, ses_len);
@@ -675,6 +704,17 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	state->pkt_parms.pkt = pkt;
 	state->pkt_parms.pkt_len = pkt_len;
 	state->pkt_parms.dma_rdy = dma_rdy;
+
+	/* calculate the CRC (include src/dst IP and UDP) */
+	/* TODO: IPv6 support */
+	crc_start = ((uint8_t *)&uet_pkt->common.ipv4 + 12);
+	crc = crc32c(crc_start,
+		     (uet_pkt_len -
+		      (crc_start - (uint8_t *)&uet_pkt->common.eth)));
+
+	/* append the CRC and adjust the transmit length */
+	memcpy(((uint8_t *)uet_pkt + uet_pkt_len), &crc, CRC_LEN);
+	uet_pkt_len += CRC_LEN;
 
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, uet_pkt, uet_pkt_len, "TX PACKET");
 	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, &uet_pkt->common.ipv4,
@@ -909,7 +949,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 				UET_NIC(uet),
 				ack_state->ack,
 				&((union uet_pkt *)ack_state->ack)->common.ipv4,
-				ack_state->ack_len);
+				(ack_state->ack_len + CRC_LEN));
 			goto exit;
 		}
 

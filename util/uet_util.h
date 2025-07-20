@@ -150,6 +150,7 @@ uint16_t uet_ipv4_csum(struct iphdr *ipv4);
 void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 			uint32_t dip, uint32_t sip, uint16_t tot_len,
 			uint8_t tos, bool crc_en);
+void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len);
 void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
 void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
 void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);

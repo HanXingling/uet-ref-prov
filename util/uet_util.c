@@ -17,6 +17,7 @@
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
 #include "uet_api_private.h"
+#include "uet_sec.h"
 #include "crc32c.h"
 
 /* get current time in milliseconds */
@@ -611,6 +612,20 @@ void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 }
 
 /*
+ * update ipv4 total length and checksum fields
+ *
+ * parms:
+ *      ipv4    - ptr to location where ipv4 header is located
+ *      tot_len - value for total length field of ipv4 header
+ */
+void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len)
+{
+	ipv4->tot_len = htons(tot_len);
+	ipv4->check = 0;
+	ipv4->check = uet_ipv4_csum(ipv4);
+}
+
+/*
  * build ethernet header
  *
  * parms:
@@ -1039,7 +1054,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
 			       UET_PDS_TYPE_SHIFT;
-		pp->trailer_len = UET_SEC_ICV_SIZE;
+		pp->trailer_len = UET_SEC_TAG_LEN;
 	} else {
 		/* CRC is auto enabled when security is not used */
 		pp->trailer_len = CRC_LEN;

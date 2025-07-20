@@ -54,6 +54,7 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt);
  * a retransmission, only the TSC field needs to be updated and the packet
  * re-encrypted without having to first descrypt the packet before processing.
  *
+ * The pkt_len field is expected to include the length of the auth tag.
  * The encrypted pkt pointer and length are returned in enc_pkt/enc_pkt_len.
  */
 int uet_sec_enc_pkt(uint8_t *pkt_buf,

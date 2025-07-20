@@ -236,6 +236,8 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	bool *pp_parsed;
 	struct uet_pds_req *pds_hdr;
 	uint32_t crc;
+	uint8_t *crc_start;
+	bool update_ipv4_tl = false;
 	int rc;
 
 	if (tx_pkt) {
@@ -255,8 +257,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	}
 
 	/*
-	 * If security is not enabled, just pass the packet through. If
-	 * the packet hasn't been parsed yet for debug then do it now.
+	 * If security is not enabled, just pass the packet through. The CRC
+	 * will be added and for IPv4, the total length already includes the
+	 * length of the CRC. Lastly, if the packet hasn't been parsed yet for
+	 * debug then do it now.
 	 */
 	if (pdc->sec_enabled == false) {
 		if (*pp_parsed == false) {
@@ -270,18 +274,16 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			*pp_parsed = true;
 		}
 
-		new_pkt_len = *pkt_len;
-
 		/* calculate the CRC (include src/dst IP and UDP) */
 		/* TODO: IPv6 support */
-		crc = crc32c(((uint8_t *)pp->ip + 12),
+		crc_start = ((uint8_t *)pp->ip + 12);
+		crc = crc32c(crc_start,
 			     (pp->pkt_len -
-			      ((uint8_t *)pp->pds -
-			       (uint8_t *)pp->eth)));
+			      (crc_start - (uint8_t *)pp->eth)));
 
 		/* append the CRC and adjust the transmit length */
 		memcpy((*pkt + *pkt_len), &crc, CRC_LEN);
-		new_pkt_len += CRC_LEN;
+		new_pkt_len = (*pkt_len + CRC_LEN);
 
 		if (tx_pkt)
 			uet_gettime(&pdc_pkt->tx_time);
@@ -309,7 +311,11 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			return rc;
 
 		*pkt     = new_pkt;
-		*pkt_len = new_pkt_len;
+		*pkt_len = (new_pkt_len + UET_SEC_TAG_LEN);
+
+		/* for IPv4 the total length and checksum needs fixing */
+		/* TODO: not with IPv6 */
+		update_ipv4_tl = true;
 	}
 
 	/* If the packet hasn't been parsed yet for debug then do it now. */
@@ -323,6 +329,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 
 		*pp_parsed = true;
 	}
+
+	/* TODO: IPv6 support (don't do this) */
+	if (update_ipv4_tl)
+		uet_update_ipv4_tl(pp->ip, (*pkt_len - uet->nic.l2_hdr_size));
 
 	rc = uet_sec_enc_pkt(pkt_buf,
 			     pkt_buf_len,
@@ -2030,6 +2040,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	size_t rsp_ses_hdr_len;
 	bool ses_nack, gtd_del, rtx;
 	uint32_t crc;
+	uint8_t *crc_start;
 	int rc = FI_SUCCESS;
 
 	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
@@ -2055,10 +2066,10 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (!pp.sec) {
 		/* calculate the CRC (include src/dst IP and UDP) */
 		/* TODO: IPv6 support */
-		crc = crc32c(((uint8_t *)pp.ip + 12),
+		crc_start = ((uint8_t *)pp.ip + 12);
+		crc = crc32c(crc_start,
 			     (pp.pkt_len - CRC_LEN -
-			      ((uint8_t *)pp.pds -
-			       (uint8_t *)pp.eth)));
+			      (crc_start - (uint8_t *)pp.eth)));
 
 		/* verify the CRC */
 		if (memcmp(&crc, (pkt + pkt_len - CRC_LEN), CRC_LEN) != 0) {
