@@ -121,7 +121,6 @@ struct uet_pdc {
 	uint16_t             syn_offset; /* initiator SYN offset until ACK */
 	uint32_t             next_psn; /* next Tx pkt seq number */
 	struct bitmap       *tx_bm;
-	struct bitmap       *ack_bm;
 	uint32_t             tx_bm_base_psn; /* start PSN for initiator MPR */
 
 	/* target side fields */
@@ -251,6 +250,18 @@ int16_t psn_2c_offset(uint32_t base_psn, uint32_t psn)
 	assert((base_psn + offset) == psn);
 
 	return offset;
+}
+
+char uet_pdc_tx_bit_char(void *data)
+{
+	struct uet_pdc_pkt *pdc_pkt = (struct uet_pdc_pkt *)data;
+	return (pdc_pkt == NULL) ? '.' : (pdc_pkt->tx_pkt_acked ? 'X' : 'O');
+}
+
+char uet_pdc_rx_bit_char(void *data)
+{
+	struct uet_pdc_pkt *pdc_pkt = (struct uet_pdc_pkt *)data;
+	return (pdc_pkt == NULL) ? '.' : '*';
 }
 
 /****************************************************************************/
@@ -446,7 +457,6 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 			 pdc_state_t state,
 			 bool is_initiator)
 {
-	/* initialze this PDC and stick it in the hashtable */
 	pdc->state = state;
 	pdc->is_initiator = is_initiator;
 
@@ -455,12 +465,17 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->active_msg_id = 0;
 	pdc->active_msg_id_valid = false;
 
+	pdc->close_requested = false;
+	pdc->close_started = false;
+	pdc->close_cmd_psn = 0;
+
 	dlist_init(&pdc->tx_pkt_list_head);
 
+	pdc->uet_ep = NULL;
+	pdc->av_entry = NULL;
 	pdc->syn_offset = 0;
 	pdc->next_psn = 0;
 	bm_clear(pdc->tx_bm);
-	bm_clear(pdc->ack_bm);
 	pdc->tx_bm_base_psn = 0;
 
 	bm_clear(pdc->rx_bm);
@@ -991,22 +1006,14 @@ int uet_pds_initialize(struct uet_instance *uet)
 		if (!pdc->tx_bm) {
 			UET_PDS_ERR("failed to create Tx bitmap");
 			uet_pdsm_free_pdc(pdc);
-			return -FI_ENOMEM; /* TODO: unwind and free PDCs */
-		}
-
-		pdc->ack_bm = bm_create(UET_DEFAULT_MPR);
-		if (!pdc->ack_bm) {
-			UET_PDS_ERR("failed to create ACK bitmap");
-			bm_destroy(pdc->tx_bm);
-			return -FI_ENOMEM; /* TODO: unwind and free PDCs */
+			return -FI_ENOMEM; /* FIXME unwind and free PDCs */
 		}
 
 		pdc->rx_bm = bm_create(UET_DEFAULT_MPR);
 		if (!pdc->rx_bm) {
 			UET_PDS_ERR("failed to create Rx bitmap");
 			bm_destroy(pdc->tx_bm);
-			bm_destroy(pdc->ack_bm);
-			return -FI_ENOMEM; /* TODO: unwind and free PDCs */
+			return -FI_ENOMEM; /* FIXME unwind and free PDCs */
 		}
 
 		dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
@@ -1040,9 +1047,6 @@ void uet_pds_finalize(struct uet_instance *uet)
 		if (pdc->tx_bm)
 			bm_destroy(pdc->tx_bm);
 
-		if (pdc->ack_bm)
-			bm_destroy(pdc->ack_bm);
-
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
 	}
@@ -1054,9 +1058,6 @@ void uet_pds_finalize(struct uet_instance *uet)
 
 		if (pdc->tx_bm)
 			bm_destroy(pdc->tx_bm);
-
-		if (pdc->ack_bm)
-			bm_destroy(pdc->ack_bm);
 
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
@@ -1385,10 +1386,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %u tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->tx_bm);
-		UET_PDS_DBG("PDC %u ack_bm (base %u):",
-			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->ack_bm);
+		bm_print_bits(pdc->tx_bm, uet_pdc_tx_bit_char);
 	}
 
 	/* insert the packet to the end of the timeout queue */
@@ -1921,7 +1919,6 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 	int clear_to_base_diff;
 
 	while (true) {
-
 		/*
 		 * Previous Behavior and Bug Description:
 		 * - When handling unexpected messages, if the Receiver has not
@@ -1994,10 +1991,10 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 	}
 
 #if 0
-	if (shifted && (UET_LOG_LVL >= UET_LOG_DBG)) {
+	if (shifted) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
 			    pdc->pdc_id, pdc->rx_bm_base_psn);
-		bm_print_bits(pdc->rx_bm);
+		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 #endif
 	(void)shifted;
@@ -2016,7 +2013,7 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 		if (!bm_get(pdc->tx_bm, 0, (void **)&pdc_pkt))
 			break;
 
-		if (!bm_get(pdc->ack_bm, 0, NULL))
+		if (!pdc_pkt->tx_pkt_acked)
 			break;
 
 		/*
@@ -2027,7 +2024,6 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 
 		shifted = true;
 		bm_shift_right(pdc->tx_bm, 1);
-		bm_shift_right(pdc->ack_bm, 1);
 		pdc->tx_bm_base_psn++;
 
 		if (pdc_pkt->ack_buf)
@@ -2038,13 +2034,10 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 	}
 
 #if 0
-	if (shifted && (UET_LOG_LVL >= UET_LOG_DBG)) {
+	if (shifted) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->tx_bm);
-		UET_PDS_DBG("PDC %d ack_bm (base %u):",
-			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->ack_bm);
+		bm_print_bits(pdc->tx_bm, uet_pdc_tx_bit_char);
 	}
 #endif
 	(void)shifted;
@@ -2109,19 +2102,10 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		return -FI_EINVAL;
 	}
 
-	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u",
-		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,
-		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
-
-	bm_set(pdc->ack_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn), NULL);
-
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->tx_bm);
-		UET_PDS_DBG("PDC %d ack_bm (base %u):",
-			    pdc->pdc_id, pdc->tx_bm_base_psn);
-		bm_print_bits(pdc->ack_bm);
+		bm_print_bits(pdc->tx_bm, uet_pdc_tx_bit_char);
 	}
 
 	pdc_pkt->tx_pkt_acked = true;
@@ -2238,7 +2222,7 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
 			    pdc->pdc_id, pdc->rx_bm_base_psn);
-		bm_print_bits(pdc->rx_bm);
+		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
 	if (pp->pds_type == UET_PDS_TYPE_RUD_REQ) {
@@ -2438,7 +2422,7 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
 			    pdc->pdc_id, pdc->rx_bm_base_psn);
-		bm_print_bits(pdc->rx_bm);
+		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
 	if (pp->pds_type == UET_PDS_TYPE_RUD_REQ) {

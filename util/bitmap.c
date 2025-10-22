@@ -253,17 +253,19 @@ void bm_print_idx(const struct bitmap *b)
 	printf("\n}\n");
 }
 
-void bm_print_bits(const struct bitmap *b)
+void bm_print_bits(const struct bitmap *b, char (*bit_char)(void *))
 {
 	int i, idx, bit, word_size;
+	void *data;
 
 	word_size = (sizeof(uint64_t) * 8);
 	for (idx = (b->bit_arr_len - 1); idx >= 0; idx--) {
 		for (i = (word_size - 1); i >= 0; i--) {
 			bit = (i + (idx * word_size));
-			printf("%d", (bm_get(b, bit, NULL) ? 1 : 0));
+			bm_get(b, bit, &data);
+			printf("%c", bit_char(data));
 			if ((i != 0) && ((i % 8) == 0))
-				printf(".");
+				printf(" ");
 		}
 		printf(" (%d..%d)\n",
 		       (((idx + 1) * word_size) - 1),
