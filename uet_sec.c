@@ -266,7 +266,8 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 	return FI_SUCCESS;
 }
 
-int uet_sec_enc_pkt(uint8_t *pkt_buf,
+int uet_sec_enc_pkt(struct uet_instance *uet,
+		    uint8_t *pkt_buf,
 		    int pkt_buf_len,
 		    uint8_t *pkt,
 		    int pkt_len,
@@ -280,7 +281,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	uint8_t tag[UET_SEC_TAG_LEN];
 	struct gcm_context gcm;
 	struct uet_sec_sd *sd;
-	struct iphdr *ip;
+	struct iphdr *ipv4;
 	uint8_t *sec_hdr, *aad;
 	struct uet_sec *sec;
 	struct uet_sec_ssi *sec_ssi;
@@ -297,7 +298,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	int i, rc, clrtxt_len;
 
 	/* TODO: IPv6 support (requires SSI) and UDP support */
-	ip = (struct iphdr *)(pkt + sizeof(struct ethhdr));
+	ipv4 = (struct iphdr *)(pkt + sizeof(struct ethhdr));
 	sec_hdr = (pkt +
 		   sizeof(struct ethhdr) +
 		   sizeof(struct iphdr) +
@@ -369,7 +370,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		memcpy((small_context + 2), (uint8_t *)&rekey, 4);
-		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 		memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
 		kdf_ctr_cmac_aes(sd->key[an],
@@ -392,7 +393,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
-		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 		memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
 		kdf_ctr_cmac_aes(sd->key[sd->an],
@@ -418,7 +419,7 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
 
 	/* TODO: support IPv6 (requires SSI) */
-	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 	memcpy(iv, (uint8_t *)&tmp_val, 4);
 	tmp_lval = htonll(tsc);
 	memcpy((iv + 4), (uint8_t *)&tmp_lval, 8);
@@ -458,7 +459,8 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
 	return FI_SUCCESS;
 }
 
-int uet_sec_dec_pkt(uint8_t *pkt,
+int uet_sec_dec_pkt(struct uet_instance *uet,
+		    uint8_t *pkt,
 		    int pkt_len,
 		    int *tag_len)
 {
@@ -470,7 +472,8 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 	struct uet_sec_sd *sd;
 	struct uet_sec *sec;
 	struct uet_sec_ssi *sec_ssi;
-	struct iphdr *ip;
+	struct ethhdr *eth;
+	struct iphdr *ipv4;
 	uint8_t *sec_hdr, *aad;
 	uint32_t rekey;
 	uint32_t tmp_val;
@@ -483,7 +486,18 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 	int i, rc, clrtxt_len;
 
 	/* TODO: IPv6 support (requires SSI) and UDP support */
-	ip = (struct iphdr *)(pkt + sizeof(struct ethhdr));
+	eth = (struct ethhdr *)pkt;
+	ipv4 = (struct iphdr *)(pkt + sizeof(struct ethhdr));
+
+	/* do some preliminary sanity checks */
+	if ((eth->h_proto != htons(ETH_P_IP)) ||
+	    (ipv4->version != IPVERSION) ||
+	    (ipv4->ihl != UET_IPV4_IHL_NO_OPTIONS) ||
+	    (ipv4->protocol != uet->uet_ipproto)) {
+		*tag_len = 0;
+		return FI_SUCCESS;
+	}
+
 	sec_hdr = (pkt +
 		   sizeof(struct ethhdr) +
 		   sizeof(struct iphdr) +
@@ -545,7 +559,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
 		memcpy((small_context + 2), (uint8_t *)&rekey, 4);
-		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 		memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
 		kdf_ctr_cmac_aes(sd->key[an],
@@ -568,7 +582,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 		/* TODO: support IPv6 w/ large_context (requires SSI) */
 		memset(small_context, 0, sizeof(small_context));
 		memcpy(small_context, (uint8_t *)&epoch, 2);
-		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+		tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 		memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
 		kdf_ctr_cmac_aes(sd->key[sd->an],
@@ -594,7 +608,7 @@ int uet_sec_dec_pkt(uint8_t *pkt,
 	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
 
 	/* TODO: support IPv6 (requires SSI) */
-	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ip->saddr;
+	tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 	memcpy(iv, (uint8_t *)&tmp_val, 4);
 	tmp_lval = htonll(tsc);
 	memcpy((iv + 4), (uint8_t *)&tmp_lval, 8);

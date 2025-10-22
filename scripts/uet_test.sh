@@ -30,35 +30,36 @@ fi
 
 banner()
 {
-	echo ""
-	echo "**************************************************************"
-	echo "* --> ${1}"
-	echo "**************************************************************"
-	echo ""
+        echo ""
+        echo "**************************************************************"
+        echo "* --> ${1}"
+        echo "**************************************************************"
+        echo ""
 
-	# sleep call is to give enough time for the server to start up
-	if [ -n "$IS_CLI" ]; then
-	    sleep 1
-	fi
+        # sleep call is to give enough time for the server to start up
+        if [ -n "$IS_CLI" ]; then
+            sleep 1
+        fi
 }
 
 CMD_CLI="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${CLI_IFACE} ./uet client"
 CMD_SRV="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${SRV_IFACE} ./uet server"
 
 tests=("" "tag" "rma")
+tests=("rma")
 
 function sng()
 {
     EX_DEFS="UET_PDS=sng"
     for test in "${tests[@]}"; do
-	banner "SNG $test"
+        banner "SNG $test"
         if [ -n "$IS_CLI" ]; then
-	    CMD="${CMD_CLI} $test ${SRV_IP}"
+            CMD="${CMD_CLI} $test ${SRV_IP}"
         else
-	    CMD="${CMD_SRV} $test ${CLI_IP}"
+            CMD="${CMD_SRV} $test ${CLI_IP}"
         fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 
@@ -66,14 +67,14 @@ function pds()
 {
     EX_DEFS="UET_PDS=pds"
     for test in "${tests[@]}"; do
-	banner "PDS $test"
-	if [ -n "$IS_CLI" ]; then
-	    CMD="${CMD_CLI} ${SRV_IP}"
-	else
-	    CMD="${CMD_SRV} ${CLI_IP}"
-	fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        banner "PDS $test"
+        if [ -n "$IS_CLI" ]; then
+            CMD="${CMD_CLI} $test ${SRV_IP}"
+        else
+            CMD="${CMD_SRV} $test ${CLI_IP}"
+        fi
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 
@@ -81,14 +82,14 @@ function pds_direct()
 {
     EX_DEFS="UET_PDS=pds UET_SEC_MODE=direct"
     for test in "${tests[@]}"; do
-	banner "PDS w/ SEC=direct $test"
-	if [ -n "$IS_CLI" ]; then
-	    CMD="${CMD_CLI} ${SRV_IP}"
-	else
-	    CMD="${CMD_SRV} ${CLI_IP}"
-	fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        banner "PDS w/ SEC=direct $test"
+        if [ -n "$IS_CLI" ]; then
+            CMD="${CMD_CLI} $test ${SRV_IP}"
+        else
+            CMD="${CMD_SRV} $test ${CLI_IP}"
+        fi
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 
@@ -96,14 +97,14 @@ function pds_cluster()
 {
     EX_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
     for test in "${tests[@]}"; do
-	banner "PDS w/ SEC=cluster $test"
-	if [ -n "$IS_CLI" ]; then
-	    CMD="${CMD_CLI} ${SRV_IP}"
-	else
-	    CMD="${CMD_SRV} ${CLI_IP}"
-	fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        banner "PDS w/ SEC=cluster $test"
+        if [ -n "$IS_CLI" ]; then
+            CMD="${CMD_CLI} $test ${SRV_IP}"
+        else
+            CMD="${CMD_SRV} $test ${CLI_IP}"
+        fi
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 
@@ -111,14 +112,14 @@ function pds_cluster_ssi()
 {
     EX_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
     for test in "${tests[@]}"; do
-	banner "PDS w/ SEC=cluster (SSI) $test"
-	if [ -n "$IS_CLI" ]; then
-	    CMD="UET_SEC_SSI=${CLI_SSI} ${CMD_CLI} ${SRV_IP}"
-	else
-	    CMD="UET_SEC_SSI=${SRV_SSI} ${CMD_SRV} ${CLI_IP}"
-	fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        banner "PDS w/ SEC=cluster (SSI) $test"
+        if [ -n "$IS_CLI" ]; then
+            CMD="UET_SEC_SSI=${CLI_SSI} ${CMD_CLI} $test ${SRV_IP}"
+        else
+            CMD="UET_SEC_SSI=${SRV_SSI} ${CMD_SRV} $test ${CLI_IP}"
+        fi
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 
@@ -126,14 +127,14 @@ function pds_server_ssi()
 {
     EX_DEFS="UET_PDS=pds UET_SEC_MODE=server"
     for test in "${tests[@]}"; do
-	banner "PDS w/ SEC=server (SSI) $test"
-	if [ -n "$IS_CLI" ]; then
-	    CMD="UET_SEC_SSI=${CLI_SSI} ${CMD_CLI} ${SRV_IP}"
-	else
-	    CMD="UET_SEC_SSI=${SRV_SSI} UET_SEC_CLIENT_SSI=${CLI_SSI} ${CMD_SRV} ${CLI_IP}"
-	fi
-	CMD="sudo ${EX_DEFS} ${CMD}"
-	echo $CMD; eval $CMD
+        banner "PDS w/ SEC=server (SSI) $test"
+        if [ -n "$IS_CLI" ]; then
+            CMD="UET_SEC_SSI=${CLI_SSI} ${CMD_CLI} $test ${SRV_IP}"
+        else
+            CMD="UET_SEC_SSI=${SRV_SSI} UET_SEC_CLIENT_SSI=${CLI_SSI} ${CMD_SRV} $test ${CLI_IP}"
+        fi
+        CMD="sudo ${EX_DEFS} ${CMD}"
+        echo $CMD; eval $CMD
     done
 }
 

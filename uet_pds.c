@@ -382,7 +382,8 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	if (update_ipv4_tl)
 		uet_update_ipv4_tl(pp->ip, (*pkt_len - uet->nic.l2_hdr_size));
 
-	rc = uet_sec_enc_pkt(pkt_buf,
+	rc = uet_sec_enc_pkt(uet,
+			     pkt_buf,
 			     pkt_buf_len,
 			     *pkt,
 			     *pkt_len,
@@ -436,7 +437,7 @@ static int uet_pds_sec_rx_pkt(struct uet_instance *uet,
 		goto err_exit;
 
 	/* decrypt the packet if the security header is present */
-	rc = uet_sec_dec_pkt(*pkt, *pkt_len, &tag_len);
+	rc = uet_sec_dec_pkt(uet, *pkt, *pkt_len, &tag_len);
 	if (rc != FI_SUCCESS)
 		goto err_exit;
 
