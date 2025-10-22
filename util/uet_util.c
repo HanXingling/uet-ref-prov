@@ -813,6 +813,7 @@ static int uet_get_ipv6_nexthdr(struct uet_instance *uet,
 
 	ipv6 = (struct ipv6hdr *) pp->ip;
 	pp->ip_len = sizeof(struct ipv6hdr);
+	pp->ip_payload_len = ntohs(ipv6->payload_len);
 	pp->ip_protocol = ipv6->nexthdr;
 
 	while (1) {
@@ -965,13 +966,16 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		default:
 			goto err_exit;
 		}
-	} else
+	} else {
 		ethertype = pp->ethertype;
+	}
 	switch (ethertype) {
 	case ETH_P_IP:
 		ipv4 = (struct iphdr *) p;
 		pp->ip_protocol = ipv4->protocol;
-		pp->ip_len = ipv4->ihl << 2;
+		pp->ip_len = (ipv4->ihl << 2);
+		pp->ip_payload_len = (ntohs(ipv4->tot_len) -
+				      sizeof(struct iphdr));
 		break;
 	case ETH_P_IPV6:
 		rc = uet_get_ipv6_nexthdr(uet, pp);
@@ -1075,16 +1079,17 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_req->spdcid);
 		pp->pds_clear_psn = ((int16_t)ntohs(pds_req->clear_psn_offset) +
 				     pp->pds_psn);
-		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
+		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN) {
 			pp->pds_syn_off = ((ntohs(pds_req->pdc_info_psn_offset) &
 					    UET_PDS_REQ_PSN_OFFSET_MASK) >>
 					   UET_PDS_REQ_PSN_OFFSET_SHIFT);
-		else
+		} else {
 			pp->pds_dpdcid = ntohs(pds_req->dpdcid);
+		}
 		break;
 	case UET_PDS_TYPE_UUD_REQ:
-		pp->pds_len = sizeof(struct uet_pds_uud_req);
-		return FI_SUCCESS;
+		/* TODO: support for parsing UUD */
+		return -FI_EINVAL;
 	case UET_PDS_TYPE_ACK:
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:
@@ -1108,12 +1113,29 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	case UET_PDS_TYPE_CTRL:
 		pds_ctrl = (struct uet_pds_ctrl *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_ctrl);
+		pp->pds_ctrl_type = pp->next_hdr;
+		pp->pds_psn = ntohl(pds_ctrl->psn);
+		pp->pds_spdcid = ntohs(pds_ctrl->spdcid);
+		if (pp->pds_ctrl_type == UET_PDS_CTRL_TYPE_PROBE)
+			pp->pds_probe_opaque = ntohs(pds_ctrl->probe_opaque);
+		if (pp->pds_flags & UET_PDS_CTRL_FLAGS_SYN) {
+			pp->pds_pdc_info =
+				((ntohs(pds_ctrl->pdc_info_psn_offset) &
+				  UET_PDS_CTRL_PDC_INFO_MASK) >>
+				 UET_PDS_CTRL_PDC_INFO_SHIFT);
+			pp->pds_syn_off =
+				((ntohs(pds_ctrl->pdc_info_psn_offset) &
+				  UET_PDS_CTRL_PSN_OFFSET_MASK) >>
+				 UET_PDS_CTRL_PSN_OFFSET_SHIFT);
+		} else {
+			pp->pds_dpdcid = ntohs(pds_ctrl->dpdcid);
+		}
 		pp->pds_ctrl_payload = ntohl(pds_ctrl->payload);
-		/* TODO: support for parsing control messages */
 		return FI_SUCCESS;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
 		/* TODO: support for parsing RUDI */
+		return -FI_EINVAL;
 	default:
 		goto err_exit;
 	}
@@ -1124,6 +1146,10 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	/* parse ses header */
 	pp->ses = p;
 	switch (pp->next_hdr) {
+	case UET_HDR_NONE:
+		pp->ses_len = 0;
+		pp->ses_payload_len = 0;
+		break;
 	case UET_HDR_REQ_STD:
 		rc = uet_parse_chk_next_field(
 			pp, cur_len, sizeof(struct uet_ses_req_std));

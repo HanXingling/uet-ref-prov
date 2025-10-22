@@ -25,6 +25,8 @@
  * Colors can be disabled by undefining UET_LOG_EN_CLR.
  */
 
+#include <stdio.h>
+
 #define UET_LOG_EN_CLR /* comment out to disable log colors */
 
 #define UET_LOG_SES /* comment out to disable all SES logs */
@@ -70,37 +72,52 @@
 #define UET_WARN_CLR UET_CLR_RED
 #define UET_ERR_CLR  UET_CLR_RED
 
-#define UET_LOG(fmt, clr, ...)  \
-	printf("%s" fmt "%s\n", \
-	       (clr),           \
-	       ##__VA_ARGS__,   \
-	       UET_CLR_NORMAL)
+#define UET_LOG(fmt, clr, ...)          \
+	do {                            \
+		printf("%s" fmt "%s\n", \
+		       (clr),           \
+		       ##__VA_ARGS__,   \
+		       UET_CLR_NORMAL); \
+		fflush(stdout);         \
+	} while (0)
 
-#define UET_DBG(fmt, clr, ...)       \
-	printf("%sDBG: " fmt "%s\n", \
-	       (clr),                \
-	       ##__VA_ARGS__,        \
-	       UET_CLR_NORMAL)
+#define UET_DBG(fmt, clr, ...)               \
+	do {                                 \
+		printf("%sDBG: " fmt "%s\n", \
+		       (clr),                \
+		       ##__VA_ARGS__,        \
+		       UET_CLR_NORMAL);      \
+		fflush(stdout);              \
+	} while (0)
 
-#define UET_INFO(fmt, clr, ...)       \
-	printf("%sINFO: " fmt "%s\n", \
-	       (clr),                 \
-	       ##__VA_ARGS__,         \
-	       UET_CLR_NORMAL)
+#define UET_INFO(fmt, clr, ...)               \
+	do {                                  \
+		printf("%sINFO: " fmt "%s\n", \
+		       (clr),                 \
+		       ##__VA_ARGS__,         \
+		       UET_CLR_NORMAL);       \
+		fflush(stdout);               \
+	} while (0)
 
-#define UET_WARN(fmt, ...)                    \
-	printf("%s[%s:%d] WARN: " fmt "%s\n", \
-	       UET_WARN_CLR,                  \
-	       __FILE__, __LINE__,            \
-	       ##__VA_ARGS__,                 \
-	       UET_CLR_NORMAL)
+#define UET_WARN(fmt, ...)                            \
+	do {                                          \
+		printf("%s[%s:%d] WARN: " fmt "%s\n", \
+		       UET_WARN_CLR,                  \
+		       __FILE__, __LINE__,            \
+		       ##__VA_ARGS__,                 \
+		       UET_CLR_NORMAL);               \
+		fflush(stdout);                       \
+	} while (0)
 
-#define UET_ERR(fmt, ...)                      \
-	printf("%s[%s:%d] ERROR: " fmt "%s\n", \
-	       UET_ERR_CLR,                    \
-	       __FILE__, __LINE__,             \
-	       ##__VA_ARGS__,                  \
-	       UET_CLR_NORMAL)
+#define UET_ERR(fmt, ...)                              \
+	do {                                           \
+		printf("%s[%s:%d] ERROR: " fmt "%s\n", \
+		       UET_ERR_CLR,                    \
+		       __FILE__, __LINE__,             \
+		       ##__VA_ARGS__,                  \
+		       UET_CLR_NORMAL);                \
+		fflush(stdout);                        \
+	} while (0)
 
 #if UET_LOG_LVL >= UET_LOG_DBG
 # ifdef UET_LOG_SES

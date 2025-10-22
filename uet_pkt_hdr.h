@@ -72,7 +72,7 @@ struct uet_vlan_tag {
 /*                               ENTROPY                                    */
 /****************************************************************************/
 
-/* uet entropy header - used when running directory over IPv4/IPv6 */
+/* uet entropy header - used when running directly over IPv4/IPv6 */
 struct UET_PACKED uet_entropy {
 	uint16_t entropy;
 	uint16_t rsvd;
@@ -692,8 +692,7 @@ struct UET_PACKED uet_ses_rsp_ds {
 /* TODO: IPv6 support */
 #define UET_MIN_PKT_SIZE (sizeof(struct ethhdr) + \
 			  sizeof(struct iphdr) + \
-			  sizeof(struct uet_pds_ack) + \
-			  sizeof(struct uet_pds_def_rsp))
+			  sizeof(struct uet_pds_ctrl))
 
 /* get job id from standard request packet */
 static inline uint32_t uet_get_std_req_job_id(struct uet_ses_req_std *ses)

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <ofi_list.h>
 #include <uthash.h>
@@ -29,6 +30,9 @@
 #define UET_DEFAULT_ENTROPY   0x4242
 
 #define UET_PDC_MAX 64
+
+#define UET_RANDOM_PDC_CLOSE
+#define UET_RANDOM_PDC_CLOSE_THRESH 10 /* percent */
 
 typedef enum {
 	PDC_STATE_UNALLOC,
@@ -77,12 +81,14 @@ struct uet_pdc_pkt {
 struct uet_pdc_ini_key {
 	pdc_type_t    type;
 	uint32_t      job_id;
+	struct uet_fa src_ip;
 	struct uet_fa dst_ip;
 	uint8_t       tc;
 };
 
 struct uet_pdc_tgt_key {
 	struct uet_fa src_ip;
+	struct uet_fa dst_ip;
 	uint16_t      spdcid;
 };
 
@@ -94,7 +100,13 @@ struct uet_pdc {
 
 	uint16_t            pdc_id; /* local PDC identifier */
 	uint16_t            dpdcid; /* peer PDC identifier */
-	uint32_t            open_msg_cnt; /* can only free the PDC if zero */
+
+	uint16_t            active_msg_id; /* msg_id currently being sent */
+	bool                active_msg_id_valid;
+
+	bool                close_requested; /* close has been requested */
+	bool                close_started; /* close has started */
+	uint32_t            close_cmd_psn; /* PSN of the close command */
 
 	struct uet_pdc_ini_key ini_hkey;
 	UT_hash_handle         pdc_ini_hh; /* initiator hash handle for the PDC */
@@ -104,11 +116,13 @@ struct uet_pdc {
 	struct dlist_entry  tx_pkt_list_head; /* 'tx_time' order (for rtx) */
 
 	/* initiator side fields (and target side reverse direction) */
-	uint16_t            syn_offset; /* initiator SYN offset until ACK */
-	uint32_t            next_psn; /* next Tx pkt seq number */
-	struct bitmap      *tx_bm;
-	struct bitmap      *ack_bm;
-	uint32_t            tx_bm_base_psn; /* start PSN for initiator MPR */
+	struct uet_ep       *uet_ep;
+	struct uet_av_entry *av_entry; /* destination address */
+	uint16_t             syn_offset; /* initiator SYN offset until ACK */
+	uint32_t             next_psn; /* next Tx pkt seq number */
+	struct bitmap       *tx_bm;
+	struct bitmap       *ack_bm;
+	uint32_t             tx_bm_base_psn; /* start PSN for initiator MPR */
 
 	/* target side fields */
 	struct bitmap      *rx_bm;
@@ -131,10 +145,9 @@ struct uet_pds_state {
 	struct uet_pdc        pdc[UET_PDC_MAX];
 	struct dlist_entry    pdc_alloc_head;
 	struct dlist_entry    pdc_free_head;
-	struct uet_pdc       *pdc_ini_ht; /* key = "type|job_id|dst_ip|tc" */
-	struct uet_pdc       *pdc_tgt_ht; /* key = "src_addr|spdcid" */
-	struct uet_msgid_map *pdc_msgid_ht; /* key = "msg_id" */
-	struct dlist_entry    pending_pkts_head; /* TODO: not implemented yet */
+	struct uet_pdc       *pdc_ini_ht; /* key=[type|jobid|srcip|dstip|tc] */
+	struct uet_pdc       *pdc_tgt_ht; /* key=[srcip|dstip|spdcid] */
+	struct uet_msgid_map *pdc_msgid_ht; /* key=[msg_id] */
 };
 
 static struct uet_pds_state pds_state;
@@ -154,18 +167,38 @@ static struct uet_pds_state pds_state;
 #define PSN_IN_PRIOR_MPR(psn, base_psn)                             \
 	PSN_IN_MPR((psn), (uint32_t)((base_psn) - UET_DEFAULT_MPR))
 
-#define PDS_TYPE_TO_STR(t)                              \
-	(((t) == UET_PDS_TYPE_RUD_REQ)   ? "RUD_REQ" :  \
-	 ((t) == UET_PDS_TYPE_ROD_REQ)   ? "ROD_REQ" :  \
-	 ((t) == UET_PDS_TYPE_RUDI_REQ)  ? "RUDI_REQ" : \
-	 ((t) == UET_PDS_TYPE_UUD_REQ)   ? "UUD_REQ" :  \
-	 ((t) == UET_PDS_TYPE_RUDI_RESP) ? "RUDI_RSP" : \
-	 ((t) == UET_PDS_TYPE_ACK)       ? "ACK" :      \
-	 ((t) == UET_PDS_TYPE_NACK)      ? "NACK" :     \
-	 ((t) == UET_PDS_TYPE_CTRL)      ? "CTRL" :     \
+#define PDS_TYPE_TO_STR(t)                                 \
+	(((t) == UET_PDS_TYPE_RUD_REQ)    ? "RUD_REQ" :    \
+	 ((t) == UET_PDS_TYPE_ROD_REQ)    ? "ROD_REQ" :    \
+	 ((t) == UET_PDS_TYPE_RUDI_REQ)   ? "RUDI_REQ" :   \
+	 ((t) == UET_PDS_TYPE_RUDI_RESP)  ? "RUDI_RSP" :   \
+	 ((t) == UET_PDS_TYPE_UUD_REQ)    ? "UUD_REQ" :    \
+	 ((t) == UET_PDS_TYPE_ACK)        ? "ACK" :        \
+	 ((t) == UET_PDS_TYPE_ACK_CC)     ? "ACK_CC" :     \
+	 ((t) == UET_PDS_TYPE_ACK_CCX)    ? "ACK_CCX" :    \
+	 ((t) == UET_PDS_TYPE_NACK)       ? "NACK" :       \
+	 ((t) == UET_PDS_TYPE_CTRL)       ? "CTRL" :       \
+	 ((t) == UET_PDS_TYPE_NACK_CCX)   ? "NACK_CCX" :   \
+	 ((t) == UET_PDS_TYPE_RUD_CC_REQ) ? "RUD_CC_REQ" : \
+	 ((t) == UET_PDS_TYPE_ROD_CC_REQ) ? "ROD_CC_REQ" : \
 					   "UNKNOWN")
+
+#define PDS_CTRL_TO_STR(n)                                        \
+	(((n) == UET_PDS_CTRL_TYPE_NOP)         ? "NOP" :         \
+	 ((n) == UET_PDS_CTRL_TYPE_ACK_REQ)     ? "ACK_REQ" :     \
+	 ((n) == UET_PDS_CTRL_TYPE_CLEAR)       ? "CLEAR" :       \
+	 ((n) == UET_PDS_CTRL_TYPE_CLEAR_REQ)   ? "CLEAR_REQ" :   \
+	 ((n) == UET_PDS_CTRL_TYPE_CLOSE)       ? "CLOSE" :       \
+	 ((n) == UET_PDS_CTRL_TYPE_CLOSE_REQ)   ? "CLOSE_REQ" :   \
+	 ((n) == UET_PDS_CTRL_TYPE_PROBE)       ? "PROBE" :       \
+	 ((n) == UET_PDS_CTRL_TYPE_CREDIT)      ? "CREDIT" :      \
+	 ((n) == UET_PDS_CTRL_TYPE_CREDIT_REQ)  ? "CREDIT_REQ" :  \
+	 ((n) == UET_PDS_CTRL_TYPE_NEGOTIATION) ? "NEGOTIATION" : \
+						  "UNKNOWN")
+
 #define NEXT_HDR_TO_STR(n)                                    \
-	(((n) == UET_HDR_REQ_SMALL)      ? "REQ_SMALL" :      \
+	(((n) == UET_HDR_NONE)           ? "NONE" :           \
+	 ((n) == UET_HDR_REQ_SMALL)      ? "REQ_SMALL" :      \
 	 ((n) == UET_HDR_REQ_MEDIUM)     ? "REQ_MEDIUM" :     \
 	 ((n) == UET_HDR_REQ_STD)        ? "REQ_STD" :        \
 	 ((n) == UET_HDR_RSP)            ? "RSP" :            \
@@ -178,7 +211,9 @@ static struct uet_pds_state pds_state;
 		    (pp)->pds_spdcid, (pp)->pds_dpdcid,          \
 		    (pp)->pds_psn,                               \
 		    PDS_TYPE_TO_STR((pp)->pds_type),             \
-		    NEXT_HDR_TO_STR((pp)->next_hdr),             \
+		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)        \
+			? PDS_CTRL_TO_STR((pp)->pds_ctrl_type)   \
+			: NEXT_HDR_TO_STR((pp)->next_hdr),       \
 		    (msg),                                       \
 		    (pp)->pkt_len)
 
@@ -187,7 +222,9 @@ static struct uet_pds_state pds_state;
 		    (pp)->pds_dpdcid, (pp)->pds_spdcid,          \
 		    (pp)->pds_psn,                               \
 		    PDS_TYPE_TO_STR((pp)->pds_type),             \
-		    NEXT_HDR_TO_STR((pp)->next_hdr),             \
+		    ((pp)->pds_type == UET_PDS_TYPE_CTRL)        \
+			? PDS_CTRL_TO_STR((pp)->pds_ctrl_type)   \
+			: NEXT_HDR_TO_STR((pp)->next_hdr),       \
 		    (msg),                                       \
 		    (pp)->pkt_len)
 
@@ -414,7 +451,9 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->is_initiator = is_initiator;
 
 	pdc->dpdcid = 0;
-	pdc->open_msg_cnt = 0;
+
+	pdc->active_msg_id = 0;
+	pdc->active_msg_id_valid = false;
 
 	dlist_init(&pdc->tx_pkt_list_head);
 
@@ -451,7 +490,25 @@ static void uet_pdsm_free_pdc(struct uet_pdc *pdc)
 {
 	PDS_GO();
 
+	UET_PDS_DBG("freeing PDC %u (state=UNALLOC) (is_initiator=%d)",
+		    pdc->pdc_id, pdc->is_initiator);
+
+	/* remove from hash tables */
+	if (pdc->is_initiator)
+		HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
+	else
+		HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
+
 	pdc->state = PDC_STATE_UNALLOC;
+
+	/* reset close tracking fields */
+	pdc->close_requested = false;
+	pdc->close_started = false;
+	pdc->close_cmd_psn = 0;
+
+	/* reset active message tracking */
+	pdc->active_msg_id = 0;
+	pdc->active_msg_id_valid = false;
 
 	/* free a PDC by inserting to the tail of the free list */
 	dlist_remove(&pdc->node);
@@ -473,7 +530,7 @@ static void uet_pdsm_get_sdi(struct uet_pdc *pdc)
 }
 
 static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
-					       struct uet_addr *dst_addr,
+					       struct uet_av_entry *av_entry,
 					       uet_pds_mode_t mode)
 {
 	struct uet_pdc_ini_key pdc_key;
@@ -488,12 +545,20 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 						     PDC_TYPE_NONE);
 	pdc_key.job_id = uet_ep->job_id;
 	pdc_key.tc = UET_DEFAULT_TC;
-	memcpy(&pdc_key.dst_ip, &dst_addr->fa, sizeof(struct uet_fa));
+	/* TODO: IPv6 support */
+	memcpy(&pdc_key.src_ip, &uet_ep->ipv4_addr, sizeof(uet_ep->ipv4_addr));
+	memcpy(&pdc_key.dst_ip, &av_entry->addr->fa, sizeof(struct uet_fa));
 
 	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
 		  sizeof(pdc_key), pdc);
 	if (pdc) {
-		UET_PDS_DBG("lookup found initiator PDC %u", pdc->pdc_id);
+		/* if the PDC is closing, don't use it for new messages */
+		if (pdc->close_requested) {
+			UET_PDS_DBG("initiator lookup found a closing PDC %u",
+				    pdc->pdc_id);
+			return NULL;
+		}
+
 		return pdc;
 	}
 
@@ -506,6 +571,8 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 
 	/* initialze this initiator PDC and stick it in the hashtable */
 	uet_init_pdc(pdc, PDC_STATE_SYN, true);
+	pdc->uet_ep         = uet_ep;
+	pdc->av_entry       = av_entry;
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;
 	pdc->rx_bm_base_psn = UET_DEFAULT_START_PSN;
@@ -515,7 +582,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 
 	uet_pdsm_get_sdi(pdc);
 
-	UET_PDS_DBG("allocated initiator PDC %u", pdc->pdc_id);
+	UET_PDS_DBG("allocated initiator PDC %u (state=SYN)", pdc->pdc_id);
 
 	return pdc;
 }
@@ -542,6 +609,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	memset(&pdc_key, 0, sizeof(pdc_key));
 	/* TODO: IPv6 support */
 	pdc_key.src_ip.v4 = ntohl(ipv4->saddr);
+	pdc_key.dst_ip.v4 = ntohl(ipv4->daddr);
 	pdc_key.spdcid = pp->pds_spdcid; /* target side needs spdcid */
 
 	HASH_FIND(pdc_tgt_hh, pds_state.pdc_tgt_ht, &pdc_key,
@@ -562,7 +630,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 		return pdc;
 	}
 
-	UET_PDS_DBG("First SYN request from PDC %u (PSN %u offset %u)",
+	UET_PDS_DBG("first SYN request from PDC %u (PSN %u offset %u)",
 		    pp->pds_spdcid, pp->pds_psn, pp->pds_syn_off);
 
 	/* allocate a new PDC from the head of the free list */
@@ -584,7 +652,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 
 	uet_pdsm_get_sdi(pdc);
 
-	UET_PDS_DBG("allocated target PDC %u (established with PDC %u)",
+	UET_PDS_DBG("allocated target PDC %u (state=ESTABLISHED) (dpdcid=%u)",
 		    pdc->pdc_id, pdc->dpdcid);
 
 	return pdc;
@@ -672,22 +740,6 @@ static struct uet_pdc *uet_pdsm_get_msgid_pdc(uint16_t msg_id)
 }
 
 #if 0
-static int uet_pdsm_insert_pend_pkt(struct uet_pdc_pkt *pdc_pkt)
-{
-	PDS_GO();
-
-	/* TODO: not implemented yet */
-	return -FI_ENOSYS;
-}
-
-static struct uet_pdc_pkt *uet_pdsm_remove_pend_pkt(void)
-{
-	PDS_GO();
-
-	/* TODO: not implemented yet */
-	return NULL;
-}
-
 static struct uet_pdc *uet_pdsm_select_pdc_to_close(void)
 {
 	PDS_GO();
@@ -729,6 +781,176 @@ static int uet_pdsm_check_nack_code(struct uet_pdc_pkt *pdc_pkt)
 /*                            PDC Initiator APIs                            */
 /****************************************************************************/
 
+static int uet_pds_send_close_cmd(struct uet_instance *uet,
+				  struct uet_pdc *pdc)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pds_ctrl *ctrl_hdr;
+	struct uet_entropy *entropy_hdr;
+	uint16_t ctrl_flags;
+	int rc;
+
+	/* allocate the packet descriptor */
+	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
+	if (pdc_pkt == NULL) {
+		UET_PDS_ERR("failed to alloc PDC packet for close command");
+		return -FI_ENOMEM;
+	}
+
+	/* allocate the packet buffer */
+	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
+				((pdc->sec_enabled) ? 2 : 1));
+	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
+	if (pdc_pkt->pkt_buf == NULL) {
+		UET_PDS_ERR("failed to alloc packet buffer for close command");
+		free(pdc_pkt);
+		return -FI_ENOMEM;
+	}
+
+	/* reserve head space for security header if needed */
+	pdc_pkt->pkt = (pdc->sec_enabled)
+			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
+			: pdc_pkt->pkt_buf;
+
+	/* build Ethernet header */
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
+			  pdc->av_entry->nh_mac_addr,
+			  uet->nic.mac_addr);
+
+	/* set up pointers to headers */
+	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
+					     sizeof(struct ethhdr) +
+					     sizeof(struct iphdr));
+	ctrl_hdr = (struct uet_pds_ctrl *)(pdc_pkt->pkt +
+					   sizeof(struct ethhdr) +
+					   sizeof(struct iphdr) +
+					   sizeof(struct uet_entropy));
+
+	pdc_pkt->pkt_len = (sizeof(struct ethhdr) +
+			    sizeof(struct iphdr) +
+			    sizeof(struct uet_entropy) +
+			    sizeof(struct uet_pds_ctrl));
+
+	/* fill in the entropy header */
+	entropy_hdr->entropy = htons(UET_DEFAULT_ENTROPY);
+
+	/* fill in the control packet header */
+	ctrl_flags = ((UET_PDS_TYPE_CTRL << UET_PDS_TYPE_SHIFT) |
+		      (UET_PDS_CTRL_TYPE_CLOSE << UET_PDS_CTRL_TYPE_SHIFT) |
+		      (UET_PDS_CTRL_FLAGS_AR << UET_PDS_FLAGS_SHIFT));
+
+	ctrl_hdr->prlg.type_ctrl_flags = htons(ctrl_flags);
+	ctrl_hdr->rsvd = 0;
+
+	/* assign PSN for close command */
+	pdc->close_cmd_psn = pdc->next_psn++;
+	pdc_pkt->psn = pdc->close_cmd_psn;
+	ctrl_hdr->psn = htonl(pdc_pkt->psn);
+
+	ctrl_hdr->spdcid = htons(pdc->pdc_id);
+	ctrl_hdr->dpdcid = htons(pdc->dpdcid);
+
+	/* payload is 0x0 for close command */
+	ctrl_hdr->payload = 0;
+
+	/* build the IP header */
+	uet_build_ipv4_hdr(uet,
+			   (struct iphdr *)(pdc_pkt->pkt +
+					    sizeof(struct ethhdr)),
+			   htonl(pdc->av_entry->addr->fa.v4),
+			   htonl(pdc->uet_ep->ipv4_addr),
+			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
+			   uet->pds.ack_ip_tos,
+			   !pdc->sec_enabled);
+
+	/* save packet params */
+	pdc_pkt->msg_id = 0; /* control packets have no msg_id */
+	pdc_pkt->tx_retry_cnt = 0;
+	pdc_pkt->tx_pkt_handle = NULL; /* no SES handle for control packets */
+	pdc_pkt->tx_pkt_acked = false;
+	pdc_pkt->flags = 0;
+
+	/* send the packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
+	if (rc != FI_SUCCESS) {
+		UET_PDS_ERR("failed to send close command for PDC %u",
+			    pdc->pdc_id);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return rc;
+	}
+
+	/* the packet was sent successfully */
+	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX CLOSE COMMAND");
+
+	/* set this packet in the tx_bm for tracking ACK */
+	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u (close cmd)",
+		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,
+		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
+
+	bm_set(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn), pdc_pkt);
+
+	/* insert the packet to the end of the timeout queue for retries */
+	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+
+	UET_PDS_DBG("PDC %u close command sent (psn=%u)",
+		    pdc->pdc_id, pdc_pkt->psn);
+
+	return FI_SUCCESS;
+}
+
+static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
+				      struct uet_pdc *pdc)
+{
+	int rc;
+
+	/* bail if the close command has already been sent */
+	if (pdc->close_requested && pdc->close_started)
+		return FI_SUCCESS;
+
+	UET_PDS_DBG("PDC %u sending close command", pdc->pdc_id);
+
+	if (!pdc->is_initiator) {
+		UET_PDS_ERR("PDC %u is not an initiator, cannot close",
+			    pdc->pdc_id);
+		return -FI_EINVAL;
+	}
+
+	if (pdc->state != PDC_STATE_ESTABLISHED) {
+		UET_PDS_DBG("PDC %u not established (state %d), skip close",
+			    pdc->pdc_id, pdc->state);
+		return -FI_EINVAL;
+	}
+
+	/* set close_requested if not already set */
+	pdc->close_requested = true;
+
+	/* check if the active message has drained */
+	if (pdc->active_msg_id_valid) {
+		UET_PDS_DBG("PDC %u still has an active message (msg_id %u)",
+			    pdc->pdc_id, pdc->active_msg_id);
+		return -FI_EAGAIN;
+	}
+
+	/* the previous active message has drained, send the close command */
+	rc = uet_pds_send_close_cmd(uet, pdc);
+	if (rc != FI_SUCCESS) {
+		UET_PDS_ERR("PDC %u failed to send close command",
+			    pdc->pdc_id);
+		return rc;
+	}
+
+	/* close command packet has been sent */
+	pdc->close_started = true;
+
+	/* transition to the CLOSING state */
+	pdc->state = PDC_STATE_CLOSING;
+
+	UET_PDS_DBG("PDC %u transitioned to the CLOSING state", pdc->pdc_id);
+
+	return FI_SUCCESS;
+}
+
 /****************************************************************************/
 /*                             PDC Target APIs                              */
 /****************************************************************************/
@@ -741,6 +963,9 @@ int uet_pds_initialize(struct uet_instance *uet)
 {
 	struct uet_pdc *pdc;
 	int i;
+
+	/* seed random number generator for PDC close decisions */
+	srand(time(NULL));
 
 	uet->pds.tx_timeout     = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
@@ -787,10 +1012,6 @@ int uet_pds_initialize(struct uet_instance *uet)
 		dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
 	}
 
-	/* initialize the pending packets list */
-
-	dlist_init(&pds_state.pending_pkts_head);
-
 	/* good to go... */
 	pds_state.ready = true;
 
@@ -810,14 +1031,18 @@ void uet_pds_finalize(struct uet_instance *uet)
 	while (!dlist_empty(&pds_state.pdc_alloc_head)) {
 		dlist_pop_front(&pds_state.pdc_alloc_head,
 				struct uet_pdc, pdc, node);
+
 		if (pdc->is_initiator)
 			HASH_DELETE(pdc_ini_hh, pds_state.pdc_ini_ht, pdc);
 		else
 			HASH_DELETE(pdc_tgt_hh, pds_state.pdc_tgt_ht, pdc);
+
 		if (pdc->tx_bm)
 			bm_destroy(pdc->tx_bm);
+
 		if (pdc->ack_bm)
 			bm_destroy(pdc->ack_bm);
+
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
 	}
@@ -826,23 +1051,15 @@ void uet_pds_finalize(struct uet_instance *uet)
 	while (!dlist_empty(&pds_state.pdc_free_head)) {
 		dlist_pop_front(&pds_state.pdc_free_head,
 				struct uet_pdc, pdc, node);
+
 		if (pdc->tx_bm)
 			bm_destroy(pdc->tx_bm);
+
 		if (pdc->ack_bm)
 			bm_destroy(pdc->ack_bm);
+
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
-	}
-
-	/* free all the packets in the pending list */
-	while (!dlist_empty(&pds_state.pending_pkts_head)) {
-		dlist_pop_front(&pds_state.pending_pkts_head,
-				struct uet_pdc_pkt, pdc_pkt, node);
-		if (pdc_pkt->pkt_buf)
-			free(pdc_pkt->pkt_buf);
-		if (pdc_pkt->ack_buf)
-			free(pdc_pkt->ack_buf);
-		free(pdc_pkt);
 	}
 
 	/* wipe out all existing state */
@@ -884,7 +1101,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 {
 	struct uet_instance *uet;
 	struct uet_av_entry *av_entry;
-	struct uet_addr *dst_addr;
 	struct uet_pdc_pkt *pdc_pkt;
 	uet_pds_pkt_type_t pds_pkt_type;
 	struct uet_pdc *pdc;
@@ -898,7 +1114,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *)dst_addr_handle;
-	dst_addr = av_entry->addr;
 
 	switch (mode) {
 	case UET_PDS_MODE_RUD:
@@ -924,44 +1139,113 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		return -FI_EINVAL;
 	}
 
-	/* if pds_info is specified, take the PDC from its pdcid */
+	/*
+	 * If pds_info is specified, take the PDC from its pdcid, else
+	 * perform a hash lookup to find the PDC. For a SOM the lookup is
+	 * based on the uet_pdc_ini_key. For a middle or EOM the lookup is
+	 * based on the msg_id. In either case, if a PDC is not found then
+	 * -FI_EAGAIN is returned to indicate the caller should retry. In
+	 * this reference implementation, the SES does the right thing by
+	 * calling the Tx routine again later. This prevents the PDS manager
+	 * from having to maintain a pending packet list that is pulled
+	 * from when PDCs become available.
+	 */
+
 	if (pds_info) {
-		UET_PDS_DBG("SES Tx %p (pds_info pdcid %u psn %u)",
-			    tx_pkt_handle, pds_info->pdcid, pds_info->opsn);
+		UET_PDS_DBG("SES Tx %p msg_id %u (pds_info pdcid %u psn %u)",
+			    tx_pkt_handle, msg_id, pds_info->pdcid,
+			    pds_info->opsn);
 		pdc = uet_pdsm_get_pdc(pds_info->pdcid, true);
 		if (pdc == NULL)
 			return -FI_ENODEV;
 	} else if (flags & UET_PDS_FLAG_SOM) {
-		UET_PDS_DBG("SES Tx %p SOM", tx_pkt_handle);
-		pdc = uet_pdsm_assign_ini_pdc(uet_ep, dst_addr, mode);
+		UET_PDS_DBG("SES Tx %p msg_id %u [SOM]%s",
+			    tx_pkt_handle, msg_id,
+			    ((flags & UET_PDS_FLAG_EOM) ? " [EOM]" : ""));
+		pdc = uet_pdsm_assign_ini_pdc(uet_ep, av_entry, mode);
 		if (pdc) {
+			/* verify PDC has no active message */
+			if (pdc->active_msg_id_valid) {
+				UET_PDS_DBG("PDC %u already has "
+					    "active_msg_id %u, cannot start "
+					    "msg_id %u (EAGAIN)",
+					    pdc->pdc_id, pdc->active_msg_id,
+					    msg_id);
+				return -FI_EAGAIN;
+			}
+
 			rc = uet_pdsm_map_msgid_pdc(msg_id, pdc);
 			if (rc != FI_SUCCESS)
 				return rc;
-			pdc->open_msg_cnt++;
+
+			/* set the active message for this PDC */
+			pdc->active_msg_id = msg_id;
+			pdc->active_msg_id_valid = true;
+		} else {
+			UET_PDS_DBG("failed to get PDC for SOM %p "
+				    "msg_id %u (EAGAIN)",
+				    tx_pkt_handle, msg_id);
+			return -FI_EAGAIN;
 		}
 	} else {
-		UET_PDS_DBG("SES Tx %p", tx_pkt_handle);
+		UET_PDS_DBG("SES Tx %p msg_id %u%s",
+			    tx_pkt_handle, msg_id,
+			    ((flags & UET_PDS_FLAG_EOM) ? " [EOM]" : ""));
+
 		pdc = uet_pdsm_get_msgid_pdc(msg_id);
+		if (!pdc) {
+			UET_PDS_DBG("failed to get PDC for non-SOM %p "
+				    "msg_id %u (EAGAIN)",
+				    tx_pkt_handle, msg_id);
+			return -FI_EAGAIN;
+		}
 	}
 
-	if (!pdc) {
-		UET_PDS_ERR("failed to get PDC, put on pending list %p",
-			    tx_pkt_handle);
-		/* TODO: put this packet on the PDS pending pkt list */
-		return -FI_ENODEV;
+	if ((pdc->uet_ep != uet_ep) || (pdc->av_entry != av_entry)) {
+		UET_PDS_ERR("PDC %u does not match EP/AV for Tx pkt %p",
+			    pdc->pdc_id, tx_pkt_handle);
+		return -FI_EINVAL;
+	}
+
+	/* for non-SOM packets, verify msg_id matches the active message */
+	if (!(flags & UET_PDS_FLAG_SOM)) {
+		if (!pdc->active_msg_id_valid) {
+			UET_PDS_ERR("PDC %u has no active message, cannot send "
+				    "non-SOM packet for msg_id %u",
+				    pdc->pdc_id, msg_id);
+			return -FI_EINVAL;
+		}
+
+		if (pdc->active_msg_id != msg_id) {
+			UET_PDS_ERR("PDC %u active_msg_id %u does not match "
+				    "msg_id %u",
+				    pdc->pdc_id, pdc->active_msg_id, msg_id);
+			return -FI_EINVAL;
+		}
 	}
 
 	if (!pds_info && (flags & UET_PDS_FLAG_EOM)) {
-		UET_PDS_DBG("SES Tx %p EOM%s", tx_pkt_handle,
-			    (flags & UET_PDS_FLAG_MAINTAIN_PDC)
-				? " (maintain PDC)" : "");
-		if (!(flags & UET_PDS_FLAG_MAINTAIN_PDC)) {
-			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
-			if (rc != FI_SUCCESS)
-				return rc;
-			pdc->open_msg_cnt--;
+		/* clear the active message on this PDC */
+		pdc->active_msg_id = 0;
+		pdc->active_msg_id_valid = false;
+
+		rc = uet_pdsm_unmap_msgid_pdc(msg_id);
+		if (rc != FI_SUCCESS)
+			return rc;
+
+		if (flags & UET_PDS_FLAG_MAINTAIN_PDC) {
+			UET_PDS_DBG("PDC %u flagged with MAINTAIN_PDC on EOM",
+				    pdc->pdc_id);
 		}
+#ifdef UET_RANDOM_PDC_CLOSE
+		else if (pdc->is_initiator && !pdc->close_requested &&
+			 ((rand() % 100) < UET_RANDOM_PDC_CLOSE_THRESH)) {
+			/* randomly mark PDC for close after message sent */
+			UET_PDS_DBG("PDC %u randomly marked for close!",
+				    pdc->pdc_id);
+			pdc->close_requested = true;
+		}
+#endif /* UET_RANDOM_PDC_CLOSE */
 	}
 
 	/* allocate descriptor and buffer to build packet */
@@ -1067,7 +1351,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_build_ipv4_hdr(uet,
 			   (struct iphdr *)(pdc_pkt->pkt +
 					    sizeof(struct ethhdr)),
-			   htonl(dst_addr->fa.v4),
+			   htonl(av_entry->addr->fa.v4),
 			   htonl(uet_ep->ipv4_addr),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos,
@@ -1109,6 +1393,16 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	/* insert the packet to the end of the timeout queue */
 	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+
+	/* if close was requested, send it now */
+	if ((pdc->state == PDC_STATE_ESTABLISHED) && pdc->is_initiator &&
+	    pdc->close_requested && !pdc->close_started) {
+		rc = uet_pds_initiate_pdc_close(uet, pdc);
+		if ((rc != FI_SUCCESS) && (rc != -FI_EAGAIN)) {
+			UET_PDS_WARN("PDC %u failed to initiate close (rc=%d)",
+				     pdc->pdc_id, rc);
+		}
+	}
 
 	return FI_SUCCESS;
 }
@@ -1182,6 +1476,8 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 	time_t now, delta;
 	int rc;
 
+	PDS_GO();
+
 	uet = uet_ep->uet_domain->uet;
 
 	/* TODO:
@@ -1237,13 +1533,26 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 	if (pdc == NULL)
 		return -FI_EINVAL;
 
+	UET_PDS_DBG("PDC %d msg_id %u completion indication from SES",
+		    pdc->pdc_id, msg_id);
+
+	/* clear active message for MAINTAIN_PDC messages */
+	pdc->active_msg_id = 0;
+	pdc->active_msg_id_valid = false;
+
 	rc = uet_pdsm_unmap_msgid_pdc(msg_id);
 	if (rc != FI_SUCCESS)
 		return rc;
 
-	UET_PDS_DBG("PDC %d complete indication for msg_id %u",
-		    pdc->pdc_id, msg_id);
-	pdc->open_msg_cnt--;
+	/* if close was requested and not started, send it now */
+	if (pdc->close_requested && !pdc->close_started) {
+		rc = uet_pds_initiate_pdc_close(uet_ep->uet_domain->uet, pdc);
+		if ((rc != FI_SUCCESS) && (rc != -FI_EAGAIN)) {
+			UET_PDS_ERR("PDC %u failed to initiate close (rc=%d)",
+				    pdc->pdc_id, rc);
+			return rc;
+		}
+	}
 
 	return FI_SUCCESS;
 }
@@ -1268,7 +1577,6 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 					 sizeof(struct ethhdr) +
 					 sizeof(struct iphdr) +
 					 sizeof(struct uet_entropy));
-	ack_ses = (uint8_t *)(ack_pds + 1);
 
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->ack,
 			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
@@ -1295,14 +1603,18 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 		      (next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		      (flags << UET_PDS_FLAGS_SHIFT));
 
-	/* XXX start tracking a real cumulative ack value */
+	/* FIXME start tracking a real cumulative ack value */
 	ack_pds->ack_psn_offset = 0;
 	ack_pds->cack_psn = htonl(pdc_pkt->pkt_pp.pds_psn);
 
 	ack_pds->spdcid = htons(pdc->pdc_id);
 	ack_pds->dpdcid = htons(pdc->dpdcid);
 
-	memcpy(ack_ses, ses_hdr, ses_hdr_len);
+	/* only copy SES header if needed */
+	if (ses_hdr && ses_hdr_len > 0) {
+		ack_ses = (uint8_t *)(ack_pds + 1);
+		memcpy(ack_ses, ses_hdr, ses_hdr_len);
+	}
 }
 
 static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
@@ -1318,7 +1630,13 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	int rc;
 
 	/* TODO: IPv6 support and UDP support */
-	if (next_hdr == UET_HDR_RSP) {
+
+	if (next_hdr == UET_HDR_NONE) {
+		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
+				    sizeof(struct iphdr) +
+				    sizeof(struct uet_entropy) +
+				    sizeof(struct uet_pds_ack));
+	} else if (next_hdr == UET_HDR_RSP) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    sizeof(struct iphdr) +
 				    sizeof(struct uet_entropy) +
@@ -1365,10 +1683,6 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 		free(pdc_pkt->ack_buf);
 		return rc;
 	}
-
-	/* the packet was sent successfully */
-
-	pdc_pkt->ack_parsed = true;
 
 	uet_pds_pkt_dbg(uet, &pdc_pkt->ack_pp, true, "TX ACK PACKET");
 
@@ -1453,7 +1767,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 		      (UET_HDR_RSP << UET_PDS_NEXT_HDR_SHIFT) |
 		      (UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 
-	/* XXX start tracking a real cumulative ack value */
+	/* FIXME start tracking a real cumulative ack value */
 	ack_pds->ack_psn_offset = 0;
 	ack_pds->cack_psn = htonl(pdc_pkt->pkt_pp.pds_psn);
 
@@ -1705,11 +2019,11 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 		if (!bm_get(pdc->ack_bm, 0, NULL))
 			break;
 
-		 /*
-		  * This transmitted packet has been ACK'ed. Note that when
-		  * the ACK was processed, the packet was removed from the
-		  * PDC's tx list that is managed for retransmissions.
-		  */
+		/*
+		 * This transmitted packet has been ACK'ed. Note that when
+		 * the ACK was processed, the packet was removed from the
+		 * PDC's tx list that is managed for retransmissions.
+		 */
 
 		shifted = true;
 		bm_shift_right(pdc->tx_bm, 1);
@@ -1813,17 +2127,41 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	pdc_pkt->tx_pkt_acked = true;
 	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
 
-	/* upcall for SES processing */
-	rc = uet->pds.upcall.rx_rsp(pdc_pkt->tx_pkt_handle, pp);
-	if (rc != FI_SUCCESS) {
-		UET_PDS_ERR("PDC %u ACK PSN %u SES upcall failed (rx_rsp=%d)",
-			    pp->pds_dpdcid, pp->pds_psn, rc);
-		return rc;
+	/* check if this is an ACK for the close command */
+	if ((pdc->state == PDC_STATE_CLOSING) &&
+	    (pp->pds_psn == pdc->close_cmd_psn)) {
+		UET_PDS_DBG("PDC %u received ACK for close command (psn=%u)",
+			    pdc->pdc_id, pp->pds_psn);
+
+		/* shift the tx_bm window for all left edge ACK'ed PSNs */
+		rc = uet_pds_shift_tx_window(uet, pdc);
+		if (rc != FI_SUCCESS)
+			return rc;
+
+		/* FIXME, make sure there are no more pending packets */
+
+		/* free the PDC */
+		uet_pdsm_free_pdc(pdc);
+
+		return FI_SUCCESS;
 	}
 
 	if (pdc->state == PDC_STATE_SYN) {
+		UET_PDS_DBG("PDC %u transitioned to the ESTABLISHED state",
+			    pdc->pdc_id);
 		pdc->state  = PDC_STATE_ESTABLISHED;
 		pdc->dpdcid = pp->pds_spdcid;
+	}
+
+	/* upcall for SES processing */
+	if (pp->next_hdr != UET_HDR_NONE) {
+		rc = uet->pds.upcall.rx_rsp(pdc_pkt->tx_pkt_handle, pp);
+		if (rc != FI_SUCCESS) {
+			UET_PDS_ERR("PDC %u ACK PSN %u SES upcall "
+				    "failed (rx_rsp=%d)",
+				    pp->pds_dpdcid, pp->pds_psn, rc);
+			return rc;
+		}
 	}
 
 	/* shift the tx_bm window for all left edge ACK'ed PSNs */
@@ -1837,6 +2175,22 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	 * CLEAR to be acknowledged right away instead of waiting for the
 	 * next request to be sent that would contain a cumulative clear PSN.
 	 */
+
+	/*
+	 * Check if PDC has close_requested set and all messages have drained.
+	 * This handles the case where messages don't use MAINTAIN_PDC flag.
+	 *
+	 * FIXME Remove this code block, not sure it's possible to hit.
+	 */
+	if ((pdc->state == PDC_STATE_ESTABLISHED) && pdc->is_initiator &&
+	    pdc->close_requested && !pdc->close_started &&
+	    !pdc->active_msg_id_valid) {
+		rc = uet_pds_initiate_pdc_close(uet, pdc);
+		if ((rc != FI_SUCCESS) && (rc != -FI_EAGAIN)) {
+			UET_PDS_WARN("PDC %u failed to initiate close (rc=%d)",
+				     pdc->pdc_id, rc);
+		}
+	}
 
 	return FI_SUCCESS;
 }
@@ -1901,6 +2255,90 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 		rc = uet_pds_shift_rx_window(uet, pdc, true);
 		if (rc != FI_SUCCESS)
 			return rc;
+	}
+
+	return FI_SUCCESS;
+}
+
+static int uet_pds_process_control(struct uet_instance *uet,
+				   struct uet_parsed_pkt *pp,
+				   uint8_t *pkt,
+				   int pkt_len)
+{
+	struct uet_pdc *pdc;
+	bool send_ack = false;
+	int rc;
+
+	/* check if ACK is requested */
+	if (pp->pds_flags & UET_PDS_CTRL_FLAGS_AR)
+		send_ack = true;
+
+	switch (pp->pds_ctrl_type) {
+	case UET_PDS_CTRL_TYPE_CLOSE:
+		UET_PDS_DBG("Received CLOSE command (spdcid=%u dpdcid=%u)",
+			    pp->pds_spdcid, pp->pds_dpdcid);
+
+		/* find the target PDC */
+		pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, true);
+		if (!pdc) {
+			UET_PDS_WARN("CLOSE command for unknown PDC %u",
+				     pp->pds_dpdcid);
+			return -FI_EINVAL;
+		}
+
+		/* verify the PDC is in correct state */
+		if (pdc->state != PDC_STATE_ESTABLISHED) {
+			UET_PDS_WARN("PDC %u not ESTABLISHED (state=%d)",
+				     pdc->pdc_id, pdc->state);
+			return -FI_EINVAL;
+		}
+
+		/* verify dpdcid matches spdcid */
+		if (pdc->dpdcid != pp->pds_spdcid) {
+			UET_PDS_WARN("PDC %u dpdcid mismatch (%u != %u)",
+				     pdc->pdc_id, pdc->dpdcid, pp->pds_spdcid);
+			return -FI_EINVAL;
+		}
+
+		/* send ACK if requested */
+		if (send_ack) {
+			struct uet_pdc_pkt temp_pkt;
+
+			UET_PDS_DBG("PDC %u Tx ACK for CLOSE command",
+				    pdc->pdc_id);
+
+			/* set up temp pdc_pkt with parsed control packet */
+			memset(&temp_pkt, 0, sizeof(temp_pkt));
+			memcpy(&temp_pkt.pkt_pp, pp, sizeof(*pp));
+
+			/* build and send an ACK packet */
+			rc = uet_pds_tx_ack_pkt(uet, pdc, &temp_pkt,
+						UET_HDR_NONE, 0,
+						NULL, false);
+			if (rc != FI_SUCCESS) {
+				UET_PDS_ERR("failed to send ACK for CLOSE");
+				return rc;
+			}
+
+			/* FIXME Is the control packet freed here? */
+		}
+
+		/* free the PDC */
+		uet_pdsm_free_pdc(pdc);
+
+		break;
+
+	case UET_PDS_CTRL_TYPE_PROBE:
+	case UET_PDS_CTRL_TYPE_CREDIT:
+	case UET_PDS_CTRL_TYPE_CREDIT_REQ:
+	case UET_PDS_CTRL_TYPE_NEGOTIATION:
+		UET_PDS_ERR("Control type %d not yet supported",
+			     pp->pds_ctrl_type);
+		return -FI_EINVAL;
+
+	default:
+		UET_PDS_ERR("Unknown control type %d", pp->pds_ctrl_type);
+		return -FI_EINVAL;
 	}
 
 	return FI_SUCCESS;
@@ -2031,7 +2469,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	uint8_t *pkt;
 	size_t pkt_len;
 	struct uet_parsed_pkt pp;
-	bool pkt_is_ack, pkt_is_rd_rsp;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
 	struct uet_pds_info pds_info;
@@ -2043,6 +2481,8 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	uint8_t *crc_start;
 	int rc = FI_SUCCESS;
 
+	PDS_GO();
+
 	rc = uet_pds_sec_rx_pkt(uet, &pkt, &pkt_len);
 	if (rc != 1)
 		return rc;
@@ -2050,8 +2490,9 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
 				&pkt_is_ack,
-				&pkt_is_rd_rsp)) {
-		UET_PDS_WARN("invalid Rx packet");
+				&pkt_is_rd_rsp,
+				&pkt_is_ctrl)) {
+		UET_PDS_WARN("invalid Rx packet (len=%ld)", pkt_len);
 		rc = -FI_EINVAL;
 		goto exit_err;
 	}
@@ -2067,12 +2508,13 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 		/* calculate the CRC (include src/dst IP and UDP) */
 		/* TODO: IPv6 support */
 		crc_start = ((uint8_t *)pp.ip + 12);
-		crc = crc32c(crc_start,
-			     (pp.pkt_len - CRC_LEN -
-			      (crc_start - (uint8_t *)pp.eth)));
+		crc = crc32c(crc_start, (8 + pp.ip_payload_len - CRC_LEN));
 
 		/* verify the CRC */
-		if (memcmp(&crc, (pkt + pkt_len - CRC_LEN), CRC_LEN) != 0) {
+		if (memcmp(&crc,
+			   ((uint8_t *)pp.ip + pp.ip_len +
+			    pp.ip_payload_len - CRC_LEN),
+			   CRC_LEN) != 0) {
 			UET_PDS_WARN("Rx packet CRC mismatch");
 			rc = -FI_EINVAL;
 			goto exit_err;
@@ -2084,6 +2526,12 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (pkt_is_ack) {
 
 		rc = uet_pds_process_ack(uet, &pp);
+		if (rc != FI_SUCCESS)
+			goto exit_err;
+
+	} else if (pkt_is_ctrl) {
+
+		rc = uet_pds_process_control(uet, &pp, pkt, pkt_len);
 		if (rc != FI_SUCCESS)
 			goto exit_err;
 
@@ -2118,13 +2566,13 @@ void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
 	 */
 
 	if (uet_gettime(&start_time)) {
-		UET_PDS_ERR("Aborting endpoint close wait state");
+		UET_PDS_ERR("aborting endpoint close wait state");
 		return;
 	}
 
 	while (1) {
 		if (uet_gettime(&now)) {
-			UET_PDS_ERR("Aborting endpoint close wait state");
+			UET_PDS_ERR("aborting endpoint close wait state");
 			break;
 		}
 

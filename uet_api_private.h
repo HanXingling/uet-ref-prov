@@ -63,7 +63,7 @@
 #define UET_TAG_RENDEZVOUS_SIZE		8192
 
 #define UET_API_ERR(fmt, ...)				\
-	fprintf(stderr, "UET API: %s:%-4d: " fmt "\n",	\
+	fprintf(stdout, "UET API: %s:%-4d: " fmt "\n",	\
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_API_DEBUG_ENABLED false /* true => debug messages enabled */
@@ -71,12 +71,12 @@
 #define UET_API_DEBUG(fmt, ...)                                              \
 	do {                                                                 \
 		if (UET_API_DEBUG_ENABLED)                                   \
-			fprintf(stderr, "UET API: [%s] %s:%-4d: " fmt "\n",  \
+			fprintf(stdout, "UET API: [%s] %s:%-4d: " fmt "\n",  \
 				"error", __FILE__, __LINE__, ##__VA_ARGS__); \
 	} while (0)
 
 #define UET_API_PRINT_ERRNO(CALL)                                     \
-	fprintf(stderr, "UET_API: %s(): %s:%-4d, ret = %d (%s)\n",    \
+	fprintf(stdout, "UET_API: %s(): %s:%-4d, ret = %d (%s)\n",    \
 		(CALL), __FILE__, __LINE__, errno, strerror(errno))
 
 typedef uint64_t uet_dma_addr_t;

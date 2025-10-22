@@ -3410,6 +3410,8 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			tx_desc->remaining_bytes -= payload_len;
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ)
 				tx_desc->rx_desc->expected_rd_rsp++;
+			/* clear SOM flag after first packet */
+			flags &= ~UET_PDS_FLAG_SOM;
 		} else {
 			if (rc != -FI_EAGAIN)
 				uet_tx_desc_set_err(tx_desc, -rc,

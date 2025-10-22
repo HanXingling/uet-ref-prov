@@ -92,15 +92,15 @@ typedef enum {
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_ERR(fmt, ...)                                                      \
-	fprintf(stderr, "[%s] %s:%-4d: " fmt "\n", "error",                    \
+	fprintf(stdout, "[%s] %s:%-4d: " fmt "\n", "error",                    \
 		__FILE__, __LINE__, ##__VA_ARGS__)
 
 #define UET_PRINT_ERRNO(CALL)                                                  \
-	fprintf(stderr, "%s(): %s:%-4d, ret = %d (%s)\n",                      \
+	fprintf(stdout, "%s(): %s:%-4d, ret = %d (%s)\n",                      \
 		(CALL), __FILE__, __LINE__, errno, strerror(errno))
 
 #define UET_USAGE(PROG_NAME)                                                   \
-	fprintf(stderr,                                                        \
+	fprintf(stdout,                                                        \
 		"USAGE: %s <server | client [tag | rma] <remote IPv4 addr>\n", \
 		PROG_NAME)
 

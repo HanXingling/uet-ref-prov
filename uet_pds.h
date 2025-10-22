@@ -46,10 +46,10 @@ typedef enum {
 
 /* pds tx flags */
 typedef enum {
-	UET_PDS_FLAG_SOM        = 0x01,   /* start of message */
-	UET_PDS_FLAG_EOM        = 0x02,   /* end of message */
-	UET_PDS_FLAG_EAGER_REQ  = 0x04,   /* request eager length predition */
-	UET_PDS_FLAG_RETRANSMIT = 0x08,   /* retransmit of pkt  */
+	UET_PDS_FLAG_SOM          = 0x01, /* start of message */
+	UET_PDS_FLAG_EOM          = 0x02, /* end of message */
+	UET_PDS_FLAG_EAGER_REQ    = 0x04, /* request eager length predition */
+	UET_PDS_FLAG_RETRANSMIT   = 0x08, /* retransmit of pkt  */
 	UET_PDS_FLAG_MAINTAIN_PDC = 0x10, /* don't allow PDC teardown */
 } uet_pds_tx_flags_t;
 
@@ -149,7 +149,7 @@ struct uet_ses_to_pds_funcs {
 	 * returns:
 	 *      FI_SUCCESS on success
 	 *      negative value corresponding to fabric errno on error
-	 *        -FI_AGAIN indicates caller should queue packet and retry later
+	 *        -FI_EAGAIN indicates caller should queue packet and retry later
 	 */
 	int (*tx_pkt)(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,

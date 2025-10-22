@@ -823,7 +823,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	int rc;
 	uet_ses_rc_t ses_rc;
 	size_t rx_pkt_size;
-	bool pkt_is_ack, pkt_is_rd_rsp, ses_nack, gtd_del;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, ses_nack, gtd_del;
 	union uet_pkt *pkt;
 	struct uet_parsed_pkt pp;
 	struct uet_ep *dst_uet_ep;
@@ -876,7 +876,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, (uint8_t *)pkt, rx_pkt_size,
-				&pkt_is_ack, &pkt_is_rd_rsp))
+				&pkt_is_ack, &pkt_is_rd_rsp, &pkt_is_ctrl))
 		goto exit;
 
 	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");

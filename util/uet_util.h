@@ -67,6 +67,7 @@ struct uet_parsed_pkt {
 	uint16_t ethertype;
 	void *ip;                         /* can point to ipv4 or ipv6 header */
 	uint16_t ip_len;
+	uint16_t ip_payload_len;
 	uint8_t ip_protocol;                        /* next protocol after ip */
 	void *udp;
 	uint16_t udp_len;
@@ -92,7 +93,10 @@ struct uet_parsed_pkt {
 	uint8_t pds_syn_off;
 	uint32_t pds_clear_psn;
 	uint8_t pds_nack_code;
-	uint8_t pds_ctrl_payload;
+	uint16_t pds_probe_opaque;
+	uint8_t pds_pdc_info;
+	uint32_t pds_ctrl_payload;
+	uint8_t pds_ctrl_type;
 	uint8_t next_hdr;        /* identifies format of header following pds */
 	void *ses;
 	uint16_t ses_len;
