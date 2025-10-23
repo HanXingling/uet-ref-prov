@@ -1252,27 +1252,28 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	}
 
 	if (!pds_info && (flags & UET_PDS_FLAG_EOM)) {
-		/* clear the active message on this PDC */
-		pdc->active_msg_id = 0;
-		pdc->active_msg_id_valid = false;
-
-		rc = uet_pdsm_unmap_msgid_pdc(msg_id);
-		if (rc != 0)
-			return rc;
-
 		if (flags & UET_PDS_FLAG_MAINTAIN_PDC) {
 			UET_PDS_DBG("PDC %u flagged with MAINTAIN_PDC on EOM",
 				    pdc->pdc_id);
-		}
+		} else {
+			/* clear the active message on this PDC */
+			pdc->active_msg_id = 0;
+			pdc->active_msg_id_valid = false;
+
+			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
+			if (rc != 0)
+				return rc;
+
 #ifdef UET_RANDOM_PDC_CLOSE
-		else if (pdc->is_initiator && !pdc->close_requested &&
-			 ((rand() % 100) < UET_RANDOM_PDC_CLOSE_THRESH)) {
-			/* randomly mark PDC for close after message sent */
-			UET_PDS_DBG("PDC %u randomly marked for close!",
-				    pdc->pdc_id);
-			pdc->close_requested = true;
-		}
+			if (pdc->is_initiator && !pdc->close_requested &&
+			    ((rand() % 100) < UET_RANDOM_PDC_CLOSE_THRESH)) {
+				/* randomly mark PDC for close */
+				UET_PDS_DBG("PDC %u randomly marked for close!",
+					    pdc->pdc_id);
+				pdc->close_requested = true;
+			}
 #endif /* UET_RANDOM_PDC_CLOSE */
+		}
 	}
 
 	/* allocate descriptor and buffer to build packet */
