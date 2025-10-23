@@ -135,7 +135,7 @@ struct uet_pds_sng_state {
  * overlay struct for fields in pds headers
  *
  * the stop-and-go reliability layer is simpler if the sequence number
- * state is maintained between libfabric endpoints (rather than between
+ * state is maintained between endpoints (rather than between
  * FEPs as is done in the real pds reliability layer), so to enable that
  * a couple of fields in the pds headers are repurposed as follows:
  *
@@ -382,8 +382,8 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, union uet_pkt *pkt,
  *      ses_hdr     - ptr to ses header
  *
  * returns:
- *      FI_SUCCESS on success,
- *      negative value corresponding to fabric errno on error
+ *      0 on success,
+ *      negative value corresponding to errno on error
  */
 static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 			      uet_pds_next_hdr_t next_hdr, size_t ses_hdr_len,
@@ -414,7 +414,7 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	ack_state = calloc(1, sizeof(struct uet_pds_ack_state) + ack_pkt_len);
 	if (ack_state == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 	ack = (union uet_pkt *) ack_state->ack;
 	ack_state->ack_len = ack_pkt_len;
@@ -438,7 +438,7 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, ack, ack_pkt_len, "TX ACK PACKET");
 	rc = uet_nic_tx_pkt(UET_NIC(uet), ack, &ack->common.ipv4,
 			    (size_t) ack_pkt_len);
-	if (rc == FI_SUCCESS) {
+	if (rc == 0) {
 		uet_gettime(&now);
 		ack_state->ack_time = now;
 		dlist_insert_head(&ack_state->list_entry,
@@ -452,7 +452,7 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
 /*
  * build and transmit a uet ack packet with ses error code,
  * specifically for case where the packet is not deliverable because
- * there is no libfabric endpoint with the uet address in the request
+ * there is no endpoint with the uet address in the request
  *
  * parms:
  *      uet    - ptr to uet instance struct
@@ -460,8 +460,8 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, union uet_pkt *pkt,
  *      ses_rc - ses return code
  *
  * returns:
- *      FI_SUCCESS on success,
- *      negative value corresponding to fabric errno on error
+ *      0 on success,
+ *      negative value corresponding to errno on error
  */
 static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 				  union uet_pkt *pkt, uet_ses_rc_t ses_rc)
@@ -479,7 +479,7 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	ack = calloc(1, sizeof(struct uet_std_rsp_pkt));
 	if (ack == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 
 	/* build ses header */
@@ -526,7 +526,7 @@ int uet_pds_sng_initialize(struct uet_instance *uet)
 	uet->pds.msl = UET_DEFAULT_MSL;
 	uet->pds.ack_ip_tos = uet_dscp_to_tos(UET_IP_DEFAULT_ACK_DSCP);
 	uet->pds.max_ack_data = UET_DEFAULT_PDS_MAX_ACK_DATA;
-	return FI_SUCCESS;
+	return 0;
 }
 
 /* free pds resources for uet instance */
@@ -542,13 +542,13 @@ int uet_pds_sng_ep_initialize(struct uet_ep *uet_ep)
 	pds_state = calloc(1, sizeof(struct uet_pds_sng_state));
 	if (pds_state == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 
 	uet_ep->pds = pds_state;
 
 	dlist_init(&pds_state->ack_state_list_head);
-	return FI_SUCCESS;
+	return 0;
 }
 
 /* free pds resources for endpoint */
@@ -605,14 +605,14 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	/* done for now if transmit in progress and not retry */
 	if (uet_pds_ep_tx_active(uet_ep) &&
 	    !(flags & UET_PDS_FLAG_RETRANSMIT))
-		return -FI_EAGAIN;
+		return -EAGAIN;
 
 	/* allocate buffer to build packet   */
 	/* TODO: add support for gather send */
 	uet_pkt = calloc(1, uet->nic.max_pkt_size);
 	if (uet_pkt == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 
 	uet_build_eth_hdr(&uet_pkt->common.eth, av_entry->nh_mac_addr,
@@ -631,7 +631,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		default:
 			UET_API_ERR("Unsupported packet delivery mode = %d",
 				    mode);
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		/* TODO: IPv6 support and UDP support */
@@ -670,7 +670,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		break;
 	default:
 		UET_API_ERR("Unsupported next header type  = %d", next_hdr);
-		return -FI_EINVAL;
+		return -EINVAL;
 	};
 
 	uet_build_ipv4_hdr(uet, &uet_pkt->common.ipv4, htonl(dst_addr->fa.v4),
@@ -719,7 +719,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 	UET_PDS_PKT_HDR_TRACE(uet, NULL, uet_pkt, uet_pkt_len, "TX PACKET");
 	rc = uet_nic_tx_pkt(UET_NIC(uet), uet_pkt, &uet_pkt->common.ipv4,
 			    uet_pkt_len);
-	if (rc == FI_SUCCESS)
+	if (rc == 0)
 		pds_state->tx.tx_active = true;
 	free(uet_pkt);
 	return rc;
@@ -730,7 +730,7 @@ int uet_pds_sng_msg_cmpl_ind(struct uet_ep *uet_ep,
 			     uet_addr_handle_t dst_addr_handle,
 			     uet_pds_mode_t mode, uint16_t msg_id)
 {
-	return FI_SUCCESS;
+	return 0;
 }
 
 /* progress tx operations for endpoint */
@@ -748,7 +748,7 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 
 	/* check if tx is active on endpoint */
 	if (!uet_pds_ep_tx_active(uet_ep))
-		return -FI_EAGAIN;
+		return -EAGAIN;
 
 	pds_tx = &pds_state->tx;
 	*err_pkt_handle = pds_tx->pkt_parms.tx_pkt_handle;
@@ -757,12 +757,12 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 	uet_gettime(&now);
 	delta = now - pds_tx->start_time;
 	if (delta < uet->pds.tx_timeout)
-		return FI_SUCCESS;
+		return 0;
 
 	if (pds_tx->retry_cnt >= uet->pds.max_tx_retries) {
 		/* retries exhausted */
 		pds_state->tx.tx_active = false;
-		return -FI_EIO;
+		return -EIO;
 	}
 
 	/* retransmit the packet */
@@ -823,7 +823,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	int rc;
 	uet_ses_rc_t ses_rc;
 	size_t rx_pkt_size;
-	bool pkt_is_ack, pkt_is_rd_rsp, ses_nack, gtd_del;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, ses_nack, gtd_del;
 	union uet_pkt *pkt;
 	struct uet_parsed_pkt pp;
 	struct uet_ep *dst_uet_ep;
@@ -848,7 +848,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	pkt = (union uet_pkt *) malloc(uet->nic.max_pkt_size);
 	if (pkt == NULL) {
 		UET_API_PRINT_ERRNO("malloc");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 
 	/* allocate space for ses response header + ack data for read */
@@ -856,7 +856,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 			     uet->pds.max_ack_data);
 	if (rsp_ses_hdr == NULL) {
 		UET_API_PRINT_ERRNO("malloc");
-		rc = -FI_ENOMEM;
+		rc = -ENOMEM;
 		goto exit;
 	}
 
@@ -868,15 +868,15 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 
 	/* parse the packet */
 	rc = uet_parse_pkt(uet, pkt, rx_pkt_size, &pp);
-	if (rc != FI_SUCCESS) {
-		if (rc == -FI_EFAULT)
+	if (rc != 0) {
+		if (rc == -EFAULT)
 			UET_API_ERR("RX of malformed UET packet");
 		goto exit;
 	}
 
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, (uint8_t *)pkt, rx_pkt_size,
-				&pkt_is_ack, &pkt_is_rd_rsp))
+				&pkt_is_ack, &pkt_is_rd_rsp, &pkt_is_ctrl))
 		goto exit;
 
 	UET_PDS_PKT_HDR_TRACE(uet, &pp, pp.eth, pp.pkt_len, "RX PACKET");
@@ -931,7 +931,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 
 		/* upcall for ses processing */
 		rc = ses_upcall->rx_rsp(pds_tx->pkt_parms.tx_pkt_handle, &pp);
-		if (rc == FI_SUCCESS) {
+		if (rc == 0) {
 			/* update seq num for transmission of next packet */
 			pds_tx->psn++;
 			pds_tx->tx_active = false;
@@ -964,7 +964,7 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 					uet, &pp, &pds_info,
 					&rsp_next_hdr, rsp_ses_hdr,
 					&rsp_ses_hdr_len, &ses_nack, &gtd_del);
-		if (rc == FI_SUCCESS) {
+		if (rc == 0) {
 			/* TODO: add support for pds nack               */
 			/*   - for now, just don't send ack, which will */
 			/*     retrigger retransmit, similar to nack    */

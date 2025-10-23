@@ -46,10 +46,10 @@ typedef enum {
 
 /* pds tx flags */
 typedef enum {
-	UET_PDS_FLAG_SOM        = 0x01,   /* start of message */
-	UET_PDS_FLAG_EOM        = 0x02,   /* end of message */
-	UET_PDS_FLAG_EAGER_REQ  = 0x04,   /* request eager length predition */
-	UET_PDS_FLAG_RETRANSMIT = 0x08,   /* retransmit of pkt  */
+	UET_PDS_FLAG_SOM          = 0x01, /* start of message */
+	UET_PDS_FLAG_EOM          = 0x02, /* end of message */
+	UET_PDS_FLAG_EAGER_REQ    = 0x04, /* request eager length predition */
+	UET_PDS_FLAG_RETRANSMIT   = 0x08, /* retransmit of pkt  */
 	UET_PDS_FLAG_MAINTAIN_PDC = 0x10, /* don't allow PDC teardown */
 } uet_pds_tx_flags_t;
 
@@ -80,8 +80,8 @@ struct uet_ses_to_pds_funcs {
 	 *            for
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
+	 *      0 on success
+	 *      negative value corresponding to errno on error
 	 */
 	int (*initialize)(struct uet_instance *uet);
 
@@ -102,8 +102,8 @@ struct uet_ses_to_pds_funcs {
 	 *               being initialized for
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
+	 *      0 on success
+	 *      negative value corresponding to errno on error
 	 */
 	int (*ep_initialize)(struct uet_ep *uet_ep);
 
@@ -147,9 +147,9 @@ struct uet_ses_to_pds_funcs {
 	 *      dma_rdy         - true => msg payload buffer can be DMA'ed
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
-	 *        -FI_AGAIN indicates caller should queue packet and retry later
+	 *      0 on success
+	 *      negative value corresponding to errno on error
+	 *     -EAGAIN indicates caller should queue packet and retry later
 	 */
 	int (*tx_pkt)(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
@@ -171,8 +171,8 @@ struct uet_ses_to_pds_funcs {
 	 *      msg_id          - id of message that has completed
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
+	 *      0 on success
+	 *      negative value corresponding to errno on error
 	 */
 	int (*msg_cmpl_ind)(struct uet_ep *uet_ep,
 			    uet_addr_handle_t dst_addr_handle,
@@ -187,8 +187,8 @@ struct uet_ses_to_pds_funcs {
 	 *                       returned in err case
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
+	 *      0 on success
+	 *      negative value corresponding to errno on error
 	 */
 	int (*progress_tx)(struct uet_ep *uet_ep,
 			   uet_pkt_handle_t *err_pkt_handle);
@@ -200,8 +200,8 @@ struct uet_ses_to_pds_funcs {
 	 *      uet - ptr to uet instance struct
 	 *
 	 * returns:
-	 *      FI_SUCCESS to indicate no error
-	 *      negative value corresponding to fabric errno on error
+	 *      0 to indicate no error
+	 *      negative value corresponding to errno on error
 	 */
 	int (*progress_rx)(struct uet_instance *uet);
 
@@ -229,30 +229,30 @@ struct uet_pds_to_ses_funcs {
 	 *      rsp_next_hdr    - address of location where identifer of ses
 	 *                        header format for response is to be returned,
 	 *                        return contents are only valid when function
-	 *                        FI_SUCCESS
+	 *                        returns 0
 	 *      rsp_ses_hdr     - ptr to buffer where ses header for response
 	 *                        is to be returned, return contents are only
-	 *                        valid when function returns FI_SUCCESS,
+	 *                        valid when function returns 0,
 	 *                        buffer must be large enough to hold maximum
 	 *                        size ses response
 	 *      rsp_ses_hdr_len - address of location where length of ses
 	 *                        header for response is to be returned, return
 	 *                        contents are only valid when function returns
-	 *                        FI_SUCCESS
+	 *                        0
 	 *      ses_nack        - ptr to location where ses indicates whether
 	 *                        pds should send pds nack instead of pds ack,
 	 *                        return contents are only valid when function
-	 *                        returns FI_SUCCESS, true => pds must send
+	 *                        returns 0, true => pds must send
 	 *                        nack ses response state
 	 *      gtd_del         - ptr to location where ses indicates whether
 	 *                        pds needs to maintain ses response state,
 	 *                        return contents are only valid when function
-	 *                        returns FI_SUCCESS, true => pds must
+	 *                        returns 0, true => pds must
 	 *                        guarantee delivery of ses response state
 	 *
 	 * returns:
-	 *   - FI_SUCCESS when ses response is to be returned to initiator
-	 *   - negative value corresponding to fabric errno on error
+	 *   - 0 when ses response is to be returned to initiator
+	 *   - negative value corresponding to errno on error
 	 */
 	int (*rx_req)(uet_pkt_handle_t rx_pkt_handle, struct uet_instance *uet,
 		      struct uet_parsed_pkt *pp, struct uet_pds_info *pds_info,
@@ -268,8 +268,8 @@ struct uet_pds_to_ses_funcs {
 	 *      rsp_pp        - ptr to parsed packet struct for response
 	 *
 	 * returns:
-	 *      FI_SUCCESS when ack processed
-	 *      negative value corresponding to fabric errno on error
+	 *      0 when ack processed
+	 *      negative value corresponding to errno on error
 	 */
 	int (*rx_rsp)(uet_pkt_handle_t tx_pkt_handle,
 		      struct uet_parsed_pkt *rsp_pp);
@@ -284,8 +284,8 @@ struct uet_pds_to_ses_funcs {
 	 *      reason        - error reason code
 	 *
 	 * returns:
-	 *      FI_SUCCESS on success
-	 *      negative value corresponding to fabric errno on error
+	 *      0 on success
+	 *      negative value corresponding to errno on error
 	 */
 	int (*pds_err)(uet_pkt_handle_t tx_pkt_handle,
 		       uet_pds_err_code_t reason);

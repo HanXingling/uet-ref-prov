@@ -758,15 +758,15 @@ void uet_rw_unlock(struct uet_rw_lock *lock, uet_rw_lock_access_t access)
  *      field_len    - length of the packet field to be checked in bytes
  *
  * returns:
- *	 FI_SUCCESS: field is within packet bounds
- *	-FI_EFAULT:  packet is malformed
+ *	 0: field is within packet bounds
+ *	-EFAULT: packet is malformed
  */
 static int uet_parse_chk_next_field(struct uet_parsed_pkt *pp,
 				    uint16_t field_offset, uint16_t field_len)
 {
 	if ((field_offset + field_len) > pp->pkt_len)
-		return -FI_EFAULT;
-	return FI_SUCCESS;
+		return -EFAULT;
+	return 0;
 }
 
 /* determine if ip protocol is associated with a supported ipv6 ext hdr */
@@ -800,9 +800,9 @@ static bool uet_is_valid_ipv6_ext_hdr(uint8_t ipproto)
  *              - ip_protocol
  *
  * returns:
- *	 FI_SUCCESS: packet successfully parsed
- *	-FI_EINVAL:  packet is not a properly encapsulated UET packet
- *	-FI_EFAULT:  malformed packet
+ *	 0: packet successfully parsed
+ *	-EINVAL: packet is not a properly encapsulated UET packet
+ *	-EFAULT: malformed packet
  */
 static int uet_get_ipv6_nexthdr(struct uet_instance *uet,
 				struct uet_parsed_pkt *pp)
@@ -813,6 +813,7 @@ static int uet_get_ipv6_nexthdr(struct uet_instance *uet,
 
 	ipv6 = (struct ipv6hdr *) pp->ip;
 	pp->ip_len = sizeof(struct ipv6hdr);
+	pp->ip_payload_len = ntohs(ipv6->payload_len);
 	pp->ip_protocol = ipv6->nexthdr;
 
 	while (1) {
@@ -820,18 +821,18 @@ static int uet_get_ipv6_nexthdr(struct uet_instance *uet,
 		    (pp->ip_protocol == IPPROTO_UDP))
 			break;
 		if (!uet_is_valid_ipv6_ext_hdr(pp->ip_protocol))
-			return -FI_EINVAL;
+			return -EINVAL;
 		opt_hdr = (struct ipv6_opt_hdr *)
 			(((uint8_t *) pp->ip) + pp->ip_len);
 		rc = uet_parse_chk_next_field(pp, pp->eth_len + pp->ip_len,
 				sizeof(struct ipv6_opt_hdr));
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		pp->ip_protocol = opt_hdr->nexthdr;
 		pp->ip_len += ((opt_hdr->hdrlen + 1) << 3);
 	}
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 /*
@@ -887,9 +888,9 @@ uint16_t uet_get_ses_req_payload_len(struct uet_parsed_pkt *pp,
  *      pp      - ptr to struct where packet parsing results are returned
  *
  * returns:
- *	 FI_SUCCESS: packet successfully parsed
- *	-FI_EINVAL:  packet is not a properly encapsulated UET packet
- *	-FI_EFAULT:  malformed packet
+ *	 0: packet successfully parsed
+ *	-EINVAL: packet is not a properly encapsulated UET packet
+ *	-EFAULT: malformed packet
  */
 int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		  struct uet_parsed_pkt *pp)
@@ -965,17 +966,20 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		default:
 			goto err_exit;
 		}
-	} else
+	} else {
 		ethertype = pp->ethertype;
+	}
 	switch (ethertype) {
 	case ETH_P_IP:
 		ipv4 = (struct iphdr *) p;
 		pp->ip_protocol = ipv4->protocol;
-		pp->ip_len = ipv4->ihl << 2;
+		pp->ip_len = (ipv4->ihl << 2);
+		pp->ip_payload_len = (ntohs(ipv4->tot_len) -
+				      sizeof(struct iphdr));
 		break;
 	case ETH_P_IPV6:
 		rc = uet_get_ipv6_nexthdr(uet, pp);
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		break;
 	default:
@@ -999,7 +1003,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			udp = (struct udphdr *) p;
 			rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct udphdr));
-			if (rc != FI_SUCCESS)
+			if (rc != 0)
 				return rc;
 			if (ntohs(udp->dest) != uet->uet_udp_port)
 				goto err_exit;
@@ -1017,7 +1021,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	/* parse security header */
 	pds_prlg = (struct uet_pds_prlg *)p;
 	rc = uet_parse_chk_next_field(pp, cur_len, sizeof(struct uet_pds_prlg));
-	if (rc != FI_SUCCESS)
+	if (rc != 0)
 		return rc;
 	pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 	pp->pds_type = ((pds_type_next_flags & UET_PDS_TYPE_MASK) >>
@@ -1049,7 +1053,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pds_prlg = (struct uet_pds_prlg *) p;
 		rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct uet_pds_prlg));
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		pds_type_next_flags = ntohs(pds_prlg->type_next_flags);
 		pp->pds_type = (pds_type_next_flags & UET_PDS_TYPE_MASK) >>
@@ -1075,16 +1079,17 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_req->spdcid);
 		pp->pds_clear_psn = ((int16_t)ntohs(pds_req->clear_psn_offset) +
 				     pp->pds_psn);
-		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN)
+		if (pp->pds_flags & UET_PDS_REQ_FLAGS_SYN) {
 			pp->pds_syn_off = ((ntohs(pds_req->pdc_info_psn_offset) &
 					    UET_PDS_REQ_PSN_OFFSET_MASK) >>
 					   UET_PDS_REQ_PSN_OFFSET_SHIFT);
-		else
+		} else {
 			pp->pds_dpdcid = ntohs(pds_req->dpdcid);
+		}
 		break;
 	case UET_PDS_TYPE_UUD_REQ:
-		pp->pds_len = sizeof(struct uet_pds_uud_req);
-		return FI_SUCCESS;
+		/* TODO: support for parsing UUD */
+		return -EINVAL;
 	case UET_PDS_TYPE_ACK:
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:
@@ -1104,16 +1109,33 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_nack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_nack->dpdcid);
 		pp->pds_nack_code = pds_nack->nack_code;
-		return FI_SUCCESS;
+		return 0;
 	case UET_PDS_TYPE_CTRL:
 		pds_ctrl = (struct uet_pds_ctrl *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_ctrl);
+		pp->pds_ctrl_type = pp->next_hdr;
+		pp->pds_psn = ntohl(pds_ctrl->psn);
+		pp->pds_spdcid = ntohs(pds_ctrl->spdcid);
+		if (pp->pds_ctrl_type == UET_PDS_CTRL_TYPE_PROBE)
+			pp->pds_probe_opaque = ntohs(pds_ctrl->probe_opaque);
+		if (pp->pds_flags & UET_PDS_CTRL_FLAGS_SYN) {
+			pp->pds_pdc_info =
+				((ntohs(pds_ctrl->pdc_info_psn_offset) &
+				  UET_PDS_CTRL_PDC_INFO_MASK) >>
+				 UET_PDS_CTRL_PDC_INFO_SHIFT);
+			pp->pds_syn_off =
+				((ntohs(pds_ctrl->pdc_info_psn_offset) &
+				  UET_PDS_CTRL_PSN_OFFSET_MASK) >>
+				 UET_PDS_CTRL_PSN_OFFSET_SHIFT);
+		} else {
+			pp->pds_dpdcid = ntohs(pds_ctrl->dpdcid);
+		}
 		pp->pds_ctrl_payload = ntohl(pds_ctrl->payload);
-		/* TODO: support for parsing control messages */
-		return FI_SUCCESS;
+		return 0;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
 		/* TODO: support for parsing RUDI */
+		return -EINVAL;
 	default:
 		goto err_exit;
 	}
@@ -1124,10 +1146,14 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	/* parse ses header */
 	pp->ses = p;
 	switch (pp->next_hdr) {
+	case UET_HDR_NONE:
+		pp->ses_len = 0;
+		pp->ses_payload_len = 0;
+		break;
 	case UET_HDR_REQ_STD:
 		rc = uet_parse_chk_next_field(
 			pp, cur_len, sizeof(struct uet_ses_req_std));
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_req_std);
 		ses_req = (struct uet_ses_req_std *) pp->ses;
@@ -1162,7 +1188,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		if (pp->ses_opcode != UET_READ) {
 			rc = uet_parse_chk_next_field(
 					pp, cur_len, pp->ses_payload_len);
-			if (rc != FI_SUCCESS)
+			if (rc != 0)
 				return rc;
 			cur_len += pp->ses_payload_len;
 		}
@@ -1177,14 +1203,14 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			rc = uet_parse_chk_next_field(
 					pp, cur_len,
 					sizeof(struct uet_pds_def_rsp));
-			if (rc != FI_SUCCESS)
+			if (rc != 0)
 				return rc;
 			pp->ses_len = sizeof(struct uet_pds_def_rsp);
 		} else {
 			rc = uet_parse_chk_next_field(
 					pp, cur_len,
 					sizeof(struct uet_ses_rsp));
-			if (rc != FI_SUCCESS)
+			if (rc != 0)
 				return rc;
 			pp->ses_len = sizeof(struct uet_ses_rsp);
 		}
@@ -1195,7 +1221,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	case UET_HDR_RSP_DATA:
 		rc = uet_parse_chk_next_field(
 				pp, cur_len, sizeof(struct uet_ses_rsp_d));
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_rsp_d);
 		cur_len += pp->ses_len;
@@ -1211,7 +1237,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			 UET_SES_RSP_D_PAYLOAD_LEN_MASK) >>
 			UET_SES_RSP_D_PAYLOAD_LEN_SHIFT;
 		rc = uet_parse_chk_next_field(pp, cur_len, pp->ses_payload_len);
-		if (rc != FI_SUCCESS)
+		if (rc != 0)
 			return rc;
 		cur_len += pp->ses_payload_len;
 		break;
@@ -1222,9 +1248,9 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		goto err_exit;
 	}
 
-	return FI_SUCCESS;
+	return 0;
 
 err_exit:
-	return -FI_EINVAL;
+	return -EINVAL;
 }
 

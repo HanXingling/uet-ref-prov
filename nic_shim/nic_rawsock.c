@@ -23,59 +23,30 @@ struct rawsock_data {
 	struct sockaddr_ll sadr;           /* link-level socket addr */
 };
 
-/* get nic info for libfabric fid_nic struct */
+/* get nic info */
 int nic_rawsock_getinfo(struct uet_nic *nic,
-			struct fid_nic *fnic)
+			struct uet_nic_info *nic_info)
 {
 	struct rawsock_data *rdata =
 		(struct rawsock_data *)nic->nic_priv_data;
-
-	int rc;
-
-	/* allocate memory for nic structs */
-	fnic->device_attr = calloc(1, sizeof(struct fi_device_attr));
-	if (fnic->device_attr == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
-		rc = -FI_ENOMEM;
-		goto err_return;
-	}
-
-	fnic->link_attr = calloc(1, sizeof(struct fi_link_attr));
-	if (fnic->link_attr == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
-		rc = -FI_ENOMEM;
-		goto err_return;
-	}
 
 	/* get interface flags */
 	if ((ioctl(rdata->sock_fd.fd, SIOCGIFFLAGS, &rdata->ifr)) < 0) {
 		UET_API_PRINT_ERRNO("socket ioctl");
 		UET_API_ERR("Error getting interface flags");
-		goto err_return;
+		return -ENODEV;
 	}
 
-	/* init nic info */
-	fnic->device_attr->name = nic->ifname;
-	fnic->link_attr->mtu = nic->mtu;
-	fnic->link_attr->network_type = nic->network_type;
-	fnic->link_attr->address = nic->mac_addr_str;
-	if (rdata->ifr.ifr_flags & IFF_UP)
-		fnic->link_attr->state = FI_LINK_UP;
-	else
-		fnic->link_attr->state = FI_LINK_DOWN;
+	nic_info->ifname = nic->ifname;
+	nic_info->network_type = nic->network_type;
+	nic_info->mac_addr_str = nic->mac_addr_str;
+	nic_info->mtu = nic->mtu;
 
-	return FI_SUCCESS;
+	nic_info->link_state =
+		(rdata->ifr.ifr_flags & IFF_UP)
+			? UET_NIC_LINK_STATE_UP : UET_NIC_LINK_STATE_DOWN;
 
-err_return:
-	if (fnic->device_attr != NULL) {
-		free(fnic->device_attr);
-		fnic->device_attr = NULL;
-	}
-	if (fnic->link_attr != NULL) {
-		free(fnic->link_attr);
-		fnic->link_attr = NULL;
-	}
-	return rc;
+	return 0;
 }
 
 /* get next-hop info for ipv4 destination address */
@@ -109,7 +80,7 @@ int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 		UET_API_PRINT_ERRNO("popen");
 		UET_API_ERR("Error getting next-hop IP address");
 		pclose(cmd_stream);
-		return -FI_EIO;
+		return -EIO;
 	}
 	for (i = 0; i < INET_ADDRSTRLEN; i++) {
 		nic->nh_ip_addr_str[i] = getc(cmd_stream);
@@ -121,7 +92,7 @@ int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 	if (i == INET_ADDRSTRLEN) {
 		UET_API_ERR("Error parsing next-hop IP address");
 		pclose(cmd_stream);
-		return -FI_EIO;
+		return -EIO;
 	}
 	inet_pton(AF_INET, nic->nh_ip_addr_str, &nh_ipv4);
 	pclose(cmd_stream);
@@ -154,15 +125,15 @@ int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 	if (ioctl(rdata->sock_fd.fd, SIOCGARP, (caddr_t) &areq) < 0) {
 		UET_API_PRINT_ERRNO("socket ioctl");
 		UET_API_ERR("Error getting ARP entry");
-		return -FI_EIO;
+		return -EIO;
 	}
 	memcpy(mac, areq.arp_ha.sa_data, ETH_ALEN);
 
-	rc = FI_SUCCESS;
+	rc = 0;
 	memset(invalid_mac, 0, ETH_ALEN);
 	if (memcmp(mac, invalid_mac, ETH_ALEN) == 0) {
 		UET_API_ERR("Unable to resolve next-hop MAC addr");
-		rc = -FI_ENETUNREACH;
+		rc = -ENETUNREACH;
 	}
 
 	printf("Next-Hop Address Resolution\n");
@@ -205,10 +176,10 @@ int nic_rawsock_tx_pkt(struct uet_nic *nic,
 			UET_API_ERR("Error transmitting packet, "
 				    "sent %ld of %ld bytes",
 				    len, pkt_size);
-		return -FI_EIO;
+		return -EIO;
 	}
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 /* receive a packet */
@@ -224,7 +195,7 @@ int nic_rawsock_rx_pkt(struct uet_nic *nic,
 	len = recvfrom(rdata->sock_fd.fd, pkt, pkt_buf_size, 0, NULL, NULL);
 	if (len == -1) {
 		UET_API_PRINT_ERRNO("recvfrom");
-		return -FI_EIO;
+		return -EIO;
 	} else if (len > pkt_buf_size) {
 		UET_API_DEBUG("Error receiving packet: too big: "
 			      "%ld bytes", len);
@@ -261,13 +232,13 @@ int nic_rawsock_rx_poll(struct uet_nic *nic)
 		return 0;
 	case -1:
 		UET_API_PRINT_ERRNO("poll");
-		return -FI_EIO;
+		return -EIO;
 	default:
 		break;
 	}
 
 	UET_API_ERR("unexpected val from poll: %d", ret);
-	return -FI_EIO;
+	return -EIO;
 }
 
 /* free nic resources */
@@ -302,7 +273,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	rdata = calloc(1, sizeof(struct rawsock_data));
 	if (rdata == NULL) {
 		UET_API_ERR("ERROR: Failed to alloc RAWSOCK priv data");
-		return -FI_ENOMEM;
+		return -ENOMEM;
 	}
 
 	nic->nic_priv_data = (void *)rdata;
@@ -315,7 +286,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	ifname = getenv(UET_IFNAME);
 	if (ifname == NULL) {
 		UET_API_ERR("err reading UET_IFNAME environment variable");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto err_return;
 	}
 
@@ -325,7 +296,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	rdata->sock_fd.fd = socket(AF_PACKET, SOCK_RAW, ETH_P_IP);
 	if (rdata->sock_fd.fd == -1) {
 		UET_API_PRINT_ERRNO("socket");
-		rc = -FI_EIO;
+		rc = -EIO;
 		goto err_return;
 	}
 	rdata->sock_fd.events = POLLIN;
@@ -335,7 +306,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	if ((ioctl(rdata->sock_fd.fd, SIOCGIFINDEX, &rdata->ifr)) < 0) {
 		UET_API_PRINT_ERRNO("socket ioctl");
 		UET_API_ERR("bad interface device name");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto err_return;
 	}
 
@@ -348,7 +319,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	if (bind(rdata->sock_fd.fd, (struct sockaddr *) &rdata->sadr,
 		 sizeof(struct sockaddr_ll)) < 0) {
 		UET_API_PRINT_ERRNO("socket bind");
-		rc = -FI_EIO;
+		rc = -EIO;
 		goto err_return;
 	}
 
@@ -356,7 +327,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	if ((ioctl(rdata->sock_fd.fd, SIOCGIFADDR, &rdata->ifr)) < 0) {
 		UET_API_PRINT_ERRNO("socket ioctl");
 		UET_API_ERR("Error getting IP address of local device");
-		rc = -FI_EIO;
+		rc = -EIO;
 		goto err_return;
 	}
 	ip = &rdata->ifr.ifr_hwaddr.sa_data[2];
@@ -367,7 +338,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	if ((ioctl(rdata->sock_fd.fd, SIOCGIFHWADDR, &rdata->ifr)) < 0) {
 		UET_API_PRINT_ERRNO("socket ioctl");
 		UET_API_ERR("Error getting MAC addr of local device");
-		rc = -FI_EIO;
+		rc = -EIO;
 		goto err_return;
 	}
 	memcpy(nic->mac_addr, rdata->ifr.ifr_hwaddr.sa_data, ETH_ALEN);
@@ -382,7 +353,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	nic->mtu = (size_t)rdata->ifr.ifr_mtu;
 	nic->max_pkt_size = (nic->mtu + nic->l2_hdr_size);
 
-	return FI_SUCCESS;
+	return 0;
 
 err_return:
 	nic_rawsock_finalize(nic);

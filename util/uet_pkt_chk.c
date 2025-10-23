@@ -7,11 +7,14 @@
 #include <linux/ip.h>
 
 #include "uet_pkt_chk.h"
+#include "uet_log.h"
 
 /* determine if uet packet type is valid */
 static bool uet_pds_pkt_type_valid(uint8_t *pkt,
+				   size_t pkt_size,
 				   bool *pkt_is_ack,
-				   bool *pkt_is_rd_rsp)
+				   bool *pkt_is_rd_rsp,
+				   bool *pkt_is_ctrl)
 {
 	struct uet_sec *sec_hdr;
 	struct uet_pds_req *pds_hdr;
@@ -20,6 +23,7 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 
 	*pkt_is_ack = false;
 	*pkt_is_rd_rsp = false;
+	*pkt_is_ctrl = false;
 
 	/* TODO: IPv6 support and UDP support */
 	pds_hdr = (struct uet_pds_req *)(pkt +
@@ -55,10 +59,31 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 	case UET_PDS_TYPE_RUD_REQ:
 		pds_req = true;
 		break;
+	case UET_PDS_TYPE_UUD_REQ:
+		/* TODO: unsupported */
+		UET_PDS_WARN("UUD_REQ packets not supported");
+		return false;
 	case UET_PDS_TYPE_ACK:
 		pds_req = false;
 		next_hdr = UET_HDR_RSP;
 		break;
+	case UET_PDS_TYPE_ACK_CC:
+	case UET_PDS_TYPE_ACK_CCX:
+		/* TODO: unsupported */
+		UET_PDS_WARN("ACK_CC packets not supported");
+		return false;
+	case UET_PDS_TYPE_NACK:
+		/* TODO: unsupported */
+		UET_PDS_WARN("NACK packets not supported");
+		return false;
+	case UET_PDS_TYPE_CTRL:
+		*pkt_is_ctrl = true;
+		return true;
+	case UET_PDS_TYPE_RUDI_REQ:
+	case UET_PDS_TYPE_RUDI_RESP:
+		/* TODO: unsupported */
+		UET_PDS_WARN("RUDI packets not supported");
+		return false;
 	default:
 		return false;
 	}
@@ -95,24 +120,60 @@ bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
 			uint8_t *pkt,
 			size_t pkt_size,
 			bool *pkt_is_ack,
-			bool *pkt_is_rd_rsp)
+			bool *pkt_is_rd_rsp,
+			bool *pkt_is_ctrl)
 {
 	struct ethhdr *eth = (struct ethhdr *)pkt;
 	struct iphdr *ipv4 = (struct iphdr *)(eth + 1);
 
 	/* TODO: IPv6 support */
-	if (!memcmp(eth->h_dest, uet->nic.mac_addr, ETH_ALEN) &&
-	    (eth->h_proto == htons(ETH_P_IP)) &&
-	    (ipv4->version == IPVERSION) &&
-	    (ipv4->ihl == UET_IPV4_IHL_NO_OPTIONS) &&
-	    (ipv4->protocol == uet->uet_ipproto) &&
-	    (ipv4->tot_len >= htons(uet->nic.min_ip_pkt_size)) &&
-	    (ipv4->tot_len <=
-	     htons((pkt_size - uet->nic.l2_hdr_size))) &&
-	    (uet_ipv4_csum(ipv4) == 0) &&
-	    (uet_pds_pkt_type_valid(pkt, pkt_is_ack, pkt_is_rd_rsp)))
-		return true;
 
-	return false;
+	if (memcmp(eth->h_dest, uet->nic.mac_addr, ETH_ALEN) != 0) {
+		UET_PDS_WARN("dest MAC mismatch");
+		return false;
+	}
+
+	if (eth->h_proto != htons(ETH_P_IP)) {
+		UET_PDS_WARN("not an IPv4 packet");
+		return false;
+	}
+
+	if (ipv4->version != IPVERSION) {
+		UET_PDS_WARN("invalid IPv4 header version");
+		return false;
+	}
+
+	if (ipv4->ihl != UET_IPV4_IHL_NO_OPTIONS) {
+		UET_PDS_WARN("IPv4 header options not supported");
+		return false;
+	}
+
+	if (ipv4->protocol != uet->uet_ipproto) {
+		UET_PDS_WARN("unsupported IP protocol");
+		return false;
+	}
+
+	if (ipv4->tot_len < htons(uet->nic.min_ip_pkt_size)) {
+		UET_PDS_WARN("IPv4 total length too small");
+		return false;
+	}
+
+	if (ipv4->tot_len > htons((pkt_size - uet->nic.l2_hdr_size))) {
+		UET_PDS_WARN("IPv4 total length too large");
+		return false;
+	}
+
+	if (uet_ipv4_csum(ipv4) != 0) {
+		UET_PDS_WARN("IPv4 header checksum invalid");
+		return false;
+	}
+
+	if (!uet_pds_pkt_type_valid(pkt, pkt_size, pkt_is_ack,
+				    pkt_is_rd_rsp, pkt_is_ctrl)) {
+		UET_PDS_WARN("invalid UET PDS packet type");
+		return false;
+	}
+
+	return true;
 }
 

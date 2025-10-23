@@ -3410,6 +3410,8 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			tx_desc->remaining_bytes -= payload_len;
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ)
 				tx_desc->rx_desc->expected_rd_rsp++;
+			/* clear SOM flag after first packet */
+			flags &= ~UET_PDS_FLAG_SOM;
 		} else {
 			if (rc != -FI_EAGAIN)
 				uet_tx_desc_set_err(tx_desc, -rc,
@@ -3978,11 +3980,30 @@ int uet_finalize(uet_handle_t handle)
 	return FI_SUCCESS;
 }
 
+static int uet_fid_nic_close(struct fid *fid)
+{
+	struct fid_nic *nic = (struct fid_nic *)fid;
+
+	if (nic == NULL)
+		return 0;
+
+	if (nic->device_attr != NULL)
+		free(nic->device_attr);
+	if (nic->link_attr != NULL)
+		free(nic->link_attr);
+	if (nic->fid.ops != NULL)
+		free(nic->fid.ops);
+	free(nic);
+
+	return 0;
+}
+
 int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		const struct fi_info *hints, struct fi_info **info)
 {
 	int rc;
 	struct uet_instance *uet;
+	struct uet_nic_info nic_info;
 	struct fi_info *new_info;
 	struct fid_nic *nic = NULL;
 	struct uet_addr *src_addr;
@@ -4002,15 +4023,50 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		rc = -FI_ENOMEM;
 		goto err_return;
 	}
+
+	nic->device_attr = calloc(1, sizeof(struct fi_device_attr));
+	if (nic->device_attr == NULL) {
+		UET_API_PRINT_ERRNO("calloc");
+		rc = -FI_ENOMEM;
+		goto err_return;
+	}
+
+	nic->link_attr = calloc(1, sizeof(struct fi_link_attr));
+	if (nic->link_attr == NULL) {
+		UET_API_PRINT_ERRNO("calloc");
+		rc = -FI_ENOMEM;
+		goto err_return;
+	}
+
 	nic->fid.fclass = FI_CLASS_NIC;
 	nic->fid.context = uet;
-	nic->fid.ops = &uet->nic.nic_ops;
 
-	rc = uet_nic_getinfo(UET_NIC(uet), nic);
+	nic->fid.ops = calloc(1, sizeof(struct fi_ops));
+	if (nic->link_attr == NULL) {
+		UET_API_PRINT_ERRNO("calloc");
+		rc = -FI_ENOMEM;
+		goto err_return;
+	}
+
+	nic->fid.ops->size = sizeof(struct fi_ops);
+	nic->fid.ops->close = uet_fid_nic_close;
+
+	rc = uet_nic_getinfo(UET_NIC(uet), &nic_info);
 	if (rc != FI_SUCCESS) {
 		UET_API_ERR("uet_nic_getinfo");
 		goto err_return;
 	}
+
+	nic->device_attr->name       = nic_info.ifname;
+	nic->link_attr->network_type = nic_info.network_type;
+	nic->link_attr->address      = nic_info.mac_addr_str;
+	nic->link_attr->mtu          = nic_info.mtu;
+	nic->link_attr->state        =
+		(nic_info.link_state == UET_NIC_LINK_STATE_DOWN)
+			? FI_LINK_DOWN
+			: (nic_info.link_state == UET_NIC_LINK_STATE_UP)
+				? FI_LINK_UP
+				: FI_LINK_UNKNOWN;
 
 	/*
 	 * TODO:
@@ -4048,8 +4104,15 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	return FI_SUCCESS;
 
 err_return:
-	if (nic != NULL)
+	if (nic != NULL) {
+		if (nic->device_attr != NULL)
+			free(nic->device_attr);
+		if (nic->link_attr != NULL)
+			free(nic->link_attr);
+		if (nic->fid.ops != NULL)
+			free(nic->fid.ops);
 		free(nic);
+	}
 	if (new_info != NULL)
 		fi_freeinfo(new_info);
 	return rc;

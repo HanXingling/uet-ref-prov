@@ -8,36 +8,23 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <rdma/fabric.h>
-
 #include "uet_api_private.h"
 #include "uet_nic.h"
 
-/* nic operation close function */
-static int uet_nic_close(struct fid *fid)
+int uet_nic_getinfo(struct uet_nic *nic,
+		    struct uet_nic_info *nic_info)
 {
-	struct fid_nic *fnic;
+	if (!nic || !nic_info)
+		assert(0);
 
-	fnic = (struct fid_nic *)fid;
-	if (fnic != NULL) {
-		if (fnic->device_attr != NULL) {
-			free(fnic->device_attr);
-			fnic->device_attr = NULL;
-		}
-		if (fnic->link_attr != NULL) {
-			free(fnic->link_attr);
-			fnic->link_attr = NULL;
-		}
+	memset(nic_info, 0, sizeof(struct uet_nic_info));
 
-		free(fnic);
-	}
-
-	return FI_SUCCESS;
+	return nic->nic_getinfo(nic, nic_info);
 }
 
 /* Raw Socket NIC protocol callbacks */
 extern int nic_rawsock_getinfo(struct uet_nic *nic,
-			       struct fid_nic *fnic);
+			       struct uet_nic_info *nic_info);
 extern int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
 				   uint32_t dst_ip,
 				   uint8_t *mac);
@@ -56,7 +43,7 @@ extern int nic_rawsock_initialize(struct uet_nic *nic);
 #if ENABLE_XDP
 /* XDP NIC protocol callbacks */
 extern int nic_xdp_getinfo(struct uet_nic *nic,
-			   struct fid_nic *fnic);
+			   struct uet_nic_info *nic_info);
 extern int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 			       uint32_t dst_ip,
 			       uint8_t *mac);
@@ -107,11 +94,8 @@ int uet_nic_initialize(struct uet_nic *nic)
 #endif
 	} else {
 		UET_API_ERR("invalid UET_NIC_SHIM environment variable");
-		return -FI_ENODEV;
+		return -ENODEV;
 	}
-
-	nic->nic_ops.size = sizeof(struct fi_ops);
-	nic->nic_ops.close = uet_nic_close;
 
 	return nic->nic_initialize(nic);
 }

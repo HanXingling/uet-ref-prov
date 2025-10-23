@@ -85,7 +85,7 @@ int uet_pds_init(struct uet_instance *uet)
 		downcall->ep_close_wait = uet_pds_ep_close_wait;
 	} else {
 		UET_API_ERR("invalid UET_PDS environment variable");
-		return -FI_ENODEV;
+		return -ENODEV;
 	}
 
 	return downcall->initialize(uet);

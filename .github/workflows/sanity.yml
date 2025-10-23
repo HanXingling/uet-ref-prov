@@ -10,7 +10,7 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Check out the code
-        uses: actions/checkout@v3  
+        uses: actions/checkout@v3
 
       - name: Install bridge-utils
         run: |
@@ -51,7 +51,7 @@ jobs:
       - name: Compile uet-ref-prov
         run: |
           make
-          
+
       - name: Check network brm to vm
         run: |
           ping -c1 10.1.0.2
@@ -70,29 +70,29 @@ jobs:
           ip link show vm2 | awk '/link\/ether/ {print $2}'
           MAC1=$(ip link show vm2 | awk '/link\/ether/ {print $2}')
           MAC2=$(ip link show brm | awk '/link\/ether/ {print $2}')
-          
+
           echo "Discovered MAC2 Address: $MAC2"
           echo "Discovered MAC2 Address: $MAC1"
           sudo arp -i vm2 -s 10.1.0.1 $MAC2
           sudo arp -i brm -s 10.1.0.2 $MAC1
 
-      - name: run tests in SNG mode
+      - name: run all tests in SNG mode
         run: |
           arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=brm ./uet server test 10.1.0.2 &
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=brm ./uet server all 10.1.0.2 &
           echo "Server started in background."
           sleep 2
           echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client test 10.1.0.1
-          echo "Client finished."  
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client all 10.1.0.1
+          echo "Client finished."
 
-
-      - name: run tests in PDS mode
+      - name: run all tests in PDS mode
         run: |
           arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=brm ./uet server test 10.1.0.2 &
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
           echo "Server started in background."
           sleep 2
           echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=vm2 ./uet client test 10.1.0.1
-          echo "Client finished."   
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
+          echo "Client finished."
+

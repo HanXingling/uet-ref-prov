@@ -37,6 +37,6 @@ void bm_shift_right(struct bitmap *bm, int s);
 bool bm_next_set_bit_iter(const struct bitmap *bm, int *i);
 
 void bm_print_idx(const struct bitmap *b);
-void bm_print_bits(const struct bitmap *b);
+void bm_print_bits(const struct bitmap *b, char (*bit_char)(void *));
 
 #endif /* _BITMAP_H_ */

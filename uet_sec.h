@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 
+#include "uet_api_private.h"
 #include "uet_util.h"
 
 #define UET_SEC_MODE       "UET_SEC_MODE"
@@ -57,7 +58,8 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt);
  * The pkt_len field is expected to include the length of the auth tag.
  * The encrypted pkt pointer and length are returned in enc_pkt/enc_pkt_len.
  */
-int uet_sec_enc_pkt(uint8_t *pkt_buf,
+int uet_sec_enc_pkt(struct uet_instance *uet,
+		    uint8_t *pkt_buf,
 		    int pkt_buf_len,
 		    uint8_t *pkt,
 		    int pkt_len,
@@ -68,7 +70,8 @@ int uet_sec_enc_pkt(uint8_t *pkt_buf,
  * Decryption occurs inplace. The length of the tag is returned so the
  * payload length can be determined from the total packet length.
  */
-int uet_sec_dec_pkt(uint8_t *pkt,
+int uet_sec_dec_pkt(struct uet_instance *uet,
+		    uint8_t *pkt,
 		    int pkt_len,
 		    int *tag_len);
 
