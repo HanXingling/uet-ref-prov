@@ -124,18 +124,18 @@ int uet_sec_build_hdr(uint32_t sdi,
 	if ((pkt == NULL) || (pkt_len <= 0) ||
 	    (new_pkt == NULL) || (new_pkt_len == NULL)) {
 		UET_TSS_ERR("invalid args to build security header\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* TODO: IPv6 support and UDP support */
@@ -147,7 +147,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 	if (sd->use_ssi) {
 		if ((pkt - sizeof(struct uet_sec_ssi)) < pkt_buf) {
 			UET_TSS_ERR("no headroom for uet_sec_ssi header\n");
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		*new_pkt     = (pkt - sizeof(struct uet_sec_ssi));
@@ -156,7 +156,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 	} else {
 		if ((pkt - sizeof(struct uet_sec)) < pkt_buf) {
 			UET_TSS_ERR("no headroom for uet_sec header\n");
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		*new_pkt     = (pkt - sizeof(struct uet_sec));
@@ -206,7 +206,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 		sec->epoch_tsc = htonll(sec->epoch_tsc);
 	}
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 int uet_sec_update_hdr_tsc(uint8_t *pkt)
@@ -229,7 +229,7 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 	if (((tfs & UET_SEC_TYPE_MASK) >> UET_SEC_TYPE_SHIFT) !=
 	     UET_PDS_TYPE_SECURITY) {
 		UET_TSS_ERR("no security header present\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* get the sdi */
@@ -237,14 +237,14 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* get the SD to pull the latest epoch */
 	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	uet_gettime((time_t *)&tsc);
@@ -263,7 +263,7 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt)
 		sec->epoch_tsc = htonll(sec->epoch_tsc);
 	}
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 int uet_sec_enc_pkt(struct uet_instance *uet,
@@ -310,7 +310,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	if (((tfs & UET_SEC_TYPE_MASK) >> UET_SEC_TYPE_SHIFT) !=
 	     UET_PDS_TYPE_SECURITY) {
 		UET_TSS_ERR("no security header present\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* get the sdi/an */
@@ -319,19 +319,19 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* if the SSI is being used, verify it's there in the header */
 	if (sd->use_ssi && !(tfs & UET_SEC_SP_MASK)) {
 		UET_TSS_ERR("security header is missing the SSI\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* get the epoch/tsc */
@@ -347,7 +347,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	if ((enc_out < (pkt + pkt_len)) ||
 	    ((enc_out + pkt_len) > (pkt_buf + pkt_buf_len))) {
 		UET_TSS_ERR("pkt buffer not large enough for crypto out\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* generate the key needed for encrypting the packet */
@@ -409,7 +409,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	default:
 		UET_TSS_ERR("unknown mode\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 		break;
 	}
 
@@ -448,7 +448,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			       tag);
 	if (rc != 0) {
 		UET_TSS_ERR("failed to encrypt packet\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	memcpy((enc_out + pkt_len - UET_SEC_TAG_LEN), tag, UET_SEC_TAG_LEN);
@@ -456,7 +456,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	*enc_pkt = enc_out;
 	*enc_pkt_len = pkt_len;
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 int uet_sec_dec_pkt(struct uet_instance *uet,
@@ -495,7 +495,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	    (ipv4->ihl != UET_IPV4_IHL_NO_OPTIONS) ||
 	    (ipv4->protocol != uet->uet_ipproto)) {
 		*tag_len = 0;
-		return FI_SUCCESS;
+		return 0;
 	}
 
 	sec_hdr = (pkt +
@@ -509,7 +509,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	if (((tfs & UET_SEC_TYPE_MASK) >> UET_SEC_TYPE_SHIFT) !=
 	     UET_PDS_TYPE_SECURITY) {
 		*tag_len = 0;
-		return FI_SUCCESS;
+		return 0;
 	}
 
 	/* get the sdi/an */
@@ -518,19 +518,19 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* if the SSI is being used, verify it's there in the header */
 	if (sd->use_ssi && !(tfs & UET_SEC_SP_MASK)) {
 		UET_TSS_ERR("security header is missing the SSI\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	/* get the epoch/tsc */
@@ -598,7 +598,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	default:
 		UET_TSS_ERR("unknown mode\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 		break;
 	}
 
@@ -635,12 +635,12 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			      (pkt + clrtxt_len));
 	if (rc != 0) {
 		UET_TSS_ERR("failed to decrypt packet\n");
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	*tag_len = UET_SEC_TAG_LEN;
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 static int uet_sec_init_sd(uint32_t sdi,
@@ -657,7 +657,7 @@ static int uet_sec_init_sd(uint32_t sdi,
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -FI_EINVAL;
+		return -EINVAL;
 	}
 
 	sd = &sdkdb[sdi];
@@ -683,7 +683,7 @@ static int uet_sec_init_sd(uint32_t sdi,
 		if (!getenv(UET_SEC_SSI)) {
 			UET_TSS_ERR("server mode requires SSI\n");
 			memset(sd, 0, sizeof(*sd));
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		/* TODO: support IPv6 w/ large_context (requires SSI) */
@@ -718,7 +718,7 @@ static int uet_sec_init_sd(uint32_t sdi,
 		memcpy(sd->key[1], derived_key, UET_SEC_KDF_GEN_SIZE);
 	}
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 int uet_sec_init(void)
@@ -735,7 +735,7 @@ int uet_sec_init(void)
 	sec_ssi  = getenv(UET_SEC_SSI);
 
 	if (sec_mode == NULL)
-		return FI_SUCCESS;
+		return 0;
 
 	/* FIXME: Only using SDI=0x1 AN=0x0 for now... */
 
@@ -753,13 +753,13 @@ int uet_sec_init(void)
 
 		if (sec_ssi == NULL) {
 			UET_TSS_ERR("UET_SEC_SSI required for server mode");
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		if (getenv(UET_SEC_SERVER) && !getenv(UET_SEC_CLIENT_SSI)) {
 			UET_TSS_ERR("UET_SEC_CLIENT_SSI required on server "
 				    "for server mode");
-			return -FI_EINVAL;
+			return -EINVAL;
 		}
 
 		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_SERVER,
@@ -768,7 +768,7 @@ int uet_sec_init(void)
 	} else {
 
 		UET_TSS_ERR("invalid UET_SEC_MODE environment variable");
-		return -FI_EINVAL;
+		return -EINVAL;
 
 	}
 
