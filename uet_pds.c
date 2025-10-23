@@ -116,8 +116,10 @@ struct uet_pdc {
 	struct dlist_entry  tx_pkt_list_head; /* 'tx_time' order (for rtx) */
 
 	/* initiator side fields (and target side reverse direction) */
-	struct uet_ep       *uet_ep;
-	struct uet_av_entry *av_entry; /* destination address */
+	uint8_t              src_mac_addr[ETH_ALEN];
+	uint8_t              dst_mac_addr[ETH_ALEN];
+	struct uet_fa        src_addr;
+	struct uet_fa        dst_addr;
 	uint16_t             syn_offset; /* initiator SYN offset until ACK */
 	uint32_t             next_psn; /* next Tx pkt seq number */
 	struct bitmap       *tx_bm;
@@ -472,8 +474,11 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 
 	dlist_init(&pdc->tx_pkt_list_head);
 
-	pdc->uet_ep = NULL;
-	pdc->av_entry = NULL;
+	memset(pdc->src_mac_addr, 0, ETH_ALEN);
+	memset(pdc->dst_mac_addr, 0, ETH_ALEN);
+	memset(&pdc->src_addr, 0, sizeof(struct uet_fa));
+	memset(&pdc->dst_addr, 0, sizeof(struct uet_fa));
+
 	pdc->syn_offset = 0;
 	pdc->next_psn = 0;
 	bm_clear(pdc->tx_bm);
@@ -587,8 +592,18 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 
 	/* initialze this initiator PDC and stick it in the hashtable */
 	uet_init_pdc(pdc, PDC_STATE_SYN, true);
-	pdc->uet_ep         = uet_ep;
-	pdc->av_entry       = av_entry;
+
+	memcpy(pdc->src_mac_addr, uet_ep->uet_domain->uet->nic.mac_addr,
+	       ETH_ALEN);
+	memcpy(pdc->dst_mac_addr, av_entry->nh_mac_addr,
+	       ETH_ALEN);
+
+	/* TODO: IPv6 support */
+	memcpy(&pdc->src_addr, &uet_ep->ipv4_addr,
+	       sizeof(pdc->src_addr.v4));
+	memcpy(&pdc->dst_addr, &av_entry->addr->fa.v4,
+	       sizeof(pdc->dst_addr.v4));
+
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;
 	pdc->rx_bm_base_psn = UET_DEFAULT_START_PSN;
@@ -606,6 +621,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 {
 	struct uet_ses_req_cmn *ses_cmn = (struct uet_ses_req_cmn *)pp->ses;
+	struct ethhdr *eth = (struct ethhdr *)pp->eth;
 	struct iphdr *ipv4 = (struct iphdr *)pp->ip; /* TODO: IPv6 support */
 	struct uet_pdc_tgt_key pdc_key;
 	struct uet_pdc *pdc;
@@ -658,6 +674,14 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 
 	/* initialze this target PDC and stick it in the hashtable */
 	uet_init_pdc(pdc, PDC_STATE_ESTABLISHED, false);
+
+	memcpy(pdc->src_mac_addr, eth->h_dest, ETH_ALEN);
+	memcpy(pdc->dst_mac_addr, eth->h_source, ETH_ALEN);
+
+	/* TODO: IPv6 support */
+	pdc->src_addr.v4 = ntohl(ipv4->daddr);
+	pdc->dst_addr.v4 = ntohl(ipv4->saddr);
+
 	pdc->dpdcid         = pp->pds_spdcid;
 	pdc->rx_bm_base_psn = (pp->pds_psn - pp->pds_syn_off);
 	pdc->tx_bm_base_psn = pdc->rx_bm_base_psn;
@@ -830,8 +854,7 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 
 	/* build Ethernet header */
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
-			  pdc->av_entry->nh_mac_addr,
-			  uet->nic.mac_addr);
+			  pdc->dst_mac_addr, pdc->src_mac_addr);
 
 	/* set up pointers to headers */
 	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
@@ -873,8 +896,8 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	uet_build_ipv4_hdr(uet,
 			   (struct iphdr *)(pdc_pkt->pkt +
 					    sizeof(struct ethhdr)),
-			   htonl(pdc->av_entry->addr->fa.v4),
-			   htonl(pdc->uet_ep->ipv4_addr),
+			   htonl(pdc->dst_addr.v4),
+			   htonl(pdc->src_addr.v4),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet->pds.ack_ip_tos,
 			   !pdc->sec_enabled);
@@ -1203,9 +1226,10 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		}
 	}
 
-	if (pdc->is_initiator &&
-	    ((pdc->uet_ep != uet_ep) || (pdc->av_entry != av_entry))) {
-		UET_PDS_ERR("PDC %u does not match EP/AV for Tx pkt %p",
+	/* TODO: IPv6 support */
+	if (memcmp(&pdc->dst_addr.v4, &av_entry->addr->fa.v4,
+		   sizeof(pdc->dst_addr.v4)) != 0) {
+		UET_PDS_ERR("PDC %u dst_addr does not match AV for Tx pkt %p",
 			    pdc->pdc_id, tx_pkt_handle);
 		return -EINVAL;
 	}
@@ -1279,8 +1303,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			: pdc_pkt->pkt_buf;
 
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
-			  av_entry->nh_mac_addr,
-			  uet->nic.mac_addr);
+			  pdc->dst_mac_addr, pdc->src_mac_addr);
 
 	/* TODO: IPv6 support and UDP support */
 	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
@@ -1354,8 +1377,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_build_ipv4_hdr(uet,
 			   (struct iphdr *)(pdc_pkt->pkt +
 					    sizeof(struct ethhdr)),
-			   htonl(av_entry->addr->fa.v4),
-			   htonl(uet_ep->ipv4_addr),
+			   htonl(pdc->dst_addr.v4),
+			   htonl(pdc->src_addr.v4),
 			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
 			   uet_ep->msg_ip_tos,
 			   !pdc->sec_enabled);

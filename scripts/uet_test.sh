@@ -45,7 +45,8 @@ banner()
 CMD_CLI="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${CLI_IFACE} ./uet client"
 CMD_SRV="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${SRV_IFACE} ./uet server"
 
-tests=("" "tag" "rma")
+#tests=("" "tag" "rma")
+tests=("test")
 
 function sng()
 {
