@@ -10,7 +10,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <rdma/fi_errno.h>
 
 #include "uet_addr.h"
 #include "uet_pkt_hdr.h"
@@ -113,22 +112,21 @@ struct uet_parsed_pkt {
 //#define UET_PDS_PKT_HDR_TRACE_ENABLED
 
 #ifdef UET_PDS_PKT_HDR_TRACE_ENABLED
-#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)     \
-	do {                                                  \
-		struct uet_parsed_pkt _pp;                    \
-		if ((PP) == NULL) {                           \
-			if (uet_parse_pkt((UET), (PKT),       \
-					  (PKT_LEN), &_pp) == \
-			    FI_SUCCESS) {                     \
-				printf("\n%s\n\n", (MSG));    \
-				uet_print_pkt_hdrs((&_pp));   \
-				printf("\n");                 \
-			}                                     \
-		} else {                                      \
-			printf("\n%s\n\n", (MSG));            \
-			uet_print_pkt_hdrs((PP));             \
-			printf("\n");                         \
-		}                                             \
+#define UET_PDS_PKT_HDR_TRACE(UET, PP, PKT, PKT_LEN, MSG)          \
+	do {                                                       \
+		struct uet_parsed_pkt _pp;                         \
+		if ((PP) == NULL) {                                \
+			if (uet_parse_pkt((UET), (PKT),            \
+					  (PKT_LEN), &_pp) == 0) { \
+				printf("\n%s\n\n", (MSG));         \
+				uet_print_pkt_hdrs((&_pp));        \
+				printf("\n");                      \
+			}                                          \
+		} else {                                           \
+			printf("\n%s\n\n", (MSG));                 \
+			uet_print_pkt_hdrs((PP));                  \
+			printf("\n");                              \
+		}                                                  \
 	} while (0)
 #else
 #define UET_PDS_PKT_HDR_TRACE(...)
