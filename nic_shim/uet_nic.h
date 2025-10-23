@@ -14,8 +14,6 @@
 #include <netinet/in.h>
 #include <linux/if_ether.h>
 
-#include <rdma/fabric.h>
-
 //#define UET_NIC_DEBUG_HEXDUMP
 
 /* environment variables to control the NIC interface */
@@ -29,6 +27,20 @@
 
 struct uet_mr_buf_desc;
 struct uet_instance;
+
+enum uet_nic_link_state {
+	UET_NIC_LINK_STATE_UNKNOWN = 0,
+	UET_NIC_LINK_STATE_DOWN    = 1,
+	UET_NIC_LINK_STATE_UP      = 2
+};
+
+struct uet_nic_info {
+	char *ifname;
+	char *network_type;
+	char *mac_addr_str;
+	size_t mtu;
+	enum uet_nic_link_state link_state;
+};
 
 /* nic control block structure - field of struct uet_instance */
 struct uet_nic {
@@ -51,13 +63,11 @@ struct uet_nic {
 
 	uint8_t uet_ipproto;           /* ip protocol number for uet */
 
-	struct fi_ops nic_ops;     /* libfabric nic operation struct */
-
 	void *nic_priv_data;
 
 	/* function pointers supporting different NIC interfaces */
 	int (*nic_getinfo)(struct uet_nic *nic,
-			   struct fid_nic *fnic);
+			   struct uet_nic_info *nic_info);
 	int (*nic_get_ipv4_nh)(struct uet_nic *nic,
 			       uint32_t dst_ip,
 			       uint8_t *mac);
@@ -85,8 +95,8 @@ struct uet_nic {
  *      uet - ptr to uet nic struct
  *
  * returns:
- *      FI_SUCCESS on success
- *      negative value corresponding to fabric errno on error
+ *      0 on success
+ *      negative value corresponding to errno on error
  */
 int uet_nic_initialize(struct uet_nic *nic);
 
@@ -105,24 +115,18 @@ static inline void uet_nic_finalize(struct uet_nic *nic)
 }
 
 /*
- * get nic info for libfabric fid_nic struct
+ * get nic info
  *
  * parms:
- *      uet - ptr to uet nic struct
- *      nic - ptr to nic info struct to be init
+ *      nic - ptr to uet nic struct
+ *      nic_info - ptr to uet nic info struct to be filled in
  *
  * returns:
- *      FI_SUCCESS on success
- *      negative value corresponding to fabric errno on error
+ *      0 on success
+ *      negative value corresponding to errno on error
  */
-static inline int uet_nic_getinfo(struct uet_nic *nic,
-				  struct fid_nic *fnic)
-{
-	if (!nic || !fnic)
-		assert(0);
-
-	return nic->nic_getinfo(nic, fnic);
-}
+int uet_nic_getinfo(struct uet_nic *nic,
+		    struct uet_nic_info *nic_info);
 
 /*
  * get next-hop info for ipv4 destination address
@@ -133,8 +137,8 @@ static inline int uet_nic_getinfo(struct uet_nic *nic,
  *      mac    - ptr to location where mac address is to be returned
  *
  * returns:
- *      FI_SUCCESS on success
- *      negative value corresponding to fabric errno on error
+ *      0 on success
+ *      negative value corresponding to errno on error
  */
 static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
 				      uint32_t dst_ip,
@@ -156,8 +160,8 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
  *      pkt_size - size of packet to send in bytes
  *
  * returns:
- *      FI_SUCCESS on success,
- *      negative value corresponding to fabric errno on error
+ *      0 on success,
+ *      negative value corresponding to errno on error
  */
 static inline int uet_nic_tx_pkt(struct uet_nic *nic,
 				 void *pkt,
@@ -183,7 +187,7 @@ static inline int uet_nic_tx_pkt(struct uet_nic *nic,
  * returns:
  *      0, no valid packet available
  *      1, read a packet
- *      negative value corresponding to fabric errno, err reading packet
+ *      negative value corresponding to errno, err reading packet
  */
 static inline int uet_nic_rx_pkt(struct uet_nic *nic,
 				 void *pkt,
@@ -205,7 +209,7 @@ static inline int uet_nic_rx_pkt(struct uet_nic *nic,
  * returns:
  *      0, no packet is available
  *      1, packet is available
- *      negative value corresponding to fabric errno, poll err
+ *      negative value corresponding to errno, poll err
  */
 static inline int uet_nic_rx_poll(struct uet_nic *nic)
 {

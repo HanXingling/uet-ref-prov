@@ -99,63 +99,30 @@ struct xdp_data {
 	int sock_fd;
 };
 
-/* get nic info for libfabric fid_nic struct */
+/* get nic info */
 int nic_xdp_getinfo(struct uet_nic *nic,
-		    struct fid_nic *fnic)
+		    struct uet_nic_info *nic_info)
 {
 	struct xdp_data *xdata = (struct xdp_data *)nic->nic_priv_data;
-	struct ifreq ifr;	  /* socket interface request struct */
-	int rc;
-
-	/* allocate memory for nic structs */
-	fnic->device_attr = calloc(1, sizeof(struct fi_device_attr));
-	if (fnic->device_attr == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
-		rc = -FI_ENOMEM;
-		goto exit_err;
-	}
-
-	fnic->link_attr = calloc(1, sizeof(struct fi_link_attr));
-	if (fnic->link_attr == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
-		rc = -FI_ENOMEM;
-		goto exit_err;
-	}
+	struct ifreq ifr;
 
 	/* get the interface flags */
 	strcpy(ifr.ifr_name, nic->ifname);
 	if ((ioctl(xdata->sock_fd, SIOCGIFFLAGS, &ifr)) < 0) {
 		UET_API_ERR("ERROR: Failed to get interface flags");
-		rc = -FI_ENODEV;
-		goto exit_err;
+		return -ENODEV;
 	}
 
-	/* init from the NIC info */
-	fnic->device_attr->name       = nic->ifname;
-	fnic->link_attr->mtu          = nic->mtu;
-	fnic->link_attr->network_type = nic->network_type;
-	fnic->link_attr->address      = nic->mac_addr_str;
+	nic_info->ifname = nic->ifname;
+	nic_info->network_type = nic->network_type;
+	nic_info->mac_addr_str = nic->mac_addr_str;
+	nic_info->mtu = nic->mtu;
 
-	if (ifr.ifr_flags & IFF_UP)
-		fnic->link_attr->state = FI_LINK_UP;
-	else
-		fnic->link_attr->state = FI_LINK_DOWN;
+	nic_info->link_state =
+		(ifr.ifr_flags & IFF_UP)
+			? UET_NIC_LINK_STATE_UP : UET_NIC_LINK_STATE_DOWN;
 
-	return FI_SUCCESS;
-
-exit_err:
-
-	if (fnic->device_attr) {
-		free(fnic->device_attr);
-		fnic->device_attr = NULL;
-	}
-
-	if (fnic->link_attr) {
-		free(fnic->link_attr);
-		fnic->link_attr = NULL;
-	}
-
-	return rc;
+	return 0;
 }
 
 /* get next-hop info for ipv4 destination address */
@@ -187,7 +154,7 @@ int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 	if (cmd_stream == NULL) {
 		UET_API_ERR("ERROR: Failed to get next-hop IP address");
 		pclose(cmd_stream);
-		return -FI_EIO;
+		return -EIO;
 	}
 
 	for (i = 0; i < INET_ADDRSTRLEN; i++) {
@@ -201,7 +168,7 @@ int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 	if (i == INET_ADDRSTRLEN) {
 		UET_API_ERR("ERROR: Failed to parse next-hop IP address");
 		pclose(cmd_stream);
-		return -FI_EIO;
+		return -EIO;
 	}
 
 	inet_pton(AF_INET, nic->nh_ip_addr_str, &nh_ipv4);
@@ -234,15 +201,15 @@ int nic_xdp_get_ipv4_nh(struct uet_nic *nic,
 	strcpy(areq.arp_dev, nic->ifname);
 	if (ioctl(xdata->sock_fd, SIOCGARP, (caddr_t)&areq) < 0) {
 		UET_API_ERR("ERROR: Failed getting ARP entry");
-		return -FI_EIO;
+		return -EIO;
 	}
 	memcpy(mac, areq.arp_ha.sa_data, ETH_ALEN);
 
-	rc = FI_SUCCESS;
+	rc = 0;
 	memset(invalid_mac, 0, ETH_ALEN);
 	if (memcmp(mac, invalid_mac, ETH_ALEN) == 0) {
 		UET_API_ERR("ERROR: Failed to resolve next-hop MAC addr");
-		rc = -FI_ENETUNREACH;
+		rc = -ENETUNREACH;
 	}
 
 	printf("Next-Hop Address Resolution\n");
@@ -313,7 +280,7 @@ int nic_xdp_tx_pkt(struct uet_nic *nic,
 	}
 
 	if (pkt_size > XSK_FRAME_SIZE)
-		return -FI_EIO;
+		return -EIO;
 
 	/* Get the desc at the next Tx ring producer index. */
 	tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx);
@@ -341,7 +308,7 @@ int nic_xdp_tx_pkt(struct uet_nic *nic,
 	/* Process any outstanding completions... */
 	nic_xdp_tx_complete(xsk, BATCH_SIZE);
 
-	return FI_SUCCESS;
+	return 0;
 }
 
 /* receive a packet */
@@ -694,7 +661,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	/* Make sure we can abuse memory usage! */
 	if (setrlimit(RLIMIT_MEMLOCK, &r)) {
 		UET_API_ERR("ERROR: setrlimit(RLIMIT_MEMLOCK)");
-		return -FI_ENODEV;
+		return -ENODEV;
 	}
 
 	/* Configure sched priority for better wake-up accuracy */
@@ -703,13 +670,13 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	rc = sched_setscheduler(0, SCHED_OTHER, &schparam);
 	if (rc) {
 		UET_API_ERR("ERROR: Failed to set scheduler priority");
-		return -FI_ENODEV;
+		return -ENODEV;
 	}
 
 	xdata = calloc(1, sizeof(struct xdp_data));
 	if (xdata == NULL) {
 		UET_API_ERR("ERROR: Failed to alloc XDP priv data");
-		return -FI_ENODEV;
+		return -ENODEV;
 	}
 
 	nic->nic_priv_data = (void *)xdata;
@@ -723,7 +690,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	ifname = getenv(UET_IFNAME);
 	if (ifname == NULL) {
 		UET_API_ERR("ERROR: unknown UET_IFNAME environment variable");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -735,7 +702,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	if (!xdata->xdp_ifindex) {
 		UET_API_ERR("ERROR: Interface %s does not exist",
 			    nic->ifname);
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -745,7 +712,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	if (rc) {
 		libxdp_strerror(rc, err_msg, sizeof(err_msg));
 		UET_API_ERR("ERROR: Failed to load XDP program: %s", err_msg);
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -755,7 +722,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	if (rc) {
 		libxdp_strerror(rc, err_msg, sizeof(err_msg));
 		UET_API_ERR("ERROR: Failed to attach XDP program: %s", err_msg);
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -769,7 +736,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	if (xdata->mem == MAP_FAILED) {
 		xdata->mem = NULL;
 		UET_API_ERR("ERROR: mmap failed");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -778,7 +745,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 						 xdata->mem_size);
 	if (xdata->umem == NULL) {
 		UET_API_ERR("ERROR: Failed to configure XSK umem");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -786,7 +753,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	rc = nic_xdp_xsk_init_fill_ring(xdata->umem);
 	if (rc < 0) {
 		UET_API_ERR("ERROR: Failed to fill the fill ring");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -797,7 +764,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 						  nic->ifname);
 		if (xdata->xsks[i] == NULL) {
 			UET_API_ERR("ERROR: Failed to create XSK socket");
-			rc = -FI_ENODEV;
+			rc = -ENODEV;
 			goto exit_err;
 		}
 	}
@@ -806,7 +773,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	rc = nic_xdp_config_xsks_map(xdata);
 	if (rc < 0) {
 		UET_API_ERR("ERROR: Failed to configure XSKs map");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -818,7 +785,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	xdata->sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
 	if (xdata->sock_fd == -1) {
 		UET_API_ERR("ERROR: Failed to create control socket");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 
@@ -828,7 +795,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	ifr.ifr_addr.sa_family = AF_INET;
 	if ((ioctl(xdata->sock_fd, SIOCGIFADDR, &ifr)) < 0) {
 		UET_API_ERR("ERROR: Failed to get local IPv4 address");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 	ip = &ifr.ifr_addr.sa_data[2];
@@ -838,7 +805,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	/* get the MAC address of the interface */
 	if ((ioctl(xdata->sock_fd, SIOCGIFHWADDR, &ifr)) < 0) {
 		UET_API_ERR("ERROR: Failed to get local MAC address");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 	memcpy(nic->mac_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
@@ -847,13 +814,13 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	/* get the MTU of the interface */
 	if ((ioctl(xdata->sock_fd, SIOCGIFMTU, &ifr)) < 0) {
 		UET_API_ERR("ERROR: Failed to get MTU");
-		rc = -FI_ENODEV;
+		rc = -ENODEV;
 		goto exit_err;
 	}
 	nic->mtu = (size_t)ifr.ifr_mtu;
 	nic->max_pkt_size = (nic->mtu + nic->l2_hdr_size);
 
-	return FI_SUCCESS;
+	return 0;
 
 exit_err:
 
