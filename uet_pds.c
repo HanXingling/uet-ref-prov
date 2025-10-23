@@ -1203,7 +1203,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		}
 	}
 
-	if ((pdc->uet_ep != uet_ep) || (pdc->av_entry != av_entry)) {
+	if (pdc->is_initiator &&
+	    ((pdc->uet_ep != uet_ep) || (pdc->av_entry != av_entry))) {
 		UET_PDS_ERR("PDC %u does not match EP/AV for Tx pkt %p",
 			    pdc->pdc_id, tx_pkt_handle);
 		return -FI_EINVAL;
@@ -2103,14 +2104,14 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		return -FI_EINVAL;
 	}
 
+	pdc_pkt->tx_pkt_acked = true;
+	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
+
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
 		bm_print_bits(pdc->tx_bm, uet_pdc_tx_bit_char);
 	}
-
-	pdc_pkt->tx_pkt_acked = true;
-	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
 
 	/* check if this is an ACK for the close command */
 	if ((pdc->state == PDC_STATE_CLOSING) &&
@@ -2264,7 +2265,7 @@ static int uet_pds_process_control(struct uet_instance *uet,
 			    pp->pds_spdcid, pp->pds_dpdcid);
 
 		/* find the target PDC */
-		pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, true);
+		pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
 		if (!pdc) {
 			UET_PDS_WARN("CLOSE command for unknown PDC %u",
 				     pp->pds_dpdcid);
@@ -2457,7 +2458,6 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
-	struct uet_pds_info pds_info;
 	uet_pds_next_hdr_t rsp_next_hdr;
 	void *rsp_ses_hdr = NULL;
 	size_t rsp_ses_hdr_len;

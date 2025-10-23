@@ -30,23 +30,22 @@ fi
 
 banner()
 {
-        echo ""
-        echo "**************************************************************"
-        echo "* --> ${1}"
-        echo "**************************************************************"
-        echo ""
+    echo ""
+    echo "**************************************************************"
+    echo "* --> ${1}"
+    echo "**************************************************************"
+    echo ""
 
-        # sleep call is to give enough time for the server to start up
-        if [ -n "$IS_CLI" ]; then
-            sleep 1
-        fi
+    # sleep call is to give enough time for the server to start up
+    if [ -n "$IS_CLI" ]; then
+        sleep 1
+    fi
 }
 
 CMD_CLI="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${CLI_IFACE} ./uet client"
 CMD_SRV="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${SRV_IFACE} ./uet server"
 
 tests=("" "tag" "rma")
-tests=("rma")
 
 function sng()
 {
