@@ -99,10 +99,21 @@ typedef enum {
 	fprintf(stdout, "%s(): %s:%-4d, ret = %d (%s)\n",                      \
 		(CALL), __FILE__, __LINE__, errno, strerror(errno))
 
-#define UET_USAGE(PROG_NAME)                                                   \
-	fprintf(stdout,                                                        \
-		"USAGE: %s <server | client [tag | rma] <remote IPv4 addr>\n", \
-		PROG_NAME)
+void UET_USAGE(char *cmd)
+{
+	fprintf(stdout,
+"Usage: %s <server|client> <command> <remote IPv4 addr>\n"
+"  <command>: rma\n"
+"             untag\n"
+"             tag\n"
+"             tag_any_src\n"
+"             unexp_untag\n"
+"             unexp_tag\n"
+"             defer_send\n"
+"             defer_tag\n"
+"             defer_tag_any_src\n",
+cmd);
+}
 
 /* config parm struct */
 struct uet_cfg {
@@ -293,9 +304,9 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 		return UET_ERR_RC;
 	}
 
-	if (!strcmp(argv[1], "client")) {
+	if (strcmp(argv[1], "client") == 0) {
 		ctx->cfg.client = true;
-	} else if (strcmp(argv[1], "server")) {
+	} else if (strcmp(argv[1], "server") != 0) {
 		UET_ERR("Invalid usage: 1st arg must be 'client' "
 			"or 'server'");
 		return UET_ERR_RC;
@@ -304,19 +315,21 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	ctx->cfg.prog_name = argv[0];
 
 	if (argc == 4) {
-		if (strcmp(argv[2], "tag")) {
-			if (strcmp(argv[2], "rma")) {
+		if (strcmp(argv[2], "tag") != 0) {
+			if (strcmp(argv[2], "rma") != 0) {
 				UET_ERR("Invalid usage: 2nd arg must be "
 					"'tag' or 'rma'");
 				return UET_ERR_RC;
 			}
 
 			ctx->cfg.rma = true;
-		} else
+		} else {
 			ctx->cfg.tag = true;
+		}
 		ctx->cfg.peer_ip_addr_string = argv[3];
-	} else
+	} else {
 		ctx->cfg.peer_ip_addr_string = argv[2];
+	}
 
 	if (inet_pton(AF_INET, ctx->cfg.peer_ip_addr_string,
 		      &peer_in_addr) != 1) {
@@ -348,8 +361,9 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 			ctx->cfg.msg_size = UET_TAG_RENDEZVOUS_SIZE * 2;
 		else
 			ctx->cfg.msg_size = UET_MSG_RENDEZVOUS_SIZE * 2;
-	} else
+	} else {
 		ctx->cfg.msg_size = UET_MSG_SIZE;
+	}
 
 	return UET_SUCCESS_RC;
 }
@@ -1487,10 +1501,23 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		UET_USAGE(argv[0]);
 		goto exit;
 	}
+
 	/* init transport */
 	rc = uet_init_transport(ctx);
 	if (rc != UET_SUCCESS_RC)
 		goto exit;
+
+	/*
+	 * HACK: This sleep is here in attempt to align the client and
+	 * server iniitialization phases so they're both ready to start
+	 * processing. When uet_init_tranport() and the underlying NIC_SHIM
+	 * is initialized, a system ping command is executed to learn the
+	 * next hop MAC and IP addresses. If using XDP or rawsock and one
+	 * side isn't ready, the Linux stack will process received packets
+	 * and likely return ICMP unreachable errors (possibly messing up
+	 * the desired UET flow).
+	 */
+	sleep(1);
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
 		printf("Starting in %s\n",
@@ -1555,131 +1582,182 @@ exit:
 int main(int argc, char *argv[])
 {
 	int rc, test_argc;
-	char **test_argv;
-	char *local_argv[UET_MAX_ARGS+1];
+	char *test_argv[UET_MAX_ARGS+1];
 	struct uet_context *ctx = &uet_ctx;
+	bool do_all = false;
+	char *cmd, *c_s, *test, *ip;
 
-	if ((argc != 3) && (argc != 4))  {
+	if (argc != 4)  {
 		UET_ERR("Invalid usage: wrong number of args");
+		UET_USAGE(argv[0]);
 		return UET_ERR_RC;
 	}
 
-	if (argc == 3)
-		return uet_run(argc, argv, ctx);
-
-	if (strcmp(argv[2], "test"))
-		return uet_run(argc, argv, ctx);
-
-	if (!strcmp(argv[1], "client"))
+	if (strcmp(argv[1], "client") == 0)
 		ctx->cfg.client = true;
 
-	printf("\nUntagged Message Test\n");
-	printf("=====================\n");
-	test_argc = 3;
-	local_argv[0] = argv[0];
-	local_argv[1] = argv[1];
-	local_argv[2] = argv[3];
-	local_argv[3] = NULL;
-	test_argv = local_argv;
+	if (strcmp(argv[2], "all") == 0)
+		do_all = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+	cmd  = argv[0];
+	c_s  = argv[1];
+	test = argv[2];
+	ip   = argv[3];
 
-	printf("\nTagged Message Test\n");
-	printf("===================\n");
-	test_argc = 4;
-	local_argv[2] = "tag";
-	local_argv[3] = argv[3];
-	local_argv[4] = NULL;
-	memset(ctx, 0, sizeof(struct uet_context));
+	if (do_all || (strcmp(test, "rma") == 0)) {
+		printf("\nRMA Test\n");
+		printf(  "========\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "rma";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nTagged Message Test (Any Source)\n");
-	printf("================================\n");
-	memset(ctx, 0, sizeof(struct uet_context));
-	ctx->cfg.tag_any_src = true;
+	if (do_all || (strcmp(test, "untag") == 0)) {
+		printf("\nUntagged Message Test\n");
+		printf(  "=====================\n");
+		test_argc = 3;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = ip;
+		test_argv[3] = NULL;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nRMA Test\n");
-	printf("========\n");
-	test_argc = 4;
-	local_argv[2] = "rma";
-	memset(ctx, 0, sizeof(struct uet_context));
+	if (do_all || (strcmp(test, "tag") == 0)) {
+		printf("\nTagged Message Test\n");
+		printf(  "===================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "tag";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nUnexpected Untagged Message Test\n");
-	printf("================================\n");
-	test_argc = 3;
-	local_argv[0] = argv[0];
-	local_argv[1] = argv[1];
-	local_argv[2] = argv[3];
-	local_argv[3] = NULL;
-	test_argv = local_argv;
-	memset(ctx, 0, sizeof(struct uet_context));
-	first = true;
-	ctx->cfg.unexpected_msg_test = true;
+	if (do_all || (strcmp(test, "tag_any_src") == 0)) {
+		printf("\nTagged Message Test (Any Source)\n");
+		printf(  "================================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "tag";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		ctx->cfg.tag_any_src = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nDeferred Send Message Test\n");
-	printf("==========================\n");
-	memset(ctx, 0, sizeof(struct uet_context));
-	first = true;
-	ctx->cfg.unexpected_msg_test = true;
-	ctx->cfg.dsend_test = true;
+	if (do_all || (strcmp(test, "unexp_untag") == 0)) {
+		printf("\nUnexpected Untagged Message Test\n");
+		printf(  "================================\n");
+		test_argc = 3;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = ip;
+		test_argv[3] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		first = true;
+		ctx->cfg.unexpected_msg_test = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nUnexpected Tagged Message Test\n");
-	printf("==============================\n");
-	test_argc = 4;
-	local_argv[0] = argv[0];
-	local_argv[1] = argv[1];
-	local_argv[2] = "tag";
-	local_argv[3] = argv[3];
-	local_argv[4] = NULL;
-	test_argv = local_argv;
-	memset(ctx, 0, sizeof(struct uet_context));
-	first = true;
-	ctx->cfg.unexpected_msg_test = true;
+	if (do_all || (strcmp(test, "unexp_tag") == 0)) {
+		printf("\nUnexpected Tagged Message Test\n");
+		printf(  "==============================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "tag";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		first = true;
+		ctx->cfg.unexpected_msg_test = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nDeferred Tagged Send Message Test\n");
-	printf("=================================\n");
-	memset(ctx, 0, sizeof(struct uet_context));
-	first = true;
-	ctx->cfg.unexpected_msg_test = true;
-	ctx->cfg.dsend_test = true;
+	if (do_all || (strcmp(test, "defer_send") == 0)) {
+		printf("\nDeferred Send Message Test\n");
+		printf(  "==========================\n");
+		test_argc = 3;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = ip;
+		test_argv[3] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		first = true;
+		ctx->cfg.unexpected_msg_test = true;
+		ctx->cfg.dsend_test = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	if (rc != UET_SUCCESS_RC)
-		exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
 
-	printf("\nDeferred Tagged Send Message Test (Any Source)\n");
-	printf("==============================================\n");
-	memset(ctx, 0, sizeof(struct uet_context));
-	first = true;
-	ctx->cfg.unexpected_msg_test = true;
-	ctx->cfg.dsend_test = true;
-	ctx->cfg.tag_any_src = true;
+	if (do_all || (strcmp(test, "defer_tag") == 0)) {
+		printf("\nDeferred Tagged Send Message Test\n");
+		printf(  "=================================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "tag";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		first = true;
+		ctx->cfg.unexpected_msg_test = true;
+		ctx->cfg.dsend_test = true;
 
-	rc = uet_run(test_argc, test_argv, ctx);
-	exit(rc);
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
+
+	if (do_all || (strcmp(test, "defer_tag_any_src") == 0)) {
+		printf("\nDeferred Tagged Send Message Test (Any Source)\n");
+		printf(  "==============================================\n");
+		test_argc = 4;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = "tag";
+		test_argv[3] = ip;
+		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+		first = true;
+		ctx->cfg.unexpected_msg_test = true;
+		ctx->cfg.dsend_test = true;
+		ctx->cfg.tag_any_src = true;
+
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
+
+	exit(0);
 }
