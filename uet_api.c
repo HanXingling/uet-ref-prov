@@ -2255,7 +2255,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			}
 
 			/* check if rx buffer is big enough for message */
-			if ((buf_off + req_len) > rx_desc->buf_desc.len) {
+			if ((start_off + req_len) > rx_desc->buf_desc.len) {
 				UET_API_ERR("RX: Tagged Buffer Too Small");
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 						UET_RC_UNSUPPORTED_SIZE,
@@ -2285,7 +2285,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			rx_desc = (struct uet_rx_desc *)
 				  (((struct uet_rx_desc_ring_entry *)
 				    (ring->base))[ring->tail].rx_desc);
-			if ((buf_off + req_len) > rx_desc->buf_desc.len) {
+			if ((start_off + req_len) > rx_desc->buf_desc.len) {
 				UET_API_ERR("RX: Buffer Too Small");
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 						UET_RC_UNSUPPORTED_SIZE,
@@ -2303,7 +2303,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			}
 
 			/* check if mr buffer is big enough for message */
-			if ((buf_off + req_len) >
+			if ((start_off + req_len) >
 			    rx_desc->mr_desc->buf_desc.len) {
 				UET_API_ERR("RX: MR Buffer Too Small");
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
