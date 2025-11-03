@@ -1020,13 +1020,6 @@ static bool uet_ep_has_recv_cq(struct uet_ep *uet_ep)
 	return false;
 }
 
-/* determine if there are completion q's associated with endpoint */
-static bool uet_ep_has_cq(struct uet_ep *uet_ep)
-{
-	return (uet_ep_has_send_cq(uet_ep) ||
-		uet_ep_has_recv_cq(uet_ep));
-}
-
 /* determine if cq is in error state */
 static bool uet_cq_is_err_state(struct uet_ring *ring)
 {
@@ -4587,33 +4580,21 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 
 int uet_cq_close(uet_cq_handle_t cq_handle)
 {
-	struct uet_cq *uet_cq;
-	struct uet_ep *uet_ep;
-
-
 	/*
-	 * This check is necessary to handle scenarios where the completion
-	 * queue (cq) is opened and closed without being bind. In such cases,
-	 * the handle will be NULL, and attempting to access it would result
-	 * in a segmentation fault.
-	 * Example of such a scenario is fi_cq_test fabtest
+	 * The libfrabric programmer's guide states the following:
+	 *
+	 * 'The fi_close call releases all resources associated with a completion
+	 *  queue. Any completions which remain on the CQ when it is closed
+	 *  are lost. When closing the CQ, there must be no opened endpoints,
+	 *  transmit contexts, or receive contexts associated with the CQ.
+	 *  If resources are still associated with the CQ when attempting to
+	 *  close, the call will return -FI_EBUSY.'
+	 *
+	 *  However, in this implementation, CQ resources are embedded in
+	 *  the endpoint resources. The CQ resources are released when the
+	 *  endpoint is closed. As a result, the uet_cq_close() function does
+	 *  not need to release any resources.
 	 */
-	if (!cq_handle)
-		return FI_SUCCESS;
-
-	uet_cq = (struct uet_cq *) cq_handle;
-	uet_ep = uet_cq->uet_ep;
-
-	/*
-	 * At this point their must not be any associated ep with cq,
-	 * we check if there is one like that
-	 */
-	if ((uet_ep) && uet_ep_has_cq(uet_ep)) {
-		UET_API_ERR("There is opened endpoint associated with cq");
-		return -FI_EBUSY;
-	}
-
-	uet_cq->cq_state = UET_CQ_DOWN;
 
 	return FI_SUCCESS;
 }
