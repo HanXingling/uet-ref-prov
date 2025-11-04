@@ -108,6 +108,7 @@ struct uet_pds_sng_tx_state {
 	int    retry_cnt;    /* number of tx retransmissions */
 	struct {             /* parms needed for pkt retransmit */
 		uet_pkt_handle_t tx_pkt_handle;
+		uint64_t pkt_cnt;
 		uet_addr_handle_t dst_addr_handle;
 		uet_pds_mode_t mode;
 		uet_pds_tx_flags_t flags;
@@ -573,7 +574,8 @@ void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep)
 }
 
 /* pds packet transmission */
-int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
+int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt, 
+		       struct uet_ep *uet_ep,
 		       uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		       uet_pds_tx_flags_t flags, struct uet_pds_info *pds_info,
 		       uint16_t msg_id, uet_pds_next_hdr_t next_hdr, void *ses,
@@ -691,6 +693,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
 
 	/* save parms needed for pkt retransmission */
 	state->pkt_parms.tx_pkt_handle = tx_pkt_handle;
+	state->pkt_parms.pkt_cnt = pkt_cnt;
 	state->pkt_parms.dst_addr_handle = dst_addr_handle;
 	state->pkt_parms.mode = mode;
 	state->pkt_parms.flags = flags;
@@ -773,6 +776,7 @@ int uet_pds_sng_progress_tx(struct uet_ep *uet_ep,
 	else
 		pds_info = NULL;
 	return uet->pds.downcall.tx_pkt(pds_tx->pkt_parms.tx_pkt_handle,
+	                                pds_tx->pkt_parms.pkt_cnt,
 					uet_ep,
 					pds_tx->pkt_parms.dst_addr_handle,
 					pds_tx->pkt_parms.mode,
