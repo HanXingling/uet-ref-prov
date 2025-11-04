@@ -872,6 +872,7 @@ static void uet_tx_desc_list_insert(struct uet_tx_desc *tx_desc)
 {
 	tx_desc->state = UET_TX_DESC_STATE_INACTIVE;
 	tx_desc->desc_flags = UET_TX_DESC_FLAG_NONE;
+	tx_desc->pkt_cnt = 0;
 	dlist_insert_head(&tx_desc->list_entry,
 			  &tx_desc->uet_ep->tx_desc_list_head);
 }
@@ -3188,7 +3189,8 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 
 	uet_build_ses_hdr(tx_desc, 0, &ses);
 
-	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+				  tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_EOM, NULL, tx_desc->msg_id,
 				  UET_HDR_REQ_STD, &ses,
@@ -3217,7 +3219,8 @@ static int uet_tx_rtr(struct uet_tx_desc *tx_desc)
 
 	uet_build_ses_hdr(tx_desc, 0, &ses);
 
-	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->uet_ep,
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+				  tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM, NULL,
 				  tx_desc->msg_id, UET_HDR_REQ_STD, &ses,
@@ -3383,8 +3386,8 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 		}
 
 		uet_build_ses_hdr(tx_desc, pkt_len, ses);
-		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, uet_ep,
-					  tx_desc->dst_addr_handle,
+		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+					  uet_ep, tx_desc->dst_addr_handle,
 					  tx_desc->pds_mode,
 					  flags, pds_info, tx_desc->msg_id,
 					  next_hdr, ses, ses_len,

@@ -122,6 +122,9 @@ struct uet_ses_to_pds_funcs {
 	 * parms:
 	 *      tx_pkt_handle   - handle for packet to be transmitted,
 	 *                        assigned by caller
+	 *      pkt_cnt         - number of packets previously transmitted
+	 *                        using tx_pkt_handle for current message,
+	 *                        provided solely to simplify pds debug
 	 *      uet_ep          - ptr to uet endpoint struct that packet is
 	 *                        associated with
 	 *      dst_addr_handle - handle of uet addr that packet is destined for
@@ -151,7 +154,8 @@ struct uet_ses_to_pds_funcs {
 	 *      negative value corresponding to errno on error
 	 *     -EAGAIN indicates caller should queue packet and retry later
 	 */
-	int (*tx_pkt)(uet_pkt_handle_t tx_pkt_handle, struct uet_ep *uet_ep,
+	int (*tx_pkt)(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
+		      struct uet_ep *uet_ep,
 		      uet_addr_handle_t dst_addr_handle, uet_pds_mode_t mode,
 		      uet_pds_tx_flags_t flags,
 		      struct uet_pds_info *pds_info, uint16_t msg_id,

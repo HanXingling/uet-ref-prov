@@ -312,6 +312,7 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_CANCEL_PENDING		(1 << 9)
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
+	uint64_t pkt_cnt;                /* number of pkt tx for this message */
 	uint64_t tag_or_immdata;           /* tag or immediate data for write */
 	uint64_t remote_start_off;              /* remote starting buf offset */
 	uint32_t remote_msg_off;                  /* remote offset within msg */
