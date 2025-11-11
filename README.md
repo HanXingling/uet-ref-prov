@@ -1,3 +1,7 @@
+---
+created: 2025-11-10T19:46
+updated: 2025-11-10T19:48
+---
 
 # UEC Reference Provider (libfabric)
 
@@ -107,12 +111,12 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 % make
 
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        ./uet server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        ./uet client 192.168.1.1
 ```
@@ -146,31 +150,31 @@ over the interface.
 % make xdp
 
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        ./uet_xdp server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        ./uet_xdp client 192.168.1.1
 ```
 
-### CC tester
+### CC Tester
 
 Simulation parameters (link speed, RTT, queue size, drop thresholds etc.) can be set by modifying
 the main function located in `cc_sim/sim.c`.
 
 ```
-% make uet_cc_sim
-% LD_LIBRARY_PATH=../libfabric/src/.libs ./uet_cc_sim 2
+% make cc_sim
+% ./uet_cc_sim 2
 ```
 
 Replace `2` with the desired number of senders.
 
 ## Environment Variables
 
-- **LD_LIBRARY_PATH** - Needed for dynamic linking to libfabric library.
+- **LD_LIBRARY_PATH** - Needed for dynamic linking to the `libfabric` and `libuet` libraries.
 - **UET_IFNAME** - The ifname of the interface to attach to.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
@@ -204,13 +208,13 @@ timestamp field in the packet security header.
 Example for `direct` mode without SSIs:
 ```
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=direct \
        ./uet server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=direct \
        ./uet client 192.168.1.1
@@ -219,14 +223,14 @@ Example for `direct` mode without SSIs:
 Example for `cluster` mode using SSIs:
 ```
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=cluster \
        UET_SEC_SSI=1 \
        ./uet server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=cluster \
        UET_SEC_SSI=2 \
@@ -236,7 +240,7 @@ Example for `cluster` mode using SSIs:
 Example for `server` mode:
 ```
 # server...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=server \
        UET_SEC_SSI=1 \
@@ -244,7 +248,7 @@ Example for `server` mode:
        ./uet server 192.168.1.2
 
 # client...
-% sudo LD_LIBRARY_PATH=../libfabric/src/.libs \
+% sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. \
        UET_IFNAME=ens4f0np0 \
        UET_SEC_MODE=server \
        UET_SEC_SSI=2 \

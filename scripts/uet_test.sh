@@ -2,7 +2,7 @@
 
 # CONFIG
 
-LIBFABRIC=../../libfabric/src/.libs
+LIBFABRIC=../libfabric/src/.libs
 
 CLI_IFACE=enp175s0f0np0
 SRV_IFACE=enp175s0f0np0
@@ -83,8 +83,8 @@ banner()
     echo ""
 }
 
-CMD_CLI="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${CLI_IFACE} ./uet client"
-CMD_SRV="LD_LIBRARY_PATH=${LIBFABRIC} UET_IFNAME=${SRV_IFACE} ./uet server"
+CMD_CLI="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${CLI_IFACE} ./uet client"
+CMD_SRV="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${SRV_IFACE} ./uet server"
 
 function sng()
 {

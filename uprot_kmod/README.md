@@ -1,6 +1,6 @@
 ---
 created: 2025-11-03T19:40
-updated: 2025-11-03T20:41
+updated: 2025-11-05T08:56
 ---
 
 # User Protocol Linux RDMA Driver (`uprot`)
@@ -12,7 +12,7 @@ The `uprot` kernel module implements a minimal RDMA driver that enables the foll
 - Support for allocating and destroying Protection Domains (PDs).
 - Support for managing the SGID table and exposing available source addresses.
 
-This kernel module does NOT support and `uverbs` `ioctl` commands to allocate and manage any other resources (i.e., QPs, CQs, MRs, etc). The `uprot` provider driver will manage all of these resources within itself since the transport used for the `uprot` device is implemented solely in userspace.
+This kernel module does NOT support any `uverbs` `ioctl` commands to allocate and manage other resources (i.e., QPs, CQs, MRs, etc). The `uprot` provider driver will manage all of these resources within itself since the transport used for the `uprot` device is implemented solely in userspace.
 
 > [!note]
 > The `uprot` kernel module is a heavily stripped down version of the `rxe`
@@ -97,7 +97,7 @@ link uprot0/1 state ACTIVE physical_state LINK_UP netdev ens160
 ```
 
 ```bash
-% ibv_devinfo
+% ibv_devinfo -v
 hca_id: uprot0
         transport:                      InfiniBand (0)
         fw_ver:                         0.0.0
