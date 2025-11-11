@@ -79,20 +79,20 @@ jobs:
       - name: run all tests in SNG mode
         run: |
           arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=brm ./uet server all 10.1.0.2 &
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all 10.1.0.2 &
           echo "Server started in background."
           sleep 2
           echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_IFNAME=vm2 ./uet client all 10.1.0.1
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all 10.1.0.1
           echo "Client finished."
 
       - name: run all tests in PDS mode
         run: |
           arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
           echo "Server started in background."
           sleep 2
           echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
           echo "Client finished."
 
