@@ -1111,6 +1111,7 @@ void uet_pds_ep_finalize(struct uet_ep *uet_ep)
 }
 
 int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
+		   uint64_t pkt_cnt,
 		   struct uet_ep *uet_ep,
 		   uet_addr_handle_t dst_addr_handle,
 		   uet_pds_mode_t mode,

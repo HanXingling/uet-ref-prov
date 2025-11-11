@@ -17,6 +17,7 @@ extern void uet_pds_finalize(struct uet_instance *uet);
 extern int uet_pds_ep_initialize(struct uet_ep *uet_ep);
 extern void uet_pds_ep_finalize(struct uet_ep *uet_ep);
 extern int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
+			  uint64_t pkt_cnt,
 			  struct uet_ep *uet_ep,
 			  uet_addr_handle_t dst_addr_handle,
 			  uet_pds_mode_t mode, uet_pds_tx_flags_t flags,
@@ -38,6 +39,7 @@ extern void uet_pds_sng_finalize(struct uet_instance *uet);
 extern int uet_pds_sng_ep_initialize(struct uet_ep *uet_ep);
 extern void uet_pds_sng_ep_finalize(struct uet_ep *uet_ep);
 extern int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
+			      uint64_t pkt_cnt,
 			      struct uet_ep *uet_ep,
 			      uet_addr_handle_t dst_addr_handle,
 			      uet_pds_mode_t mode, uet_pds_tx_flags_t flags,
