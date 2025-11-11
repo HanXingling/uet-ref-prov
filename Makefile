@@ -3,15 +3,18 @@ CC=gcc
 CLANG=clang
 
 LIBFABRIC=../libfabric
+LF_HDRS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include
+LF_LIBS=-L$(LIBFABRIC)/src/.libs -lfabric
 
-INCS=-I. -I./util -I./nic_shim -I./crypto \
-     -I$(LIBFABRIC) -I$(LIBFABRIC)/include
+LF_LOCAL_HDRS=-I./libfabric_headers -I./libfabric_headers/include
+
+INCS=-I. -I./util -I./nic_shim -I./crypto
 CFLAGS=-Wall \
        -Wno-unused-variable \
        -Wno-implicit-function-declaration \
        -Wno-int-conversion \
        -Wno-address-of-packed-member
-LDFLAGS=-L$(LIBFABRIC)/src/.libs -lfabric
+LDFLAGS=
 
 HDRS=$(wildcard *.h util/*.h nic_shim/*.h crypto/*.h)
 
@@ -74,7 +77,7 @@ cc_sim: $(CC_SIM_BIN)
 $(LIB_OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(LIB_OBJ_DIR)/$(dir $<)
 	@echo 'Building library object: $<'
-	@$(CC) $(CFLAGS) $(INCS) -fPIC -c -o $@ $<
+	@$(CC) $(CFLAGS) $(INCS) $(LF_LOCAL_HDRS) -fPIC -c -o $@ $<
 
 # Shared library
 $(LIB): $(LIB_OBJ)
@@ -85,7 +88,7 @@ $(LIB): $(LIB_OBJ)
 $(XDP_LIB_OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(XDP_LIB_OBJ_DIR)/$(dir $<)
 	@echo 'Building XDP library object: $<'
-	@$(CC) $(CFLAGS) $(INCS) -fPIC -c -o $@ $<
+	@$(CC) $(CFLAGS) $(INCS) $(LF_LOCAL_HDRS) -fPIC -c -o $@ $<
 
 # XDP shared library (w/ extra LDFLAGS)
 $(XDP_LIB): $(XDP_LIB_OBJ)
@@ -96,23 +99,23 @@ $(XDP_LIB): $(XDP_LIB_OBJ)
 $(OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(OBJ_DIR)/$(dir $<)
 	@echo 'Building file: $<'
-	@$(CC) $(CFLAGS) $(INCS) -c -o $@ $<
+	@$(CC) $(CFLAGS) $(INCS) $(LF_HDRS) -c -o $@ $<
 
 # Main executable (links against shared library)
 $(BIN): $(LIB) $(MAIN_OBJ)
 	@echo 'Building program: $@'
-	@$(CC) $(MAIN_OBJ) -o $@ -L. -l$(LIBNAME) $(LDFLAGS)
+	@$(CC) $(MAIN_OBJ) -o $@ -L. -l$(LIBNAME) $(LDFLAGS) $(LF_LIBS)
 
 # XDP executable object file (w/ extra CFLAGS)
 $(XDP_OBJ_DIR)/%.o: %.c $(HDRS)
 	@mkdir -p $(XDP_OBJ_DIR)/$(dir $<)
 	@echo 'Building XDP file: $<'
-	@$(CC) $(CFLAGS) $(INCS) -c -o $@ $<
+	@$(CC) $(CFLAGS) $(INCS) $(LF_HDRS) -c -o $@ $<
 
 # XDP executable (links against XDP shared library) (w/ extra LDFLAGS)
 $(XDP_BIN): $(XDP_LIB) $(XDP_MAIN_OBJ)
 	@echo 'Building XDP program: $@'
-	@$(CC) $(XDP_MAIN_OBJ) -o $@ -L. -l$(XDP_LIBNAME) $(LDFLAGS)
+	@$(CC) $(XDP_MAIN_OBJ) -o $@ -L. -l$(XDP_LIBNAME) $(LDFLAGS) $(LF_LIBS)
 
 $(XDP_KERN_BIN): $(XDP_KERN_SRC)
 	@echo 'Building XDP kernel program: $@'
