@@ -4006,12 +4006,22 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 
 	uet = (struct uet_instance *) handle;
 
+#if ENABLE_VERBS
+	// FIXME
+	new_info = calloc(1, sizeof(*new_info));
+	if (new_info == NULL) {
+		UET_API_ERR("fi_allocinfo");
+		rc = -FI_ENOMEM;
+		goto err_return;
+	}
+#else
 	new_info = fi_allocinfo();
 	if (new_info == NULL) {
 		UET_API_ERR("fi_allocinfo");
 		rc = -FI_ENOMEM;
 		goto err_return;
 	}
+#endif
 
 	nic = calloc(1, sizeof(struct fid_nic));
 	if (nic == NULL) {
@@ -4109,8 +4119,13 @@ err_return:
 			free(nic->fid.ops);
 		free(nic);
 	}
-	if (new_info != NULL)
+	if (new_info != NULL) {
+#if ENABLE_VERBS
+		// FIXME fi_freeinfo(new_info);
+#else
 		fi_freeinfo(new_info);
+#endif
+	}
 	return rc;
 }
 

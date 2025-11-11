@@ -67,6 +67,10 @@ CC_SIM_OBJ=$(patsubst %.c, $(CC_SIM_OBJ_DIR)/%.o, $(CC_SIM_SRC))
 # Default target
 all: $(BIN)
 
+# Verbs target
+verbs: CFLAGS+=-DENABLE_VERBS=1
+verbs: $(BIN)
+
 # XDP target
 xdp: $(XDP_BIN) $(XDP_KERN_BIN)
 
