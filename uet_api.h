@@ -118,6 +118,11 @@ int uet_finalize(uet_handle_t handle);
 int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		const struct fi_info *hints, struct fi_info **info);
 
+/* replacements for fi_allocinfo() and fi_freeinfo() for Verbs API */
+struct fi_info *uet_verbs_fi_allocinfo(void);
+void uet_verbs_fi_freeinfo(struct fi_info *info);
+
+
 /*******************************************************************
  * uet_domain API family
  *******************************************************************/

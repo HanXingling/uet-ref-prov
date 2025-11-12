@@ -52,6 +52,10 @@
 #include "unix/osd.h"
 #include "rdma/fi_errno.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wimplicit-function-declaration"
+#pragma GCC diagnostic ignored "-Wint-conversion"
+#pragma GCC diagnostic ignored "-Wnested-externs"
 
 static inline int ofi_shm_remap(struct util_shm *shm,
 				size_t newsize, void **mapped)
@@ -61,6 +65,8 @@ static inline int ofi_shm_remap(struct util_shm *shm,
 	*mapped = shm->ptr;
 	return shm->ptr == MAP_FAILED ? -FI_EINVAL : FI_SUCCESS;
 }
+
+#pragma GCC diagnostic pop
 
 ssize_t ofi_get_addr_page_size(const void *addr);
 ssize_t ofi_get_hugepage_size(void);

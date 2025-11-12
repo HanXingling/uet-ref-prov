@@ -251,7 +251,10 @@ struct ofi_filter {
 };
 
 extern struct ofi_filter prov_log_filter;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 extern struct fi_provider core_prov;
+#pragma GCC diagnostic pop
 extern const char *log_prefix;
 
 void ofi_create_filter(struct ofi_filter *filter, const char *env_name);
@@ -465,7 +468,10 @@ int ofi_open_log(uint32_t version, void *attr, size_t attr_len,
 void ofi_tostr_log_level(char *buf, size_t len, enum fi_log_level level);
 void ofi_tostr_log_subsys(char *buf, size_t len, enum fi_log_subsys subsys);
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 int ofi_nic_close(struct fid *fid);
+#pragma GCC diagnostic pop
 int ofi_nic_control(struct fid *fid, int command, void *arg);
 
 #ifdef __cplusplus

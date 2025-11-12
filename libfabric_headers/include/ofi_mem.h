@@ -70,7 +70,11 @@ static inline long ofi_get_page_size(void)
 {
 	return ofi_sysconf(_SC_PAGESIZE);
 }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 ssize_t ofi_get_hugepage_size(void);
+#pragma GCC diagnostic pop
 
 size_t ofi_get_mem_size(void);
 

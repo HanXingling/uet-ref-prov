@@ -3902,6 +3902,62 @@ static ssize_t uet_send_req_api_common(
 	return FI_SUCCESS;
 }
 
+void uet_verbs_fi_freeinfo(struct fi_info *info)
+{
+	if (info) {
+		if (info->tx_attr)
+			free(info->tx_attr);
+		if (info->rx_attr)
+			free(info->rx_attr);
+		if (info->ep_attr)
+			free(info->ep_attr);
+		if (info->domain_attr)
+			free(info->domain_attr);
+		if (info->fabric_attr)
+			free(info->fabric_attr);
+		free(info);
+	}
+}
+
+struct fi_info *uet_verbs_fi_allocinfo(void)
+{
+	struct fi_info *info;
+	struct fi_rx_attr *rx_attr;
+	struct fi_ep_attr *ep_attr;
+	struct fi_domain_attr *domain_attr;
+	struct fi_fabric_attr *fabric_attr;
+
+	info = calloc(1, sizeof(struct fi_info));
+	if (info == NULL)
+		goto err;
+
+	info->tx_attr = calloc(1, sizeof(struct fi_tx_attr));
+	if (info->tx_attr == NULL)
+		goto err;
+
+	info->rx_attr = calloc(1, sizeof(struct fi_rx_attr));
+	if (info->rx_attr == NULL)
+		goto err;
+
+	info->ep_attr = calloc(1, sizeof(struct fi_ep_attr));
+	if (info->ep_attr == NULL)
+		goto err;
+
+	info->domain_attr = calloc(1, sizeof(struct fi_domain_attr));
+	if (info->domain_attr == NULL)
+		goto err;
+
+	info->fabric_attr = calloc(1, sizeof(struct fi_fabric_attr));
+	if (info->fabric_attr == NULL)
+		goto err;
+
+	return info;
+
+err:
+	uet_verbs_fi_freeinfo(info);
+	return NULL;
+}
+
 /*********************************************************************
  * Below functions implement UET APIs
  *********************************************************************/
@@ -4007,21 +4063,15 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	uet = (struct uet_instance *) handle;
 
 #if ENABLE_VERBS
-	// FIXME
-	new_info = calloc(1, sizeof(*new_info));
-	if (new_info == NULL) {
-		UET_API_ERR("fi_allocinfo");
-		rc = -FI_ENOMEM;
-		goto err_return;
-	}
+	new_info = uet_verbs_fi_allocinfo();
 #else
 	new_info = fi_allocinfo();
+#endif
 	if (new_info == NULL) {
 		UET_API_ERR("fi_allocinfo");
 		rc = -FI_ENOMEM;
 		goto err_return;
 	}
-#endif
 
 	nic = calloc(1, sizeof(struct fid_nic));
 	if (nic == NULL) {
@@ -4121,7 +4171,7 @@ err_return:
 	}
 	if (new_info != NULL) {
 #if ENABLE_VERBS
-		// FIXME fi_freeinfo(new_info);
+		uet_verbs_fi_freeinfo(new_info);
 #else
 		fi_freeinfo(new_info);
 #endif
@@ -5285,4 +5335,3 @@ int uet_query_atomic(uet_domain_handle_t domain_handle,
 {
 	return -FI_ENOSYS;
 }
-

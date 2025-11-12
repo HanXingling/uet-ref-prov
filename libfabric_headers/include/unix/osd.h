@@ -194,13 +194,19 @@ static inline int ofi_is_loopback_addr(struct sockaddr *addr) {
 #if !HAVE_CLOCK_GETTIME
 
 #define CLOCK_REALTIME 0
+#ifndef CLOCK_REALTIME_COARSE
 #define CLOCK_REALTIME_COARSE 0
+#endif
+#ifndef CLOCK_MONOTONIC
 #define CLOCK_MONOTONIC 0
+#endif
 
 typedef int clockid_t;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 int clock_gettime(clockid_t clk_id, struct timespec *tp);
-
+#pragma GCC diagnostic pop
 #endif /* !HAVE_CLOCK_GETTIME */
 
 /* complex operations implementation */
