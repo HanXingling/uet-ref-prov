@@ -2,7 +2,28 @@
 CC=gcc
 CLANG=clang
 
-LIBFABRIC=../libfabric
+# Auto-discover libfabric directory by searching up parent directories
+ifneq ($(MAKECMDGOALS),clean)
+LIBFABRIC := $(shell \
+	current_dir=$(CURDIR); \
+	while [ "$$current_dir" != "/" ]; do \
+		for dir in $$current_dir/libfabric*; do \
+			if [ -d "$$dir/src/.libs" ]; then \
+				echo "$$dir"; \
+				exit 0; \
+			fi; \
+		done; \
+		current_dir=$$(dirname $$current_dir); \
+	done; \
+)
+
+ifeq ($(LIBFABRIC),)
+$(error a libfabric directory was not found)
+endif
+
+$(info Found libfabric directory: $(LIBFABRIC))
+endif
+
 LF_HDRS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include
 LF_LIBS=-L$(LIBFABRIC)/src/.libs -lfabric
 
