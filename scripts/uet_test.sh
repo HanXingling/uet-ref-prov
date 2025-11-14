@@ -1,11 +1,27 @@
 #!/bin/bash
 
-# path to local libfabric build where libfabric.so lives
-LIBFABRIC=../libfabric/src/.libs
-
 # SSI values used for security tests
 CLI_SSI=2
 SRV_SSI=1
+
+# Auto-discover libfabric directory by searching up parent directories
+LIBFABRIC=""
+current_dir="$(pwd)"
+while [ "$current_dir" != "/" ]; do
+    for dir in "$current_dir"/libfabric*; do
+        if [ -d "$dir/src/.libs" ]; then
+            LIBFABRIC="$dir/src/.libs"
+            echo "Found libfabric directory: $LIBFABRIC"
+            break 2
+        fi
+    done
+    current_dir="$(dirname "$current_dir")"
+done
+
+if [ -z "$LIBFABRIC" ]; then
+    echo "ERROR: libfabric directory not found"
+    exit 1
+fi
 
 # Valid "test" and "pds" names
 test_names=(all rma tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
