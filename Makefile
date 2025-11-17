@@ -3,7 +3,9 @@ CC=gcc
 CLANG=clang
 
 # Auto-discover libfabric directory by searching up parent directories
+# Use LIBFABRIC environment variable if set, otherwise auto-discover
 ifneq ($(MAKECMDGOALS),clean)
+ifndef LIBFABRIC
 LIBFABRIC := $(shell \
 	current_dir=$(CURDIR); \
 	while [ "$$current_dir" != "/" ]; do \
@@ -16,12 +18,13 @@ LIBFABRIC := $(shell \
 		current_dir=$$(dirname $$current_dir); \
 	done; \
 )
-
 ifeq ($(LIBFABRIC),)
 $(error a libfabric directory was not found)
 endif
-
 $(info Found libfabric directory: $(LIBFABRIC))
+else
+$(info Using libfabric directory from environment: $(LIBFABRIC))
+endif
 endif
 
 LF_HDRS=-I$(LIBFABRIC) -I$(LIBFABRIC)/include

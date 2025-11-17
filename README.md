@@ -1,6 +1,6 @@
 ---
 created: 2025-11-10T19:46
-updated: 2025-11-10T19:48
+updated: 2025-11-17T13:33
 ---
 
 # UEC Reference Provider (libfabric)
@@ -181,6 +181,8 @@ Replace `2` with the desired number of senders.
 - **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
+- **UET_PDC_CLOSE_THRESH** - Randomly close a PDC after message Tx EOM (100=1% chance to close, default=0).
+- **UET_PKT_DROP_THRESH** - Randomly drop a Tx packet before sending (100=1% chance to drop, default=0).
 
 ## Security
 
