@@ -2944,8 +2944,13 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 
 	ses->cmn.rsvd_opcode = opcode << UET_SES_OPCODE_SHIFT;
 	ses->cmn.ver_flags |= eom;
+#if !ENABLE_VERBS
 	ses->cmn.rsvd_res_index = htons(av->addr->start_index <<
 					UET_SES_REQ_RES_INDEX_SHIFT);
+#else
+	ses->cmn.rsvd_res_index = htons(tx_desc->resource_index <<
+					UET_SES_REQ_RES_INDEX_SHIFT);
+#endif
 	ses->cmn.rsvd_pid_on_fep = htons(av->addr->pid_on_fep <<
 					 UET_SES_REQ_PID_ON_FEP_SHIFT);
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
@@ -3759,11 +3764,22 @@ static ssize_t uet_recv_api_common(
  *   - In **buffer mode**, a single buffer can be specified as single
  *     `struct iovec` with its base address and size.
  */
+#if !ENABLE_VERBS
 static ssize_t uet_send_req_api_common(
 	uet_send_req_api_t send_req_api, uet_ep_handle_t ep_handle,
-	uint32_t job_id, const struct iovec *iov, size_t iov_count, uet_mr_handle_t mr_handle,
+	uint32_t job_id, const struct iovec *iov, size_t iov_count,
+	uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
 	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
+#else
+static ssize_t uet_send_req_api_common(
+	uet_send_req_api_t send_req_api, uet_ep_handle_t ep_handle,
+	uint32_t job_id, const struct iovec *iov, size_t iov_count,
+	uet_mr_handle_t mr_handle,
+	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
+	uint64_t remote_mem_addr, uint64_t remote_key, void *context,
+	uint16_t resource_index)
+#endif /* ENABLE_VERBS */
 {
 	int rc;
 	size_t i;
@@ -3862,6 +3878,9 @@ static ssize_t uet_send_req_api_common(
 	tx_desc->remaining_bytes = msg_len;
 	tx_desc->context = context;
 	tx_desc->dst_addr_handle = dst_addr_handle;
+#if ENABLE_VERBS
+	tx_desc->resource_index = resource_index;
+#endif
 	tx_desc->job_id = job_id;
 	tx_desc->msg_id = msg_id;
 	tx_desc->uet_ep = uet_ep;
@@ -4788,6 +4807,7 @@ ssize_t uet_trecvv(uet_ep_handle_t ep_handle, uint32_t job_id,
 				    ignore, context));
 }
 
+#if !ENABLE_VERBS
 ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context)
@@ -4814,6 +4834,39 @@ ssize_t uet_sendv(
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
 }
 
+#else
+ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 void *buf, size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t dst_addr_handle, void *context,
+		 uint16_t resource_index)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_SEND_API, ep_handle, job_id, &iov, 1, mr_handle,
+			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context,
+			resource_index));
+}
+
+ssize_t uet_sendv(
+	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
+	size_t count, uet_mr_handle_t mr_handle,
+	uet_addr_handle_t dst_addr_handle, void *context,
+	uint16_t resource_index)
+{
+	return (uet_send_req_api_common(
+			UET_SEND_API, ep_handle, job_id, iov, count, mr_handle,
+			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context,
+			resource_index));
+}
+#endif /* ENABLE_VERBS */
+
+#if !ENABLE_VERBS
 ssize_t uet_tsendv(
 	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
 	size_t count, uet_mr_handle_t mr_handle,
@@ -4824,8 +4877,7 @@ ssize_t uet_tsendv(
 			dst_addr_handle, tag, UET_NO_IMM_DATA,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
 }
-
-
+#endif 
 
 ssize_t uet_trecv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uet_mr_handle_t mr_handle,
@@ -4842,6 +4894,7 @@ ssize_t uet_trecv(uet_ep_handle_t ep_handle, uint32_t job_id,
 				    context));
 }
 
+#if !ENABLE_VERBS
 ssize_t uet_tsend(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle, uint64_t tag,
@@ -4857,6 +4910,7 @@ ssize_t uet_tsend(uet_ep_handle_t ep_handle, uint32_t job_id,
 			dst_addr_handle, tag, UET_NO_IMM_DATA,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
 }
+#endif
 
 uint64_t uet_mr_format_key(uint64_t rkey, bool idempotent_safe)
 {
@@ -5069,6 +5123,7 @@ int uet_mr_close(uet_mr_handle_t mr_handle)
 	return FI_SUCCESS;
 }
 
+#if !ENABLE_VERBS
 ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		  size_t len, uint64_t *data, uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle,
@@ -5101,6 +5156,43 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
 			remote_mem_addr, remote_key, context));
 }
+
+#else
+ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		  size_t len, uint64_t *data, uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t dst_addr_handle,
+		  uint64_t remote_mem_addr, uint64_t remote_key,
+		  void *context, uint16_t resource_index)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_WRITE_API, ep_handle, job_id, &iov, 1, mr_handle,
+			dst_addr_handle, UET_NO_TAG, data, remote_mem_addr,
+			remote_key, context, resource_index));
+}
+
+ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		 size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t uet_addr_handle,
+		 uint64_t remote_mem_addr, uint64_t remote_key, void *context,
+		 uint16_t resource_index)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_READ_API, ep_handle, job_id, &iov, 1, mr_handle,
+			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			remote_mem_addr, remote_key, context,
+			resource_index));
+}
+#endif /* ENABLE_VERBS */
 
 /*********************************************************************
  * Below API functions have not been implemented yet

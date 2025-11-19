@@ -341,6 +341,9 @@ struct uet_tx_desc {
 	struct uet_rx_desc *rx_desc;     /* associated rx descriptor for read */
 	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
 	struct uet_ephemeral_av ephemeral_av;  /* av for tx of read rsp & rtr */
+#if ENABLE_VERBS
+	uint16_t resource_index;       /* for verbs, passing index outside av */
+#endif
 };
 
 /* tx msg descriptor ring entry */

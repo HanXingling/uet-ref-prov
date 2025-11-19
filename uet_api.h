@@ -997,12 +997,19 @@ ssize_t uet_recvmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - can be used to implement the following libfabric fi_msg api’s:
  *     - fi_send
  */
+#if !ENABLE_VERBS
 ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context);
+#else
+ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
+		 void *buf, size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t dst_addr_handle, void *context,
+		 uint16_t resource_index);
+#endif
 
 /*
- * simple api for transmission of a message to an endpoint
+ * simple vector api for transmission of a message to an endpoint
  *
  * parms:
  *   ep_handle       - handle identifying local uet endpoint instance
@@ -1023,10 +1030,18 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - can be used to implement the following libfabric fi_msg api’s:
  *     - fi_send
  */
+#if !ENABLE_VERBS
 ssize_t uet_sendv(
 	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, void *context);
+#else
+ssize_t uet_sendv(
+	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
+	size_t iov_count, uet_mr_handle_t mr_handle,
+	uet_addr_handle_t dst_addr_handle, void *context,
+	uint16_t resource_index);
+#endif
 
 /*
  * flexible api for transmission of a message to an endpoint
@@ -1259,12 +1274,21 @@ ssize_t uet_tsendmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - can be used to implement the following libfabric fi_rma api’s:
  *     - fi_write, fi_writedata
  */
+#if !ENABLE_VERBS
 ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uint64_t *data,
 		  uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle,
 		  uint64_t remote_mem_addr, uint64_t remote_key,
 		  void *context);
+#else
+ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  void *buf, size_t len, uint64_t *data,
+		  uet_mr_handle_t mr_handle,
+		  uet_addr_handle_t dst_addr_handle,
+		  uint64_t remote_mem_addr, uint64_t remote_key,
+		  void *context, uint16_t resource_index);
+#endif
 
 /*
  * flexible api for rma write
@@ -1320,10 +1344,18 @@ ssize_t uet_writemsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - can be used to implement the following libfabric fi_rma api’s:
  *     - fi_read
  */
+#if !ENABLE_VERBS
 ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context);
+#else
+ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		 size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t uet_addr_handle,
+		 uint64_t remote_mem_addr, uint64_t remote_key, void *context,
+		 uint16_t resource_index);
+#endif
 
 /*
  * flexible api for rma read
