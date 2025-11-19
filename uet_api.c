@@ -65,6 +65,14 @@ typedef enum {
 	UET_READ_API,
 } uet_send_req_api_t;
 
+#if ENABLE_VERBS
+/* convert job key to job id */
+static uint32_t uet_job_key_to_id(uint32_t job_key)
+{
+	return job_key;
+}
+#endif
+
 /* init portions of uet address with ipv4 fabric address */
 static void uet_init_uet_addr_ipv4(struct uet_addr *uet_addr,
 				   uint32_t ipv4_addr)
@@ -3160,6 +3168,7 @@ static int uet_pds_to_ses_pds_err(uet_pkt_handle_t tx_pkt_handle,
  *      FI_SUCCESS on success
  *      negative value corresponding to fabric errno on error
  */
+#if !ENABLE_VERBS
 static int uet_addr_resolution(struct uet_addr *uet_addr, uint32_t *job_id)
 {
 	uet_addr->pid_on_fep = UET_ADDR_DEF_PID_ON_FEP;
@@ -3174,6 +3183,7 @@ static int uet_addr_resolution(struct uet_addr *uet_addr, uint32_t *job_id)
 
 	return FI_SUCCESS;
 }
+#endif /* !ENABLE_VERBS */
 
 /* send cancel message */
 static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
@@ -4288,9 +4298,17 @@ int uet_domain_close(uet_domain_handle_t domain_handle)
 	return FI_SUCCESS;
 }
 
+#if ENABLE_VERBS
+int uet_endpoint(uet_domain_handle_t domain_handle,
+		 struct fi_info *info, struct fid_ep *ep,
+		 void *context, uet_ep_handle_t *ep_handle,
+		 uint16_t pid_on_fep, uint16_t resource_index,
+		 uint32_t initiator_id, uint32_t job_key)
+#else
 int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle)
+#endif
 {
 	int rc;
 	size_t i;
@@ -4311,11 +4329,21 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 
 	/* init ep object */
 	memcpy(&uet_ep->uet_addr, info->src_addr, info->src_addrlen);
+#if ENABLE_VERBS
+	uet_ep->uet_addr.pid_on_fep = pid_on_fep;
+	uet_ep->uet_addr.num_indices = 1;
+	uet_ep->uet_addr.start_index = resource_index;
+	uet_ep->uet_addr.initiator_id = initiator_id;
+	uet_ep->uet_addr.flags |= (UET_ADDR_PID_ON_FEP_V | UET_ADDR_INDEX_V |
+				    UET_ADDR_INITIATOR_V);
+	uet_ep->job_id = uet_job_key_to_id(job_key);
+#else
 	rc = uet_addr_resolution(&uet_ep->uet_addr, &uet_ep->job_id);
 	if (rc != FI_SUCCESS) {
 		UET_API_ERR("uet_addr_resolution");
 		goto err_exit;
 	}
+#endif
 	uet_ep->ipv4_addr = uet_ep->uet_addr.fa.v4;
 
 	uet_ep->num_rx_desc = info->rx_attr->size;

@@ -377,9 +377,17 @@ int uet_mr_close(uet_mr_handle_t mr_handle);
  *   0 on success,
  *   negative value corresponding to fabric errno on error
  */
+#if !ENABLE_VERBS
 int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle);
+#else
+int uet_endpoint(uet_domain_handle_t domain_handle,
+		 struct fi_info *info, struct fid_ep *ep,
+		 void *context, uet_ep_handle_t *ep_handle,
+		 uint16_t pid_on_fep, uint16_t resource_index,
+		 uint32_t initiator_id, uint32_t job_key);
+#endif
 
 /*
  * called to get uet address of an endpoint
