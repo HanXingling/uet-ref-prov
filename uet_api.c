@@ -1323,8 +1323,10 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 	}
 	if (cq->format_size >= sizeof(struct fi_cq_msg_entry)) {
 		cq_entry->buf = rx_desc->buf_desc.buf;
-		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE_IMM)
+		if (rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE_IMM) {
 			cq_entry->data = rx_desc->imm_data;
+			cq_entry->flags |= FI_REMOTE_CQ_DATA;
+		}
 	}
 	if ((cq->format_size >= sizeof(struct fi_cq_tagged_entry)) &&
 	    (rx_desc->cq_flags & FI_TAGGED))
