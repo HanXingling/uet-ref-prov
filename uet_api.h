@@ -918,9 +918,15 @@ int uet_av_remove(uet_addr_handle_t addr_handle);
  *   - if FI_MSG_PREFIX mode is configured, the buffer prefix
  *     contains frame headers on completion
  */
+#if !ENABLE_VERBS
 ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t src_addr_handle, void *context);
+#else
+ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_key,
+		 void *buf, size_t len, uet_mr_handle_t mr_handle,
+		 uet_addr_handle_t src_addr_handle, void *context);
+#endif
 
 /*
  * simple api to post iov to receive queue of an endpoint
@@ -943,10 +949,17 @@ ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   0 on success,
  *   negative value corresponding to fabric errno on error
  */
+#if !ENABLE_VERBS
 ssize_t uet_recvv(
 	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t src_addr_handle, void *context);
+#else
+ssize_t uet_recvv(
+	uet_ep_handle_t ep_handle, uint32_t job_key, const struct iovec *iov,
+	size_t iov_count, uet_mr_handle_t mr_handle,
+	uet_addr_handle_t src_addr_handle, void *context);
+#endif
 
 /*
  * flexible api to post buffer to receive queue of an endpoint
@@ -1002,7 +1015,7 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context);
 #else
-ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
+ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_key,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context,
 		 uint16_t resource_index);
@@ -1037,7 +1050,7 @@ ssize_t uet_sendv(
 	uet_addr_handle_t dst_addr_handle, void *context);
 #else
 ssize_t uet_sendv(
-	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
+	uet_ep_handle_t ep_handle, uint32_t job_key, const struct iovec *iov,
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, void *context,
 	uint16_t resource_index);
@@ -1282,7 +1295,7 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  uint64_t remote_mem_addr, uint64_t remote_key,
 		  void *context);
 #else
-ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
+ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_key,
 		  void *buf, size_t len, uint64_t *data,
 		  uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle,
@@ -1350,7 +1363,7 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context);
 #else
-ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
 		 size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context,
