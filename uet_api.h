@@ -118,9 +118,13 @@ int uet_finalize(uet_handle_t handle);
 int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		const struct fi_info *hints, struct fi_info **info);
 
-/* replacements for fi_allocinfo() and fi_freeinfo() for Verbs API */
+/* replacements for fi_allocinfo(), fi_dupinfo() and fi_freeinfo() */
+/* for Verbs API                                                   */
+#if ENABLE_VERBS
 struct fi_info *uet_verbs_fi_allocinfo(void);
+struct fi_info *uet_verbs_fi_dupinfo(struct fi_info *info);
 void uet_verbs_fi_freeinfo(struct fi_info *info);
+#endif
 
 
 /*******************************************************************

@@ -2522,7 +2522,7 @@ static uet_ses_rc_t uet_rx_read_data(
  *
  * parms:
  *      rx_pkt_handle   - handle assigned to received packet by pds
- *      uet              - ptr to uet instance struct
+ *      uet             - ptr to uet instance struct
  *      pp              - ptr to parsed packet struct
  *      pds_info        - ptr to info that needs to be echoed back to pds when
  *                        read data is transmitted
@@ -3943,6 +3943,7 @@ static ssize_t uet_send_req_api_common(
 	return FI_SUCCESS;
 }
 
+#if ENABLE_VERBS
 void uet_verbs_fi_freeinfo(struct fi_info *info)
 {
 	if (info) {
@@ -3956,6 +3957,15 @@ void uet_verbs_fi_freeinfo(struct fi_info *info)
 			free(info->domain_attr);
 		if (info->fabric_attr)
 			free(info->fabric_attr);
+		if (info->nic) {
+			if (info->nic->device_attr)
+				free(info->nic->device_attr);
+			if (info->nic->link_attr)
+				free(info->nic->link_attr);
+			if (info->nic->fid.ops)
+				free(info->nic->fid.ops);
+			free(info->nic);
+		}
 		free(info);
 	}
 }
@@ -3963,10 +3973,6 @@ void uet_verbs_fi_freeinfo(struct fi_info *info)
 struct fi_info *uet_verbs_fi_allocinfo(void)
 {
 	struct fi_info *info;
-	struct fi_rx_attr *rx_attr;
-	struct fi_ep_attr *ep_attr;
-	struct fi_domain_attr *domain_attr;
-	struct fi_fabric_attr *fabric_attr;
 
 	info = calloc(1, sizeof(struct fi_info));
 	if (info == NULL)
@@ -3998,6 +4004,137 @@ err:
 	uet_verbs_fi_freeinfo(info);
 	return NULL;
 }
+
+struct fi_info *uet_verbs_fi_dupinfo(struct fi_info *info)
+{
+	struct fi_info *dup;
+	struct fi_tx_attr *tx_attr = NULL;
+	struct fi_rx_attr *rx_attr = NULL;
+	struct fi_ep_attr *ep_attr = NULL;
+	struct fi_domain_attr *domain_attr = NULL;
+	struct fi_fabric_attr *fabric_attr = NULL;
+	struct fid_nic *nic = NULL;
+	struct fi_device_attr *device_attr;
+	struct fi_link_attr *link_attr;
+	struct fi_ops *ops;
+
+	dup = calloc(1, sizeof(struct fi_info));
+	if (dup == NULL)
+		goto err;
+
+	*dup = *info;
+
+	if (info->tx_attr) {
+		tx_attr = calloc(1, sizeof(struct fi_tx_attr));
+		if (tx_attr == NULL)
+			goto err;
+
+		*tx_attr = *info->tx_attr;
+		info->tx_attr = tx_attr;
+	}
+
+	if (info->rx_attr) {
+		rx_attr = calloc(1, sizeof(struct fi_rx_attr));
+		if (rx_attr == NULL)
+			goto err;
+
+		*rx_attr = *info->rx_attr;
+		info->rx_attr = rx_attr;
+	}
+
+	if (info->ep_attr) {
+		ep_attr = calloc(1, sizeof(struct fi_ep_attr));
+		if (ep_attr == NULL)
+			goto err;
+
+		*ep_attr = *info->ep_attr;
+		info->ep_attr = ep_attr;
+	}
+
+	if (info->domain_attr) {
+		domain_attr = calloc(1, sizeof(struct fi_domain_attr));
+		if (domain_attr == NULL)
+			goto err;
+
+		*domain_attr = *info->domain_attr;
+		info->domain_attr = domain_attr;
+	}
+
+	if (info->fabric_attr) {
+		fabric_attr = calloc(1, sizeof(struct fi_fabric_attr));
+		if (fabric_attr == NULL)
+			goto err;
+
+		*fabric_attr = *info->fabric_attr;
+		info->fabric_attr = fabric_attr;
+	}
+
+	if (info->nic) {
+		nic = calloc(1, sizeof(struct fid_nic));
+		if (nic == NULL)
+			goto err;
+
+		*nic = *info->nic;
+		info->nic = nic;
+
+		if (nic->device_attr) {
+			device_attr = calloc(1, sizeof(struct fi_device_attr));
+			if (device_attr == NULL)
+				goto err;
+
+			*device_attr = *info->nic->device_attr;
+			info->nic->device_attr = device_attr;
+		}
+
+		if (nic->link_attr) {
+			link_attr = calloc(1, sizeof(struct fi_link_attr));
+			if (link_attr == NULL)
+				goto err;
+
+			*link_attr = *info->nic->link_attr;
+			info->nic->link_attr = link_attr;
+		}
+
+		if (nic->fid.ops) {
+			ops = calloc(1, sizeof(struct fi_ops));
+			if (ops == NULL)
+				goto err;
+
+			*ops = *info->nic->fid.ops;
+			info->nic->fid.ops = ops;
+		}
+	}
+
+	return dup;
+
+err:
+	if (dup) {
+		if (tx_attr)
+			free(tx_attr);
+		if (rx_attr)
+			free(rx_attr);
+		if (ep_attr)
+			free(ep_attr);
+		if (domain_attr)
+			free(domain_attr);
+		if (fabric_attr)
+			free(fabric_attr);
+		if (nic) {
+			if (device_attr)
+				free(device_attr);
+			if (link_attr)
+				free(link_attr);
+			if (ops)
+				free(ops);
+			free(nic);
+		}
+		free(dup);
+	}
+
+	return NULL;
+}
+
+#endif /* ENABLE_VERBS */
 
 /*********************************************************************
  * Below functions implement UET APIs
