@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <pthread.h>
 #include <uthash.h>
 #include <linux/if_ether.h>
 
@@ -480,6 +481,7 @@ struct uet_cq {
 
 /* endpoint control block */
 struct uet_ep {
+	pthread_mutex_t data_lock;        /* lock for data path thread safety */
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */
 	UT_hash_handle ipv4_ep_hh;  /* handle for ipv4 endpoint hash function */

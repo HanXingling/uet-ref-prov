@@ -1128,6 +1128,7 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	/* set descriptor fields to retransmit message from start */
 	tx_desc->remaining_bytes = tx_desc->buf_desc.len;
 	tx_desc->buf_desc.buf_off = 0;
+	tx_desc->pkt_cnt = 0;
 
 	/* set earliest retransmit time */
 	uet_gettime(&tx_desc->tx_time);
@@ -1402,6 +1403,8 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 	uet_rw_lock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
 	dlist_remove(item);
 	uet_rw_unlock(&uet_ep->uet_domain->ep_lock, UET_RW_LOCK_WR_ACCESS);
+
+	pthread_mutex_destroy(&uet_ep->data_lock);
 
 	free(uet_ep);
 	uet_ep = NULL; /* To prevent use after free */
@@ -3698,10 +3701,14 @@ static ssize_t uet_recv_api_common(
 		iov_handle[i] = iov[i];
 	}
 
+	pthread_mutex_lock(&uet_ep->data_lock);
+
 	/* allocate rx descriptor */
 	rx_desc = uet_rx_desc_list_pop(uet_ep);
-	if (rx_desc == NULL)
+	if (rx_desc == NULL) {
+		pthread_mutex_unlock(&uet_ep->data_lock);
 		return -FI_EAGAIN;
+	}
 
 	/* init msg descriptor */
 	memset(rx_desc, 0, sizeof(struct uet_rx_desc));
@@ -3762,6 +3769,7 @@ static ssize_t uet_recv_api_common(
 
 	uet_tx_rtr_try(uet_ep, rx_desc, recv_api);
 
+	pthread_mutex_unlock(&uet_ep->data_lock);
 	return FI_SUCCESS;
 }
 
@@ -3826,9 +3834,12 @@ static ssize_t uet_send_req_api_common(
 	if (rc != FI_SUCCESS)
 		return rc;
 
+	pthread_mutex_lock(&uet_ep->data_lock);
+
 	/* allocate tx descriptor */
 	tx_desc = uet_tx_desc_list_pop(uet_ep);
 	if (tx_desc == NULL) {
+		pthread_mutex_unlock(&uet_ep->data_lock);
 		uet_dealloc_msg_id(uet, msg_id);
 		return -FI_EAGAIN;
 	}
@@ -3843,8 +3854,9 @@ static ssize_t uet_send_req_api_common(
 	if (send_req_api == UET_READ_API) {
 		rx_desc = uet_rx_desc_list_pop(uet_ep);
 		if (rx_desc == NULL) {
-			uet_dealloc_msg_id(uet, msg_id);
 			uet_tx_desc_list_insert(tx_desc);
+			pthread_mutex_unlock(&uet_ep->data_lock);
+			uet_dealloc_msg_id(uet, msg_id);
 			return -FI_EAGAIN;
 		}
 		/* init rx descriptor */
@@ -3940,6 +3952,7 @@ static ssize_t uet_send_req_api_common(
 	uet_ep->num_active_sends++;
 	av_entry->num_active_ops++;
 
+	pthread_mutex_unlock(&uet_ep->data_lock);
 	return FI_SUCCESS;
 }
 
@@ -4495,6 +4508,8 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		goto err_exit;
 	}
 
+	pthread_mutex_init(&uet_ep->data_lock, NULL);
+
 	/* init ep object */
 	memcpy(&uet_ep->uet_addr, info->src_addr, info->src_addrlen);
 #if ENABLE_VERBS
@@ -4772,6 +4787,8 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	uet_ep = cq->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
 
+	pthread_mutex_lock(&uet_ep->data_lock);
+
 	uet_msg_age(uet_ep);
 
 	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
@@ -4791,8 +4808,10 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 
 	ring = &cq->ring;
 	cq_count = uet_ring_entry_cnt(ring);
-	if (cq_count == 0)
+	if (cq_count == 0) {
+		pthread_mutex_unlock(&uet_ep->data_lock);
 		return 0;
+	}
 
 	max_rd_count = uet_min(cq_count, count);
 	for (rd_count = 0; rd_count < max_rd_count; rd_count++) {
@@ -4809,6 +4828,7 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 					     ring);
 	}
 
+	pthread_mutex_unlock(&uet_ep->data_lock);
 	return rd_count;
 }
 
@@ -4825,8 +4845,12 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 	ring = &cq->ring;
 	uet_ep = cq->uet_ep;
 
-	if (!uet_cq_is_err_state(ring))
+	pthread_mutex_lock(&uet_ep->data_lock);
+
+	if (!uet_cq_is_err_state(ring)) {
+		pthread_mutex_unlock(&uet_ep->data_lock);
 		return -FI_EAGAIN;
+	}
 
 	ring_entry = &(((struct uet_cq_ring_entry *) (ring->base))[ring->tail]);
 	err_entry = (struct fi_cq_err_entry *) ring_entry->cq_entry;
@@ -4839,6 +4863,7 @@ ssize_t uet_cq_readerr(uet_cq_handle_t cq_handle,
 
 	uet_ring_tail_advance(ring);
 
+	pthread_mutex_unlock(&uet_ep->data_lock);
 	return 1;
 }
 
@@ -5056,7 +5081,7 @@ ssize_t uet_tsendv(
 			dst_addr_handle, tag, UET_NO_IMM_DATA,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
 }
-#endif 
+#endif
 
 ssize_t uet_trecv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uet_mr_handle_t mr_handle,
