@@ -3017,6 +3017,21 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 
 	/* check opcode */
 	switch (opcode) {
+        case UET_DEFAULT_RESPONSE:
+		switch (ses_rc) {
+		case UET_RC_NULL:
+			return FI_SUCCESS;
+		case UET_RC_OK:
+			mod_len = ntohl(ses_rsp->mod_len);
+			if (mod_len == 0)
+				mod_len = tx_desc->buf_desc.len;
+			break;
+		default:
+			UET_API_ERR("Msg Rsp: SES RC = 0x%x on "
+				    "DEFAULT RESPONSE", ses_rc);
+			goto err_exit;
+		}
+		break;
 	case UET_RESPONSE:
 		mod_len = ntohl(ses_rsp->mod_len);
 		break;
