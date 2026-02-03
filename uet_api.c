@@ -1724,7 +1724,16 @@ static uet_ses_rc_t uet_get_rx_desc(
 	}
 
 	/* more init of rx descriptor for rma operation */
-	(*rx_desc)->buf_desc.type = UET_MSG_BUF_TYPE_CONTIG;
+	if (mr_desc->buf_desc.type == UET_MR_BUF_TYPE_CONTIG)
+		(*rx_desc)->buf_desc.type = UET_MSG_BUF_TYPE_CONTIG;
+	else {
+		(*rx_desc)->buf_desc.type = UET_MSG_BUF_TYPE_IOV;
+		(*rx_desc)->buf_desc.iov.iov_count =
+			mr_desc->buf_desc.iov.iov_count;
+		(*rx_desc)->buf_desc.iov.iov =
+			mr_desc->buf_desc.iov.iov;;
+	}
+
 	(*rx_desc)->buf_desc.buf = mr_desc->buf_desc.buf;
 	(*rx_desc)->buf_desc.len = mr_desc->buf_desc.len;
 	(*rx_desc)->context = mr_desc->context;
@@ -2034,7 +2043,7 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 /*Assemble scatter list from buffer*/
 static void scatter_buffer_to_iov(
 	const struct iovec *iov, size_t iov_count, const void *payload,
-	size_t payload_len, int payload_offset)
+	size_t payload_len, size_t payload_offset)
 {
 	size_t iov_index = 0;
 	size_t remaining_bytes = payload_len;
@@ -2338,7 +2347,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 				rx_desc->buf_desc.iov.iov,
 				rx_desc->buf_desc.iov.iov_count,
 				pp->payload, pp->pkt_payload_len,
-				payload_len_msg_off);
+				buf_off);
 	} else {
 		buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + buf_off);
 		memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
@@ -3708,7 +3717,13 @@ static ssize_t uet_recv_api_common(
 		}
 	}
 
+	/* allocate iov and init */
 	iov_handle = calloc(iov_count, sizeof(struct iovec));
+	if (iov_handle == NULL) {
+		UET_API_ERR("Allocation of iov memory failed");
+		return -FI_ENOMEM;
+	}
+
 	for (i = 0; i < iov_count; i++) {
 		msg_len += iov[i].iov_len;
 		iov_handle[i] = iov[i];
@@ -3720,6 +3735,7 @@ static ssize_t uet_recv_api_common(
 	rx_desc = uet_rx_desc_list_pop(uet_ep);
 	if (rx_desc == NULL) {
 		pthread_mutex_unlock(&uet_ep->data_lock);
+		free(iov_handle);
 		return -FI_EAGAIN;
 	}
 
@@ -3842,10 +3858,24 @@ static ssize_t uet_send_req_api_common(
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
 	}
 
+	/* allocate iov and init */
+	iov_handle = calloc(iov_count, sizeof(struct iovec));
+	if (iov_handle == NULL) {
+		UET_API_ERR("Allocation of iov memory failed");
+		return -FI_ENOMEM;
+	}
+
+	for (i = 0; i < iov_count; i++) {
+		msg_len += iov[i].iov_len;
+		iov_handle[i] = iov[i];
+	}
+
 	/* allocate msg id */
 	rc = uet_alloc_msg_id(uet, &msg_id);
-	if (rc != FI_SUCCESS)
+	if (rc != FI_SUCCESS) {
+		free(iov_handle);
 		return rc;
+	}
 
 	pthread_mutex_lock(&uet_ep->data_lock);
 
@@ -3853,14 +3883,9 @@ static ssize_t uet_send_req_api_common(
 	tx_desc = uet_tx_desc_list_pop(uet_ep);
 	if (tx_desc == NULL) {
 		pthread_mutex_unlock(&uet_ep->data_lock);
+		free(iov_handle);
 		uet_dealloc_msg_id(uet, msg_id);
 		return -FI_EAGAIN;
-	}
-
-	iov_handle = calloc(iov_count, sizeof(struct iovec));
-	for (i = 0; i < iov_count; i++) {
-		msg_len += iov[i].iov_len;
-		iov_handle[i] = iov[i];
 	}
 
 	/* allocate rx descriptor for read */
@@ -3869,6 +3894,7 @@ static ssize_t uet_send_req_api_common(
 		if (rx_desc == NULL) {
 			uet_tx_desc_list_insert(tx_desc);
 			pthread_mutex_unlock(&uet_ep->data_lock);
+			free(iov_handle);
 			uet_dealloc_msg_id(uet, msg_id);
 			return -FI_EAGAIN;
 		}
@@ -5167,7 +5193,7 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 	int rc;
 	uint64_t key, rkey;
 	bool desc_allocated;
-	size_t mr_index;
+	size_t mr_index, msg_len = 0;
 	struct uet_domain *uet_dom;
 	struct uet_mr_desc *mr_desc;
 	struct iovec *iov_handle;
@@ -5220,9 +5246,17 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 			return rc;
 	}
 
+	/* allocate iov and init */
 	iov_handle = calloc(iov_count, sizeof(struct iovec));
-	for (int i = 0; i < iov_count; i++)
+	if (iov_handle == NULL) {
+		uet_dealloc_mr_desc(uet_dom, &uet_dom->mr_desc[mr_index]);
+		return -FI_ENOMEM;
+	}
+
+	for (int i = 0; i < iov_count; i++) {
+		msg_len += iov[i].iov_len;
 		iov_handle[i] = iov[i];
+	}
 
 	/* init memory region descriptor */
 	mr_desc = &uet_dom->mr_desc[mr_index];
@@ -5235,6 +5269,7 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 		mr_desc->buf_desc.len = iov->iov_len;
 	} else {
 		mr_desc->buf_desc.type = UET_MR_BUF_TYPE_IOV;
+		mr_desc->buf_desc.len = msg_len;
 		mr_desc->buf_desc.iov.iov = iov_handle;
 		mr_desc->buf_desc.iov.iov_count = iov_count;
 	}
