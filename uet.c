@@ -1517,7 +1517,7 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 	 * and likely return ICMP unreachable errors (possibly messing up
 	 * the desired UET flow).
 	 */
-	sleep(1);
+	//sleep(1);
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
 		printf("Starting in %s\n",
