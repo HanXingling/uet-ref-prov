@@ -34,8 +34,6 @@
 
 #define UET_MAX_RTR_TOKEN	0xffff
 #define UET_RTR_TOKEN_NONE	0
-	/* assigning fixed restart token at target */
-#define UET_TARGET_RTR_TOKEN	UET_MAX_RTR_TOKEN
 
 #define UET_RTR_Q_ENTRIES_MAX	8  /* max number of deferred send's at target */
 

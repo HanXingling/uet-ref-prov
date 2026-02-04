@@ -2019,7 +2019,7 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 	uet_gettime(&now);
 	tx_desc->tx_time = now;
 	tx_desc->defer_time = now;
-	tx_desc->local_rtr_token = UET_TARGET_RTR_TOKEN;
+	tx_desc->local_rtr_token = UET_RTR_TOKEN_NONE;
 	remote_token =
 		(ntohll(ses->restart_token) & UET_SES_REQ_STD_SRC_TOKEN_MASK) >>
 		UET_SES_REQ_STD_SRC_TOKEN_SHIFT;
@@ -2554,6 +2554,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 				 bool *ses_nack, bool *gtd_del)
 {
 	uet_ses_rc_t ses_rc;
+	uint8_t ver;
 	uint16_t payload_len;
 	uint32_t gen, ep_gen, job_id, resv_payload_len;
 	bool first_msg_pkt;
@@ -2569,6 +2570,16 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 
 	ses_std_req = (struct uet_ses_req_std *) pp->ses;
 	rx_ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+
+	ver = (ses_std_req->cmn.ver_flags && UET_SES_VER_MASK) >>
+		UET_SES_VER_SHIFT;
+
+	if (ver != UET_SES_VER) {
+		UET_API_ERR("RX: Bad SES Version = 0x%x", ver);
+		/* no return code is defined for bad ses version */
+		ses_rc = UET_RC_UNCOR;
+		goto build_response;
+	}
 
 	ses_rsp = (struct uet_ses_rsp *) rsp_ses_hdr;
 	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_ses_hdr;
@@ -2972,7 +2983,7 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 				 struct uet_parsed_pkt *rsp_pp)
 {
 	int rc;
-	uint8_t opcode;
+	uint8_t ver, opcode;
 	uint32_t mod_len, rx_gen;
 	size_t msg_len, expected_rd_rsp, max_payload_len;
 	uet_ses_rc_t ses_rc;
@@ -2988,6 +2999,9 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_pp->ses;
 	opcode = rsp_pp->ses_opcode;
 
+	ver = ((ses_rsp->cmn.ver_ret_code & UET_SES_VER_MASK) >>
+		  UET_SES_VER_SHIFT);
+
 	ses_rc = ((ses_rsp->cmn.ver_ret_code & UET_SES_RSP_RET_CODE_MASK) >>
 		  UET_SES_RSP_RET_CODE_SHIFT);
 
@@ -2999,29 +3013,17 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 			tx_desc->rx_desc->expected_rd_rsp--;
 	}
 
+	if (ver != UET_SES_VER) {
+		UET_API_ERR("Msg Rsp: Bad SES Version = 0x%x", ver);
+		goto err_exit;
+	}
+
 	switch (tx_desc->state) {
 	case UET_TX_DESC_STATE_ACTIVE:
 	case UET_TX_DESC_STATE_WAIT:
 		break;
 	default:
 		return FI_SUCCESS;
-	}
-
-	/* special handling for default response */
-	if (opcode == UET_DEFAULT_RESPONSE) {
-		switch (ses_rc) {
-		case UET_RC_NULL:
-			return FI_SUCCESS;
-		case UET_RC_OK:
-			mod_len = ntohl(ses_rsp->mod_len);
-			if (mod_len == 0)
-				mod_len = tx_desc->buf_desc.len;
-			opcode = UET_RESPONSE;
-			break;
-		default:
-			UET_API_ERR("Msg Rsp: SES RC = 0x%x on DEFAULT RESPONSE", ses_rc);
-			goto err_exit;
-		}
 	}
 
 	/* check opcode */
@@ -3134,6 +3136,9 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	case UET_RC_DROPPED:
 		UET_API_ERR("Msg Rsp: Dropped by Dest");
 		goto err_exit;
+	case UET_RC_UNCOR:
+		UET_API_ERR("Msg Rsp: Uncorrectable Error");
+		goto err_exit;
 	case UET_RC_UNCOR_TRNSNT:
 		UET_API_ERR("Msg Rsp: Transient Error");
 		goto err_exit;
@@ -3181,6 +3186,15 @@ err_exit:
 static int uet_pds_to_ses_pds_err(uet_pkt_handle_t tx_pkt_handle,
 				  uet_pds_err_code_t reason)
 {
+	struct uet_tx_desc *tx_desc;
+
+	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
+
+	UET_API_ERR("SES got indication of unrecoverable error from PDS");
+
+	uet_tx_desc_set_err(tx_desc, FI_EIO,
+			    UET_TX_DESC_STATE_ERR_COMPLETE);
+
 	return FI_SUCCESS;
 }
 
