@@ -23,13 +23,14 @@ if [ -z "$LIBFABRIC" ]; then
     exit 1
 fi
 
-# Valid "test" and "pds" names
+# Valid "test", "pds", and "shim" names
 test_names=(all rma tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
 pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
+shim_names=(rawsock xdp)
 
 function usage()
 {
-    echo "Usage: $0 <client|server> <ifname> <peer_ip> <test> <pds>"
+    echo "Usage: $0 <client|server> <ifname> <peer_ip> <test> <pds> [ <shim> ]"
     echo ""
     echo -e "\t<client|server>: role to run as"
     echo -e "\t<ifname>: local network interface name"
@@ -43,6 +44,11 @@ function usage()
     echo -e "\t<pds>:"
     for p in "${pds_names[@]}"; do
         echo -e "\t\t$p"
+    done
+    echo ""
+    echo -e "\t<shim>: (optional, default: rawsock)"
+    for s in "${shim_names[@]}"; do
+        echo -e "\t\t$s"
     done
     echo ""
     exit 1
@@ -75,6 +81,12 @@ if [ -z "$peer_ip" ]; then
     usage
 fi
 
+# Detect IPv6 (contains colon)
+is_ipv6=0
+if [[ "$peer_ip" == *:* ]]; then
+    is_ipv6=1
+fi
+
 # Validate test name
 valid_test=0
 for t in "${test_names[@]}"; do
@@ -101,6 +113,22 @@ if [ $valid_pds -eq 0 ]; then
     usage
 fi
 
+# Parse optional shim argument (default: rawsock)
+shim=${6:-rawsock}
+
+# Validate shim name
+valid_shim=0
+for s in "${shim_names[@]}"; do
+    if [ "$shim" = "$s" ]; then
+        valid_shim=1
+        break
+    fi
+done
+if [ $valid_shim -eq 0 ]; then
+    echo "ERROR: Invalid shim name"
+    usage
+fi
+
 banner()
 {
     echo ""
@@ -110,7 +138,14 @@ banner()
     echo ""
 }
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} ./uet"
+# Set application name based on shim
+if [ "$shim" = "xdp" ]; then
+    app_name="uet_xdp"
+else
+    app_name="uet"
+fi
+
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} ./${app_name}"
 
 function run_test()
 {
@@ -135,6 +170,10 @@ function pds()
 function pds_direct()
 {
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=direct"
+    # IPv6 direct mode requires SSI
+    if [ $is_ipv6 -eq 1 ]; then
+        UET_DEFS="$UET_DEFS UET_SEC_SSI=$ssi"
+    fi
     banner "PDS w/ SEC=direct $test"
     run_test "$UET_DEFS $CMD_BASE $actor $test $peer_ip"
 }

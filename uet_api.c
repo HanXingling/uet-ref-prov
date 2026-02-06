@@ -20,7 +20,7 @@
  *   - support for synchronous control operations
  *   - support for 1 send completion queue and 1 receive completion
  *     queue per endpoint
- *   - no support for ipv6
+ *   - support for ipv4 and ipv6
  *   - no support for selective completion
  *   - manual progress required
  *   - FI_TRANSMIT_COMPLETE and FI_DELIVERY_COMPLETE are the only transmit
@@ -73,18 +73,25 @@ static uint32_t uet_job_key_to_id(uint32_t job_key)
 }
 #endif
 
-/* init portions of uet address with ipv4 fabric address */
-static void uet_init_uet_addr_ipv4(struct uet_addr *uet_addr,
-				   uint32_t ipv4_addr)
+/* init portions of uet address with fabric address */
+static void uet_init_uet_addr(struct uet_addr *uet_addr,
+			      const struct uet_fa *ip_addr,
+			      bool is_ipv6)
 {
 	uet_addr->ver = UET_ADDR_VERSION;
 	uet_addr->flags = (UET_ADDR_FEP_CAP_V     |
 			   UET_ADDR_FA_V          |
 			   UET_ADDR_RELATIVE_MODE |
-			   UET_ADDR_IPV4          |
 			   UET_ADDR_BIG_MSG_SIZE);
+
+	if (is_ipv6)
+		uet_addr->flags |= UET_ADDR_IPV6;
+	else
+		uet_addr->flags |= UET_ADDR_IPV4;
+
 	uet_addr->fep_cap = UET_FEP_CAP_AI_FULL;
-	uet_addr->fa.v4 = ipv4_addr;
+
+	memcpy(&uet_addr->fa, ip_addr, sizeof(struct uet_fa));
 }
 
 /* get pds mode for an endpoint */
@@ -493,18 +500,24 @@ static void uet_set_av_msg_tx_seq_num(struct uet_av_entry *av_entry,
 	}
 }
 
-/* init key for ipv4 endpoint lookup from packet contents */
-static void uet_ipv4_ep_key_init(struct uet_ipv4_ep_key *key,
-				 struct uet_parsed_pkt *pp)
+/* init key for endpoint lookup from packet contents */
+static void uet_ep_key_init(struct uet_ep_key *key,
+			    struct uet_parsed_pkt *pp)
 {
-	struct iphdr *ipv4;
 	struct uet_ses_req_std *ses;
 
-	ipv4 = (struct iphdr *) pp->ip;
 	ses = (struct uet_ses_req_std *) pp->ses;
 
-	memset(key, 0, sizeof(struct uet_ipv4_ep_key));
-	key->ipv4_addr = ntohl(ipv4->daddr);
+	memset(key, 0, sizeof(struct uet_ep_key));
+
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		memcpy(key->ip_addr.v6, &ipv6->daddr, 16);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
+		key->ip_addr.v4 = ntohl(ipv4->daddr);
+	}
+
 	key->pid_on_fep =
 		(ntohs(ses->cmn.rsvd_pid_on_fep) & UET_SES_REQ_PID_ON_FEP_MASK)
 		>> UET_SES_REQ_PID_ON_FEP_SHIFT;
@@ -514,48 +527,48 @@ static void uet_ipv4_ep_key_init(struct uet_ipv4_ep_key *key,
 }
 
 /* insert entry into ipv4 endpoint hash table */
-static void uet_ipv4_ep_hash_insert(struct uet_ep *uet_ep)
+static void uet_ep_hash_insert(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
 
 	uet = uet_ep->uet_domain->uet;
 
-	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
-	HASH_ADD(ipv4_ep_hh, uet->ipv4_ep_hash_table, ipv4_ep_key,
-		 sizeof(struct uet_ipv4_ep_key), uet_ep);
-	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_ADD(ep_hh, uet->ep_hash_table, ep_key,
+		 sizeof(struct uet_ep_key), uet_ep);
+	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
 /* remove entry from ipv4 endpoint hash table */
-static void uet_ipv4_ep_hash_remove(struct uet_ep *uet_ep)
+static void uet_ep_hash_remove(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
 
 	uet = uet_ep->uet_domain->uet;
 
-	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
-	HASH_DELETE(ipv4_ep_hh, uet->ipv4_ep_hash_table, uet_ep);
-	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_DELETE(ep_hh, uet->ep_hash_table, uet_ep);
+	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
 /* remove all entries from ipv4 endpoint hash table and free associated mem */
-static void uet_ipv4_ep_hash_finalize(struct uet_instance *uet)
+static void uet_ep_hash_finalize(struct uet_instance *uet)
 {
-	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
-	HASH_CLEAR(ipv4_ep_hh, uet->ipv4_ep_hash_table);
-	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
+	HASH_CLEAR(ep_hh, uet->ep_hash_table);
+	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
 /* ipv4 endpoint hash table lookup */
-static struct uet_ep *uet_ipv4_ep_hash_lookup(struct uet_instance *uet,
-					      struct uet_ipv4_ep_key *key)
+static struct uet_ep *uet_ep_hash_lookup(struct uet_instance *uet,
+					      struct uet_ep_key *key)
 {
 	struct uet_ep *uet_ep;
 
-	uet_rw_lock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
-	HASH_FIND(ipv4_ep_hh, uet->ipv4_ep_hash_table, key,
-		  sizeof(struct uet_ipv4_ep_key), uet_ep);
-	uet_rw_unlock(&uet->ipv4_ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
+	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
+	HASH_FIND(ep_hh, uet->ep_hash_table, key,
+		  sizeof(struct uet_ep_key), uet_ep);
+	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_RD_ACCESS);
 
 	return uet_ep;
 }
@@ -564,14 +577,20 @@ static struct uet_ep *uet_ipv4_ep_hash_lookup(struct uet_instance *uet,
 static void uet_rx_msg_key_init(struct uet_rx_msg_key *key,
 				struct uet_parsed_pkt *pp)
 {
-	struct iphdr *ipv4 = (struct iphdr *)pp->ip; /* TODO: IPv6 support */
 	struct uet_ses_req_std *ses;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
 	memset(key, 0, sizeof(struct uet_rx_msg_key));
-	/* TODO: IPv6 support */
-	key->src_ip.v4 = ntohl(ipv4->saddr);
+
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		memcpy(key->src_ip.v6, &ipv6->saddr, 16);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
+		key->src_ip.v4 = ntohl(ipv4->saddr);
+	}
+
 	key->spdcid = pp->pds_spdcid;
 	key->initiator = ses->initiator;
 	key->msg_id = ses->cmn.msg_id;
@@ -1514,7 +1533,7 @@ static void uet_domain_free_all(struct uet_instance *uet)
 /* free most resources associated with uet instance */
 static void uet_finalize_core(struct uet_instance *uet)
 {
-	uet_ipv4_ep_hash_finalize(uet);
+	uet_ep_hash_finalize(uet);
 	uet_nic_finalize(UET_NIC(uet));
 	uet_domain_free_all(uet);
 }
@@ -1752,14 +1771,24 @@ static void uet_init_tx_desc_ephemeral_av(struct uet_tx_desc *tx_desc,
 					  struct uet_parsed_pkt *pp)
 {
 	struct ethhdr *eth;
-	struct iphdr *ipv4;
 	struct uet_av_entry *av;
+	struct uet_fa src_ip;
 
 	eth = (struct ethhdr *) pp->eth;
-	ipv4 = (struct iphdr *) pp->ip;
 
-	uet_init_uet_addr_ipv4(&tx_desc->ephemeral_av.uet_addr,
-			       ntohl(ipv4->saddr));
+	memset(&src_ip, 0, sizeof(src_ip));
+
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *) pp->ip;
+		memcpy(src_ip.v6, &ipv6->saddr, 16);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *) pp->ip;
+		src_ip.v4 = ntohl(ipv4->saddr);
+	}
+
+	uet_init_uet_addr(&tx_desc->ephemeral_av.uet_addr,
+			  &src_ip, pp->is_ipv6);
+
 	av = &tx_desc->ephemeral_av.av;
 	av->addr = &tx_desc->ephemeral_av.uet_addr;
 	av->flags = UET_NH_MAC_ADDR_V;
@@ -2562,7 +2591,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	struct uet_ses_req_std *ses_std_req;
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *rx_ses_rsp_d, *ses_rsp_d;
-	struct uet_ipv4_ep_key ipv4_ep_key;
+	struct uet_ep_key ep_key;
 	struct uet_rx_msg_key msg_key;
 	struct uet_rx_desc *rx_desc;
 	struct uet_ack_d_info ack_d_info;
@@ -2585,8 +2614,8 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rsp->mod_len = ses_std_req->req_len;
 		job_id = uet_get_std_req_job_id(ses_std_req);
 		if (pp->ses_opcode != UET_DEFER_RTR) {
-			uet_ipv4_ep_key_init(&ipv4_ep_key, pp);
-			uet_ep = uet_ipv4_ep_hash_lookup(uet, &ipv4_ep_key);
+			uet_ep_key_init(&ep_key, pp);
+			uet_ep = uet_ep_hash_lookup(uet, &ep_key);
 			if (uet_ep == NULL) {
 				UET_API_ERR("RX: Unknown Endpoint");
 				ses_rc = UET_RC_UNDELIVERABLE;
@@ -2981,7 +3010,6 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	struct uet_ep *ep;
 	struct uet_tx_desc *tx_desc;
 	struct uet_av_entry *av_entry;
-	union uet_pkt *pkt;
 
 	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
 	ses_rsp = (struct uet_ses_rsp *) rsp_pp->ses;
@@ -4192,7 +4220,7 @@ err:
  * Below functions implement UET APIs
  *********************************************************************/
 
-int uet_initialize(uet_handle_t *handle)
+int uet_initialize(uet_handle_t *handle, bool is_ipv6)
 {
 	int rc;
 	time_t seed;
@@ -4225,18 +4253,18 @@ int uet_initialize(uet_handle_t *handle)
 	uet->pds.upcall.rx_rsp = uet_pds_to_ses_rx_rsp;
 	uet->pds.upcall.pds_err = uet_pds_to_ses_pds_err;
 
-	uet_rw_lock_init(&uet->ipv4_ep_lkup_lock);
-
-	rc = uet_sec_init();
-	if (rc != FI_SUCCESS)
-		goto err_return;
+	uet_rw_lock_init(&uet->ep_lkup_lock);
 
 	rc = uet_pds_init(uet);
 	if (rc != FI_SUCCESS)
 		goto err_return;
 
 	UET_NIC(uet)->uet_ipproto = uet->uet_ipproto;
-	rc = uet_nic_initialize(UET_NIC(uet));
+	rc = uet_nic_initialize(UET_NIC(uet), is_ipv6);
+	if (rc != FI_SUCCESS)
+		goto err_return;
+
+	rc = uet_sec_init(&uet->nic.ip_addr, is_ipv6);
 	if (rc != FI_SUCCESS)
 		goto err_return;
 
@@ -4378,7 +4406,7 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		rc = -FI_ENOMEM;
 		goto err_return;
 	}
-	uet_init_uet_addr_ipv4(src_addr, uet->nic.ipv4_addr);
+	uet_init_uet_addr(src_addr, &uet->nic.ip_addr, uet->nic.is_ipv6);
 
 	new_info->dest_addrlen = 0;
 	new_info->src_addrlen = sizeof(struct uet_addr);
@@ -4566,7 +4594,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		goto err_exit;
 	}
 #endif
-	uet_ep->ipv4_addr = uet_ep->uet_addr.fa.v4;
+	memcpy(&uet_ep->ip_addr, &uet_ep->uet_addr.fa, sizeof(struct uet_fa));
 
 	uet_ep->num_rx_desc = info->rx_attr->size;
 	uet_ep->rx_desc = calloc(uet_ep->num_rx_desc,
@@ -4628,10 +4656,11 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
 
-	uet_ep->ipv4_ep_key.ipv4_addr = uet_ep->ipv4_addr;
-	uet_ep->ipv4_ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
-	uet_ep->ipv4_ep_key.index = uet_ep->uet_addr.start_index;
-	uet_ipv4_ep_hash_insert(uet_ep);
+	memcpy(&uet_ep->ep_key.ip_addr, &uet_ep->ip_addr,
+	       sizeof(struct uet_fa));
+	uet_ep->ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
+	uet_ep->ep_key.index = uet_ep->uet_addr.start_index;
+	uet_ep_hash_insert(uet_ep);
 
 	switch (info->tx_attr->tclass) {
 	case FI_TC_BEST_EFFORT:
@@ -4804,7 +4833,7 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 
 	pds->downcall.ep_close_wait(uet_ep);
 
-	uet_ipv4_ep_hash_remove(uet_ep);
+	uet_ep_hash_remove(uet_ep);
 
 	uet_ep_free(uet_ep);
 
@@ -4939,12 +4968,6 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 	uet_dom = (struct uet_domain *) domain_handle;
 	uet = uet_dom->uet;
 
-	/* TODO: only support ipv4 addresses for now */
-	if (uet_addr->flags & UET_ADDR_IPV6) {
-		UET_API_ERR("IPv6 not supported");
-		return -FI_ENOSYS;
-	}
-
 	/* allocate memory for av object */
 	av_entry = calloc(1, sizeof(struct uet_av_entry));
 	if (av_entry == NULL) {
@@ -4954,8 +4977,9 @@ int uet_av_insert(uet_domain_handle_t domain_handle,
 
 	/* initialize av entry */
 	av_entry->addr = uet_addr;
-	rc = uet_nic_get_ipv4_nh(UET_NIC(uet), uet_addr->fa.v4,
-				 av_entry->nh_mac_addr);
+	rc = uet_nic_get_nh(UET_NIC(uet), &uet_addr->fa,
+			    uet_addr_is_ipv6(uet_addr),
+			    av_entry->nh_mac_addr);
 	if (rc == FI_SUCCESS)
 		av_entry->flags |= UET_NH_MAC_ADDR_V;
 
@@ -5707,3 +5731,4 @@ int uet_query_atomic(uet_domain_handle_t domain_handle,
 {
 	return -FI_ENOSYS;
 }
+

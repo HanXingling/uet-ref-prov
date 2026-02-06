@@ -125,6 +125,7 @@ struct uet_pdc {
 	uint8_t              dst_mac_addr[ETH_ALEN];
 	struct uet_fa        src_addr;
 	struct uet_fa        dst_addr;
+	bool                 is_ipv6;
 	uint16_t             syn_offset; /* initiator SYN offset until ACK */
 	uint32_t             next_psn; /* next Tx pkt seq number */
 	struct bitmap       *tx_bm;
@@ -305,7 +306,7 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 	struct uet_pds_req *pds_hdr;
 	uint32_t crc;
 	uint8_t *crc_start;
-	bool update_ipv4_tl = false;
+	bool update_ip_len = false;
 	int rc;
 
 	if (tx_pkt) {
@@ -343,8 +344,9 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		}
 
 		/* calculate the CRC (include src/dst IP and UDP) */
-		/* TODO: IPv6 support */
-		crc_start = ((uint8_t *)pp->ip + 12);
+		crc_start = (pp->is_ipv6) ?
+			    ((uint8_t *)pp->ip + 8) : /* IPv6 src offset */
+			    ((uint8_t *)pp->ip + 12); /* IPv4 src offset */
 		crc = crc32c(crc_start,
 			     (pp->pkt_len -
 			      (crc_start - (uint8_t *)pp->eth)));
@@ -365,14 +367,13 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			return 0;
 		}
 
-		/* TODO: IPv6 support */
 		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, new_pkt_len);
 	}
 
 	/* inject/build the security header and encrypt the packet */
 
 	if (is_rtx) {
-		rc = uet_sec_update_hdr_tsc(*pkt);
+		rc = uet_sec_update_hdr_tsc(*pkt, pdc->is_ipv6);
 		if (rc != 0)
 			return rc;
 	} else {
@@ -383,16 +384,16 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 				       *pkt,
 				       *pkt_len,
 				       &new_pkt,
-				       &new_pkt_len);
+				       &new_pkt_len,
+				       pdc->is_ipv6);
 		if (rc != 0)
 			return rc;
 
 		*pkt     = new_pkt;
 		*pkt_len = (new_pkt_len + UET_SEC_TAG_LEN);
 
-		/* for IPv4 the total length and checksum needs fixing */
-		/* TODO: not with IPv6 */
-		update_ipv4_tl = true;
+		/* IP length fields need fixing after security header injection */
+		update_ip_len = true;
 	}
 
 	/* If the packet hasn't been parsed yet for debug then do it now. */
@@ -407,9 +408,15 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		*pp_parsed = true;
 	}
 
-	/* TODO: IPv6 support (don't do this) */
-	if (update_ipv4_tl)
-		uet_update_ipv4_tl(pp->ip, (*pkt_len - uet->nic.l2_hdr_size));
+	if (update_ip_len) {
+		if (pp->is_ipv6)
+			uet_update_ipv6_pl(pp->ip,
+					   (*pkt_len - uet->nic.l2_hdr_size -
+					    sizeof(struct ipv6hdr)));
+		else
+			uet_update_ipv4_tl(pp->ip,
+					   (*pkt_len - uet->nic.l2_hdr_size));
+	}
 
 	rc = uet_sec_enc_pkt(uet,
 			     pkt_buf,
@@ -433,7 +440,6 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 		return 0;
 	}
 
-	/* TODO: IPv6 support */
 	return uet_nic_tx_pkt(UET_NIC(uet), new_pkt, pp->ip, new_pkt_len);
 }
 
@@ -602,8 +608,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 						     PDC_TYPE_NONE);
 	pdc_key.job_id = uet_ep->job_id;
 	pdc_key.tc = UET_DEFAULT_TC;
-	/* TODO: IPv6 support */
-	memcpy(&pdc_key.src_ip, &uet_ep->ipv4_addr, sizeof(uet_ep->ipv4_addr));
+	memcpy(&pdc_key.src_ip, &uet_ep->ip_addr, sizeof(struct uet_fa));
 	memcpy(&pdc_key.dst_ip, &av_entry->addr->fa, sizeof(struct uet_fa));
 
 	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
@@ -641,11 +646,9 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	memcpy(pdc->dst_mac_addr, av_entry->nh_mac_addr,
 	       ETH_ALEN);
 
-	/* TODO: IPv6 support */
-	memcpy(&pdc->src_addr, &uet_ep->ipv4_addr,
-	       sizeof(pdc->src_addr.v4));
-	memcpy(&pdc->dst_addr, &av_entry->addr->fa.v4,
-	       sizeof(pdc->dst_addr.v4));
+	memcpy(&pdc->src_addr, &uet_ep->ip_addr, sizeof(struct uet_fa));
+	memcpy(&pdc->dst_addr, &av_entry->addr->fa, sizeof(struct uet_fa));
+	pdc->is_ipv6 = uet_addr_is_ipv6(av_entry->addr);
 
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;
@@ -665,7 +668,6 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 {
 	struct uet_ses_req_cmn *ses_cmn = (struct uet_ses_req_cmn *)pp->ses;
 	struct ethhdr *eth = (struct ethhdr *)pp->eth;
-	struct iphdr *ipv4 = (struct iphdr *)pp->ip; /* TODO: IPv6 support */
 	struct uet_pdc_tgt_key pdc_key;
 	struct uet_pdc *pdc;
 
@@ -682,9 +684,15 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 		return NULL;
 
 	memset(&pdc_key, 0, sizeof(pdc_key));
-	/* TODO: IPv6 support */
-	pdc_key.src_ip.v4 = ntohl(ipv4->saddr);
-	pdc_key.dst_ip.v4 = ntohl(ipv4->daddr);
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		memcpy(pdc_key.src_ip.v6, &ipv6->saddr, 16);
+		memcpy(pdc_key.dst_ip.v6, &ipv6->daddr, 16);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
+		pdc_key.src_ip.v4 = ntohl(ipv4->saddr);
+		pdc_key.dst_ip.v4 = ntohl(ipv4->daddr);
+	}
 	pdc_key.spdcid = pp->pds_spdcid; /* target side needs spdcid */
 
 	HASH_FIND(pdc_tgt_hh, pds_state.pdc_tgt_ht, &pdc_key,
@@ -721,10 +729,17 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	memcpy(pdc->src_mac_addr, eth->h_dest, ETH_ALEN);
 	memcpy(pdc->dst_mac_addr, eth->h_source, ETH_ALEN);
 
-	/* TODO: IPv6 support */
-	pdc->src_addr.v4 = ntohl(ipv4->daddr);
-	pdc->dst_addr.v4 = ntohl(ipv4->saddr);
+	if (pp->is_ipv6) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		memcpy(pdc->src_addr.v6, &ipv6->daddr, 16);
+		memcpy(pdc->dst_addr.v6, &ipv6->saddr, 16);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
+		pdc->src_addr.v4 = ntohl(ipv4->daddr);
+		pdc->dst_addr.v4 = ntohl(ipv4->saddr);
+	}
 
+	pdc->is_ipv6        = pp->is_ipv6;
 	pdc->dpdcid         = pp->pds_spdcid;
 	pdc->rx_bm_base_psn = (pp->pds_psn - pp->pds_syn_off);
 	pdc->tx_bm_base_psn = pdc->rx_bm_base_psn;
@@ -875,6 +890,7 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	struct uet_pdc_pkt *pdc_pkt;
 	struct uet_pds_ctrl *ctrl_hdr;
 	struct uet_entropy *entropy_hdr;
+	size_t ip_hdr_size;
 	uint16_t ctrl_flags;
 	int rc;
 
@@ -900,21 +916,25 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
 			: pdc_pkt->pkt_buf;
 
+	ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+				       sizeof(struct iphdr);
+
 	/* build Ethernet header */
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
-			  pdc->dst_mac_addr, pdc->src_mac_addr);
+			  pdc->dst_mac_addr, pdc->src_mac_addr,
+			  pdc->is_ipv6);
 
 	/* set up pointers to headers */
 	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
 					     sizeof(struct ethhdr) +
-					     sizeof(struct iphdr));
+					     ip_hdr_size);
 	ctrl_hdr = (struct uet_pds_ctrl *)(pdc_pkt->pkt +
 					   sizeof(struct ethhdr) +
-					   sizeof(struct iphdr) +
+					   ip_hdr_size +
 					   sizeof(struct uet_entropy));
 
 	pdc_pkt->pkt_len = (sizeof(struct ethhdr) +
-			    sizeof(struct iphdr) +
+			    ip_hdr_size +
 			    sizeof(struct uet_entropy) +
 			    sizeof(struct uet_pds_ctrl));
 
@@ -941,14 +961,26 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	ctrl_hdr->payload = 0;
 
 	/* build the IP header */
-	uet_build_ipv4_hdr(uet,
-			   (struct iphdr *)(pdc_pkt->pkt +
-					    sizeof(struct ethhdr)),
-			   htonl(pdc->dst_addr.v4),
-			   htonl(pdc->src_addr.v4),
-			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos,
-			   !pdc->sec_enabled);
+	if (pdc->is_ipv6) {
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(pdc_pkt->pkt +
+						      sizeof(struct ethhdr)),
+				   pdc->dst_addr.v6,
+				   pdc->src_addr.v6,
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(pdc_pkt->pkt +
+						    sizeof(struct ethhdr)),
+				   htonl(pdc->dst_addr.v4),
+				   htonl(pdc->src_addr.v4),
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	}
 
 	/* save packet params */
 	pdc_pkt->msg_id = 0; /* control packets have no msg_id */
@@ -1203,6 +1235,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	struct uet_pdc *pdc;
 	struct uet_entropy *entropy_hdr;
 	struct uet_pds_req *pds_hdr;
+	size_t ip_hdr_size;
 	void *ses_hdr, *payload;
 	uint16_t pds_flags;
 	int rc, hdr_len;
@@ -1298,9 +1331,8 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		}
 	}
 
-	/* TODO: IPv6 support */
-	if (memcmp(&pdc->dst_addr.v4, &av_entry->addr->fa.v4,
-		   sizeof(pdc->dst_addr.v4)) != 0) {
+	if (memcmp(&pdc->dst_addr, &av_entry->addr->fa,
+		   sizeof(struct uet_fa)) != 0) {
 		UET_PDS_ERR("PDC %u dst_addr does not match AV for Tx pkt %p",
 			    pdc->pdc_id, tx_pkt_handle);
 		return -EINVAL;
@@ -1374,23 +1406,25 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
 			: pdc_pkt->pkt_buf;
 
-	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
-			  pdc->dst_mac_addr, pdc->src_mac_addr);
+	ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+				       sizeof(struct iphdr);
 
-	/* TODO: IPv6 support and UDP support */
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
+			  pdc->dst_mac_addr, pdc->src_mac_addr,
+			  pdc->is_ipv6);
+
 	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
 					     sizeof(struct ethhdr) +
-					     sizeof(struct iphdr));
+					     ip_hdr_size);
 	pds_hdr = (struct uet_pds_req *)(pdc_pkt->pkt +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr) +
+					 ip_hdr_size +
 					 sizeof(struct uet_entropy));
 	ses_hdr = (pds_hdr + 1);
 	payload = ((uint8_t *)ses_hdr + ses_len);
 
-	/* TODO: IPv6 support and UDP support */
 	hdr_len = (sizeof(struct ethhdr) +
-		   sizeof(struct iphdr) +
+		   ip_hdr_size +
 		   sizeof(struct uet_entropy) +
 		   sizeof(struct uet_pds_req) +
 		   ses_len);
@@ -1444,16 +1478,26 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	memcpy(payload, pkt, pkt_len);
 
 	/* build the IP header */
-
-	/* TODO: IPv6 support and UDP support */
-	uet_build_ipv4_hdr(uet,
-			   (struct iphdr *)(pdc_pkt->pkt +
-					    sizeof(struct ethhdr)),
-			   htonl(pdc->dst_addr.v4),
-			   htonl(pdc->src_addr.v4),
-			   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
-			   uet_ep->msg_ip_tos,
-			   !pdc->sec_enabled);
+	if (pdc->is_ipv6) {
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(pdc_pkt->pkt +
+						      sizeof(struct ethhdr)),
+				   pdc->dst_addr.v6,
+				   pdc->src_addr.v6,
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet_ep->msg_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(pdc_pkt->pkt +
+						    sizeof(struct ethhdr)),
+				   htonl(pdc->dst_addr.v4),
+				   htonl(pdc->src_addr.v4),
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
+				   uet_ep->msg_ip_tos,
+				   !pdc->sec_enabled);
+	}
 
 	/* save some params specific for this packet */
 	pdc_pkt->msg_id        = msg_id;
@@ -1712,29 +1756,44 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	struct uet_entropy *entropy_hdr;
 	struct uet_pds_ack *ack_pds;
 	uint8_t *ack_ses;
+	size_t ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+					      sizeof(struct iphdr);
 
-	/* TODO: IPv6 support and UDP support */
 	entropy_hdr = (struct uet_entropy *)(pdc_pkt->ack +
 					     sizeof(struct ethhdr) +
-					     sizeof(struct iphdr));
+					     ip_hdr_size);
 	ack_pds = (struct uet_pds_ack *)(pdc_pkt->ack +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr) +
+					 ip_hdr_size +
 					 sizeof(struct uet_entropy));
 
 	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->ack,
 			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
-			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest);
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest,
+			  pdc->is_ipv6);
 
-	/* TODO: IPv6 support */
-	uet_build_ipv4_hdr(uet,
-			   (struct iphdr *)(pdc_pkt->ack +
-					    sizeof(struct ethhdr)),
-			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
-			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
-			   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos,
-			   !pdc->sec_enabled);
+	if (pdc->is_ipv6) {
+		struct ipv6hdr *rx_ipv6 =
+			(struct ipv6hdr *)pdc_pkt->pkt_pp.ip;
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(pdc_pkt->ack +
+						      sizeof(struct ethhdr)),
+				   (const uint8_t *)&rx_ipv6->saddr,
+				   (const uint8_t *)&rx_ipv6->daddr,
+				   (pdc_pkt->ack_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(pdc_pkt->ack +
+						    sizeof(struct ethhdr)),
+				   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
+				   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
+				   (pdc_pkt->ack_len - uet->nic.l2_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	}
 
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
@@ -1772,24 +1831,24 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 	uint16_t ack_pkt_len;
 	uint16_t ack_data_len;
 	int rc;
-
-	/* TODO: IPv6 support and UDP support */
+	size_t ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+					      sizeof(struct iphdr);
 
 	if (next_hdr == UET_HDR_NONE) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
-				    sizeof(struct iphdr) +
+				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
 				    sizeof(struct uet_pds_ack));
 	} else if (next_hdr == UET_HDR_RSP) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
-				    sizeof(struct iphdr) +
+				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
 				    sizeof(struct uet_pds_ack) +
 				    sizeof(struct uet_ses_rsp));
 	} else { /* response w/ data */
 		ack_data_len = (ses_hdr_len - sizeof(struct uet_ses_rsp_d));
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
-				    sizeof(struct iphdr) +
+				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
 				    sizeof(struct uet_pds_ack) +
 				    sizeof(struct uet_ses_rsp_d) +
@@ -1846,10 +1905,11 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	struct uet_pds_ack *ack_pds;
 	struct uet_pds_def_rsp *ack_ses;
 	int rc;
+	size_t ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+					      sizeof(struct iphdr);
 
-	/* TODO: IPv6 support and UDP support */
 	def_rsp_len = (sizeof(struct ethhdr) +
-		       sizeof(struct iphdr) +
+		       ip_hdr_size +
 		       sizeof(struct uet_entropy) +
 		       sizeof(struct uet_pds_ack) +
 		       sizeof(struct uet_pds_def_rsp));
@@ -1878,13 +1938,12 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	tmp_pdc_pkt.ack_len     = def_rsp_len;
 	tmp_pdc_pkt.ack_parsed  = false;
 
-	/* TODO: IPv6 support and UDP support */
 	entropy_hdr = (struct uet_entropy *)(def_rsp +
 					     sizeof(struct ethhdr) +
-					     sizeof(struct iphdr));
+					     ip_hdr_size);
 	ack_pds = (struct uet_pds_ack *)(def_rsp +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr) +
+					 ip_hdr_size +
 					 sizeof(struct uet_entropy));
 	ack_ses = (struct uet_pds_def_rsp *)(ack_pds + 1);
 
@@ -1893,17 +1952,31 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 
 	uet_build_eth_hdr((struct ethhdr *)def_rsp,
 			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_source,
-			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest);
+			  ((struct ethhdr *)pdc_pkt->pkt_pp.eth)->h_dest,
+			  pdc->is_ipv6);
 
-	/* TODO: IPv6 support */
-	uet_build_ipv4_hdr(uet,
-			   (struct iphdr *)(def_rsp +
-					    sizeof(struct ethhdr)),
-			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
-			   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
-			   (def_rsp_len - uet->nic.l2_hdr_size),
-			   uet->pds.ack_ip_tos,
-			   !pdc->sec_enabled);
+	if (pdc->is_ipv6) {
+		struct ipv6hdr *rx_ipv6 =
+			(struct ipv6hdr *)pdc_pkt->pkt_pp.ip;
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(def_rsp +
+						      sizeof(struct ethhdr)),
+				   (const uint8_t *)&rx_ipv6->saddr,
+				   (const uint8_t *)&rx_ipv6->daddr,
+				   (def_rsp_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(def_rsp +
+						    sizeof(struct ethhdr)),
+				   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->saddr,
+				   ((struct iphdr *)pdc_pkt->pkt_pp.ip)->daddr,
+				   (def_rsp_len - uet->nic.l2_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	}
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	ack_pds->prlg.type_next_flags =
@@ -2705,9 +2778,15 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 
 	if (!pp.sec) {
 		/* calculate the CRC (include src/dst IP and UDP) */
-		/* TODO: IPv6 support */
-		crc_start = ((uint8_t *)pp.ip + 12);
-		crc = crc32c(crc_start, (8 + pp.ip_payload_len - CRC_LEN));
+		if (pp.is_ipv6) {
+			crc_start = ((uint8_t *)pp.ip + 8);
+			crc = crc32c(crc_start,
+				     (32 + pp.ip_payload_len - CRC_LEN));
+		} else {
+			crc_start = ((uint8_t *)pp.ip + 12);
+			crc = crc32c(crc_start,
+				     (8 + pp.ip_payload_len - CRC_LEN));
+		}
 
 		/* verify the CRC */
 		if (memcmp(&crc,

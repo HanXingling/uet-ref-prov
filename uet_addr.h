@@ -58,4 +58,6 @@ struct uet_addr {
 	uint32_t initiator_id;
 };
 
+#define uet_addr_is_ipv6(addr) ((addr)->flags & UET_ADDR_IPV6)
+
 #endif /* _UET_ADDR_H_ */

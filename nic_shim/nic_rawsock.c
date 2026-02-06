@@ -49,118 +49,18 @@ int nic_rawsock_getinfo(struct uet_nic *nic,
 	return 0;
 }
 
-/* get next-hop info for ipv4 destination address */
-int nic_rawsock_get_ipv4_nh(struct uet_nic *nic,
-			    uint32_t dst_ip,
-			    uint8_t *mac)
-{
-	struct rawsock_data *rdata =
-		(struct rawsock_data *)nic->nic_priv_data;
-	char sys_cmd[UET_MAX_SYS_CMD_OCTETS];
-	int i, rc;
-	uint32_t net_order;
-	FILE *cmd_stream;
-	struct in_addr nh_ipv4;
-	struct arpreq areq;
-	struct sockaddr_in *sin;
-	uint8_t invalid_mac[ETH_ALEN];
-
-	/* convert ipv4 addr to string */
-	net_order = htonl(dst_ip);
-	inet_ntop(AF_INET, (char *) &net_order, nic->dst_ip_addr_str,
-		  INET_ADDRSTRLEN);
-
-	/* find next-hop ipv4 address */
-	strcpy(sys_cmd, "ip route get to ");
-	strcat(sys_cmd, nic->dst_ip_addr_str);
-	strcat(sys_cmd, " oif ");
-	strcat(sys_cmd, nic->ifname);
-	cmd_stream = popen(sys_cmd, "r");
-	if (cmd_stream == NULL) {
-		UET_API_PRINT_ERRNO("popen");
-		UET_API_ERR("Error getting next-hop IP address");
-		pclose(cmd_stream);
-		return -EIO;
-	}
-	for (i = 0; i < INET_ADDRSTRLEN; i++) {
-		nic->nh_ip_addr_str[i] = getc(cmd_stream);
-		if (isspace((int) nic->nh_ip_addr_str[i])) {
-			nic->nh_ip_addr_str[i] = '\0';
-			break;
-		}
-	}
-	if (i == INET_ADDRSTRLEN) {
-		UET_API_ERR("Error parsing next-hop IP address");
-		pclose(cmd_stream);
-		return -EIO;
-	}
-	inet_pton(AF_INET, nic->nh_ip_addr_str, &nh_ipv4);
-	pclose(cmd_stream);
-
-	/* delete any entry for next-hop already in arp cache */
-	/*  - to handle case where the entry is associated    */
-	/*    with a different interface                      */
-	strcpy(sys_cmd, "arp -d ");
-	strcat(sys_cmd, nic->nh_ip_addr_str);
-	strcat(sys_cmd, " 2> /dev/null 1> /dev/null");
-	system(sys_cmd);
-
-	/* ping next hop to load arp cache using our interface */
-	strcpy(sys_cmd, "ping -c 1 -I ");
-	strcat(sys_cmd, nic->ifname);
-	strcat(sys_cmd, " ");
-	strcat(sys_cmd, nic->nh_ip_addr_str);
-	strcat(sys_cmd, " 2> /dev/null 1> /dev/null");
-	system(sys_cmd);
-
-	/* read next-hop mac address from arp cache */
-	memset(&areq, 0, sizeof(areq));
-	sin = (struct sockaddr_in *) &areq.arp_pa;
-	sin->sin_family = AF_INET;
-	sin->sin_port = nic->uet_ipproto;
-	sin->sin_addr = nh_ipv4;
-	sin = (struct sockaddr_in *) &areq.arp_ha;
-	sin->sin_family = ARPHRD_ETHER;
-	strcpy(areq.arp_dev, nic->ifname);
-	if (ioctl(rdata->sock_fd.fd, SIOCGARP, (caddr_t) &areq) < 0) {
-		UET_API_PRINT_ERRNO("socket ioctl");
-		UET_API_ERR("Error getting ARP entry");
-		return -EIO;
-	}
-	memcpy(mac, areq.arp_ha.sa_data, ETH_ALEN);
-
-	rc = 0;
-	memset(invalid_mac, 0, ETH_ALEN);
-	if (memcmp(mac, invalid_mac, ETH_ALEN) == 0) {
-		UET_API_ERR("Unable to resolve next-hop MAC addr");
-		rc = -ENETUNREACH;
-	}
-
-	printf("Next-Hop Address Resolution\n");
-	printf("  Destination IPv4 Addr: %s\n", nic->dst_ip_addr_str);
-	printf("  Next-Hop IPv4 Addr:    %s\n", nic->nh_ip_addr_str);
-	printf("  Next-Hop MAC Addr:     ");
-	uet_print_mac_addr(mac);
-
-	return rc;
-}
-
 /* transmit a packet */
 int nic_rawsock_tx_pkt(struct uet_nic *nic,
 		       void *pkt,
 		       void *iphdr,
 		       size_t pkt_size)
 {
-	struct ethhdr *eth = (struct ethhdr *) pkt;
-	struct iphdr *ipv4 = (struct iphdr *) iphdr;
+	struct ethhdr *eth = (struct ethhdr *)pkt;
 	struct rawsock_data *rdata =
 		(struct rawsock_data *)nic->nic_priv_data;
 	size_t len;
 
 	memcpy(rdata->sadr.sll_addr, eth->h_dest, ETH_ALEN);
-
-	ipv4->check = 0;
-	ipv4->check = uet_ipv4_csum(ipv4);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
 	uet_pkt_hex_dump(pkt, pkt_size, 0, true);
@@ -264,7 +164,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 {
 	struct rawsock_data *rdata = NULL;
 	int rc;
-	char *ifname, *ip;
+	char *ifname;
 
 	nic->min_pkt_size = UET_MIN_PKT_SIZE;
 	nic->l2_hdr_size = sizeof(struct ethhdr);
@@ -292,14 +192,16 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 
 	strncpy(nic->ifname, ifname, IFNAMSIZ);
 
-	/* open transport raw socket */
-	rdata->sock_fd.fd = socket(AF_PACKET, SOCK_RAW, ETH_P_IP);
+	/* open transport raw socket - use ETH_P_ALL to receive both v4/v6 */
+	rdata->sock_fd.fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
 	if (rdata->sock_fd.fd == -1) {
 		UET_API_PRINT_ERRNO("socket");
 		rc = -EIO;
 		goto err_return;
 	}
+
 	rdata->sock_fd.events = POLLIN;
+	nic->sock_fd = rdata->sock_fd.fd;
 
 	/* get index of interface */
 	strcpy(rdata->ifr.ifr_name, nic->ifname);
@@ -314,7 +216,7 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 	rdata->sadr.sll_family   = AF_PACKET;
 	rdata->sadr.sll_ifindex  = rdata->ifr.ifr_ifindex;
 	rdata->sadr.sll_halen    = ETH_ALEN;
-	rdata->sadr.sll_protocol = htons(ETH_P_IP);
+	rdata->sadr.sll_protocol = htons(ETH_P_ALL);
 
 	if (bind(rdata->sock_fd.fd, (struct sockaddr *) &rdata->sadr,
 		 sizeof(struct sockaddr_ll)) < 0) {
@@ -323,16 +225,36 @@ int nic_rawsock_initialize(struct uet_nic *nic)
 		goto err_return;
 	}
 
-	/* get ipv4 address of interface */
-	if ((ioctl(rdata->sock_fd.fd, SIOCGIFADDR, &rdata->ifr)) < 0) {
-		UET_API_PRINT_ERRNO("socket ioctl");
-		UET_API_ERR("Error getting IP address of local device");
-		rc = -EIO;
-		goto err_return;
+	/* get IPv4 address of interface (optional) */
+	nic->has_ipv4 = (uet_nic_get_ipv4_addr(rdata->sock_fd.fd,
+					       &rdata->ifr,
+					       &nic->ipv4_addr,
+					       nic->ipv4_addr_str) == 0);
+
+	/* get IPv6 address of interface (optional) */
+	nic->has_ipv6 = (uet_nic_get_ipv6_addr(nic->ifname,
+					       nic->ipv6_addr,
+					       nic->ipv6_addr_str) == 0);
+
+	if (nic->is_ipv6) {
+		if (!nic->has_ipv6) {
+			UET_API_ERR("Error: IPv6 requested but no IPv6 address");
+			rc = -ENODEV;
+			goto err_return;
+		}
+
+		memcpy(nic->ip_addr.v6, nic->ipv6_addr, 16);
+		strncpy(nic->ip_addr_str, nic->ipv6_addr_str, INET6_ADDRSTRLEN);
+	} else {
+		if (!nic->has_ipv4) {
+			UET_API_ERR("Error: IPv4 requested but no IPv4 address");
+			rc = -ENODEV;
+			goto err_return;
+		}
+
+		nic->ip_addr.v4 = nic->ipv4_addr;
+		strncpy(nic->ip_addr_str, nic->ipv4_addr_str, INET_ADDRSTRLEN);
 	}
-	ip = &rdata->ifr.ifr_hwaddr.sa_data[2];
-	nic->ipv4_addr = ntohl(*((uint32_t *) ip));
-	inet_ntop(AF_INET, ip, nic->ip_addr_str, INET_ADDRSTRLEN);
 
 	/* get mac address of interface */
 	if ((ioctl(rdata->sock_fd.fd, SIOCGIFHWADDR, &rdata->ifr)) < 0) {

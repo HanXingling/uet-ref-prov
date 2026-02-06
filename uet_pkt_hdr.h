@@ -11,6 +11,7 @@
 #include <netinet/if_ether.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <arpa/inet.h>
 
 #define UET_MAX_VLAN_TAGS	2
@@ -19,27 +20,27 @@
 #define UET_IP_VER_SHIFT	4
 #define UET_IPV4_VER		4
 #define UET_IPV6_VER		6
-#define UET_IPV4_IHL_NO_OPTIONS 5
-#define UET_IPV4_FRAG_OFF_DF    0x4000 /* don't fragment */
-#define UET_DSCP_CS0            0
-#define UET_DSCP_EF             46
-#define UET_IP_DEFAULT_MSG_DSCP UET_DSCP_CS0
-#define UET_IP_DEFAULT_ACK_DSCP UET_DSCP_EF
-#define UET_IPPROTO             253    /* for UET over IP encap */
+#define UET_IPV4_IHL_NO_OPTIONS	5
+#define UET_IPV4_FRAG_OFF_DF	0x4000 /* don't fragment */
+#define UET_DSCP_CS0		0
+#define UET_DSCP_EF		46
+#define UET_IP_DEFAULT_MSG_DSCP	UET_DSCP_CS0
+#define UET_IP_DEFAULT_ACK_DSCP	UET_DSCP_EF
+#define UET_IPPROTO		253    /* for UET over IP encap */
 
 #define UET_IPPROTO_EXT_HDR_HOP_BY_HOP	0
-#define UET_IPPROTO_EXT_HDR_ROUTING     43
+#define UET_IPPROTO_EXT_HDR_ROUTING	43
 #define UET_IPPROTO_EXT_HDR_FRAG	44
 #define UET_IPPROTO_EXT_HDR_ESP		50
 #define UET_IPPROTO_EXT_HDR_AUTH	51
 #define UET_IPPROTO_EXT_HDR_NONE	55
-#define UET_IPPROTO_EXT_HDR_DEST_OPTS   60
+#define UET_IPPROTO_EXT_HDR_DEST_OPTS	60
 #define UET_IPPROTO_EXT_HDR_MOBILITY	135
 
-#define UET_UDP_PORT	49150	/* for UET over UDP encap */
+#define UET_UDP_PORT	49150 /* for UET over UDP encap */
 
 #define UET_DEFAULT_MAX_PAYLOAD_LEN	1024
-#define UET_MAX_PAYLOAD_LEN		8192	/* upper bound */
+#define UET_MAX_PAYLOAD_LEN		8192 /* upper bound */
 
 #define UET_PACKED __attribute__((__packed__))
 
@@ -689,10 +690,13 @@ struct UET_PACKED uet_ses_rsp_ds {
 	uint32_t orig_req_psn;
 };
 
-/* TODO: IPv6 support */
-#define UET_MIN_PKT_SIZE (sizeof(struct ethhdr) + \
-			  sizeof(struct iphdr) + \
-			  sizeof(struct uet_pds_ctrl))
+#define UET_MIN_PKT_SIZE_V4 (sizeof(struct ethhdr) + \
+			     sizeof(struct iphdr) + \
+			     sizeof(struct uet_pds_ctrl))
+#define UET_MIN_PKT_SIZE_V6 (sizeof(struct ethhdr) + \
+			     sizeof(struct ipv6hdr) + \
+			     sizeof(struct uet_pds_ctrl))
+#define UET_MIN_PKT_SIZE UET_MIN_PKT_SIZE_V4
 
 /* get job id from standard request packet */
 static inline uint32_t uet_get_std_req_job_id(struct uet_ses_req_std *ses)

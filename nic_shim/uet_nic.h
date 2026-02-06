@@ -9,10 +9,14 @@
 #define _UET_NIC_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <assert.h>
+#include <errno.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <linux/if_ether.h>
+
+#include "uet_addr.h"
 
 //#define UET_NIC_DEBUG_HEXDUMP
 
@@ -44,13 +48,23 @@ struct uet_nic_info {
 
 /* nic control block structure - field of struct uet_instance */
 struct uet_nic {
-	char ifname[IFNAMSIZ];                              /* interface name */
+	char ifname[IFNAMSIZ];
 	char network_type[UET_NET_TYPE_SIZE];
 
 	uint8_t mac_addr[ETH_ALEN];
 	char mac_addr_str[ETH_ALEN*3];
 
-	uint32_t ipv4_addr;                            /* host order */
+	/* v4/v6 local addresses - both populated at init if available */
+	uint32_t ipv4_addr;
+	char ipv4_addr_str[INET_ADDRSTRLEN];
+	bool has_ipv4;
+	uint8_t ipv6_addr[16];
+	char ipv6_addr_str[INET6_ADDRSTRLEN];
+	bool has_ipv6;
+
+	/* active address for this session (set by upper layer) */
+	struct uet_fa ip_addr;                         /* host order */
+	bool is_ipv6;                          /* true if using IPv6 */
 	char ip_addr_str[INET6_ADDRSTRLEN];            /* local addr */
 	char dst_ip_addr_str[INET6_ADDRSTRLEN];  /* destination addr */
 	char nh_ip_addr_str[INET6_ADDRSTRLEN];      /* next hop addr */
@@ -63,14 +77,12 @@ struct uet_nic {
 
 	uint8_t uet_ipproto;           /* ip protocol number for uet */
 
+	int sock_fd;                    /* socket fd for ioctl calls */
 	void *nic_priv_data;
 
 	/* function pointers supporting different NIC interfaces */
 	int (*nic_getinfo)(struct uet_nic *nic,
 			   struct uet_nic_info *nic_info);
-	int (*nic_get_ipv4_nh)(struct uet_nic *nic,
-			       uint32_t dst_ip,
-			       uint8_t *mac);
 	int (*nic_tx_pkt)(struct uet_nic *nic,
 			  void *pkt,
 			  void *iphdr,
@@ -89,16 +101,86 @@ struct uet_nic {
  *********************************************************************/
 
 /*
- * initialize nic resources
+ * helper to get IPv4 address of interface
  *
  * parms:
- *      uet - ptr to uet nic struct
+ *      sock_fd       - socket file descriptor for ioctl
+ *      ifr           - ptr to ifreq struct (ifr_name must be set)
+ *      ipv4_addr     - ptr to location where IPv4 addr is returned
+ *      ipv4_addr_str - ptr to buffer for IPv4 addr string
  *
  * returns:
  *      0 on success
  *      negative value corresponding to errno on error
  */
-int uet_nic_initialize(struct uet_nic *nic);
+int uet_nic_get_ipv4_addr(int sock_fd,
+			  struct ifreq *ifr,
+			  uint32_t *ipv4_addr,
+			  char *ipv4_addr_str);
+
+/*
+ * helper to get IPv6 address of interface from /proc/net/if_inet6
+ *
+ * parms:
+ *      ifname        - interface name
+ *      ipv6_addr     - ptr to 16-byte buffer for IPv6 addr
+ *      ipv6_addr_str - ptr to buffer for IPv6 addr string
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+int uet_nic_get_ipv6_addr(const char *ifname,
+			  uint8_t *ipv6_addr,
+			  char *ipv6_addr_str);
+
+/*
+ * helper to resolve IPv4 next-hop MAC address
+ *
+ * parms:
+ *      nic     - ptr to uet nic struct
+ *      sock_fd - socket file descriptor for ioctl
+ *      dst_ip  - destination IPv4 address
+ *      mac     - ptr to location where MAC address is returned
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+int uet_nic_resolve_ipv4_nh(struct uet_nic *nic,
+			    int sock_fd,
+			    uint32_t dst_ip,
+			    uint8_t *mac);
+
+/*
+ * helper to resolve IPv6 next-hop MAC address
+ *
+ * parms:
+ *      nic      - ptr to uet nic struct
+ *      dst_ip6  - destination IPv6 address
+ *      mac      - ptr to location where MAC address is returned
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+int uet_nic_resolve_ipv6_nh(struct uet_nic *nic,
+			    const uint8_t *dst_ip6,
+			    uint8_t *mac);
+
+/*
+ * initialize nic resources
+ *
+ * parms:
+ *      uet - ptr to uet nic struct
+ *      is_ipv6 - initialize for IPv6
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+int uet_nic_initialize(struct uet_nic *nic,
+		       bool is_ipv6);
 
 /*
  * free nic resources
@@ -147,7 +229,56 @@ static inline int uet_nic_get_ipv4_nh(struct uet_nic *nic,
 	if (!nic || !mac)
 		assert(0);
 
-	return nic->nic_get_ipv4_nh(nic, dst_ip, mac);
+	return uet_nic_resolve_ipv4_nh(nic, nic->sock_fd, dst_ip, mac);
+}
+
+/*
+ * get next-hop info for ipv6 destination address
+ *
+ * parms:
+ *      nic     - ptr to uet nic struct
+ *      dst_ip6 - destination IPv6 address for which info is requested
+ *      mac     - ptr to location where mac address is to be returned
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+static inline int uet_nic_get_ipv6_nh(struct uet_nic *nic,
+				      const uint8_t *dst_ip6,
+				      uint8_t *mac)
+{
+	if (!nic || !dst_ip6 || !mac)
+		assert(0);
+
+	return uet_nic_resolve_ipv6_nh(nic, dst_ip6, mac);
+}
+
+/*
+ * get next-hop info for destination address (v4 or v6)
+ *
+ * parms:
+ *      nic     - ptr to uet nic struct
+ *      fa      - ptr to fabric address (contains v4 or v6 address)
+ *      is_ipv6 - true if fa contains an IPv6 address
+ *      mac     - ptr to location where mac address is to be returned
+ *
+ * returns:
+ *      0 on success
+ *      negative value corresponding to errno on error
+ */
+static inline int uet_nic_get_nh(struct uet_nic *nic,
+				 const struct uet_fa *fa,
+				 bool is_ipv6,
+				 uint8_t *mac)
+{
+	if (!nic || !fa || !mac)
+		assert(0);
+
+	if (is_ipv6)
+		return uet_nic_get_ipv6_nh(nic, fa->v6, mac);
+	else
+		return uet_nic_get_ipv4_nh(nic, fa->v4, mac);
 }
 
 /*

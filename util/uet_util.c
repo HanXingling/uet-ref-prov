@@ -52,6 +52,21 @@ void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str)
 	inet_ntop(AF_INET, (char *) &net_order, ipv4_addr_str, INET_ADDRSTRLEN);
 }
 
+/* convert ipv6 address to string */
+void uet_ipv6_addr_to_str(const uint8_t *ipv6_addr, char *ipv6_addr_str)
+{
+	inet_ntop(AF_INET6, ipv6_addr, ipv6_addr_str, INET6_ADDRSTRLEN);
+}
+
+/* convert ip address (v4 or v6) to string */
+void uet_ip_addr_to_str(const struct uet_fa *fa, bool is_ipv6, char *str)
+{
+	if (is_ipv6)
+		uet_ipv6_addr_to_str(fa->v6, str);
+	else
+		uet_ipv4_addr_to_str(fa->v4, str);
+}
+
 /* convert ses return code to string */
 char *uet_ses_rc_to_str(uet_ses_rc_t rc)
 {
@@ -195,12 +210,22 @@ void uet_print_ipv4_addr(uint32_t ipv4_addr)
 	       (ipv4_addr >> 8)  & 0xff, ipv4_addr & 0xff);
 }
 
+/* print ipv6 address */
+void uet_print_ipv6_addr(const uint8_t *ipv6_addr)
+{
+	char str[INET6_ADDRSTRLEN];
+
+	uet_ipv6_addr_to_str(ipv6_addr, str);
+	printf("%s\n", str);
+}
+
 /* print uet address */
 void uet_print_uet_addr(struct uet_addr *uet_addr)
 {
-	char ip_addr_str[INET_ADDRSTRLEN];
+	char ip_addr_str[INET6_ADDRSTRLEN];
 
-	uet_ipv4_addr_to_str(uet_addr->fa.v4, ip_addr_str);
+	uet_ip_addr_to_str(&uet_addr->fa, uet_addr_is_ipv6(uet_addr),
+			   ip_addr_str);
 
 	printf("UET Address\n");
 	printf("  IP Address:      %s\n", ip_addr_str);
@@ -245,6 +270,26 @@ void uet_print_ipv4_hdr(struct iphdr *ipv4)
 	uet_print_ipv4_addr(ntohl(ipv4->daddr));
 	printf("    Source Addr:          ");
 	uet_print_ipv4_addr(ntohl(ipv4->saddr));
+}
+
+/* print ipv6 header */
+void uet_print_ipv6_hdr(struct ipv6hdr *ipv6)
+{
+	printf("  IPv6 Header (%lu)\n", sizeof(struct ipv6hdr));
+	printf("    IP Version:           %u\n", ipv6->version);
+	printf("    Traffic Class:        0x%x\n",
+	       (ipv6->priority << 4) | (ipv6->flow_lbl[0] >> 4));
+	printf("    Flow Label:           0x%x%02x%02x\n",
+	       ipv6->flow_lbl[0] & 0x0f,
+	       ipv6->flow_lbl[1],
+	       ipv6->flow_lbl[2]);
+	printf("    Payload Length:       %u\n", ntohs(ipv6->payload_len));
+	printf("    Next Header:          0x%x\n", ipv6->nexthdr);
+	printf("    Hop Limit:            %u\n", ipv6->hop_limit);
+	printf("    Destination Addr:     ");
+	uet_print_ipv6_addr((const uint8_t *)&ipv6->daddr);
+	printf("    Source Addr:          ");
+	uet_print_ipv6_addr((const uint8_t *)&ipv6->saddr);
 }
 
 /* print uet header */
@@ -527,7 +572,10 @@ void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp)
 {
 	printf("UET Packet Headers (pkt_len=%d)\n", pp->pkt_len);
 	uet_print_mac_hdr((struct ethhdr *) pp->eth);
-	uet_print_ipv4_hdr((struct iphdr *) pp->ip); /* TODO: IPv6 support */
+	if (pp->is_ipv6)
+		uet_print_ipv6_hdr((struct ipv6hdr *) pp->ip);
+	else
+		uet_print_ipv4_hdr((struct iphdr *) pp->ip);
 	/* TODO: UDP support */
 	uet_print_uet_hdr(pp);
 }
@@ -626,6 +674,45 @@ void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len)
 }
 
 /*
+ * build ipv6 header
+ *
+ * parms:
+ *      uet         - ptr to uet instance struct
+ *      ipv6        - ptr to location where ipv6 header is to be built
+ *      dip         - destination ipv6 address (16 bytes, network order)
+ *      sip         - source ipv6 address (16 bytes, network order)
+ *      payload_len - value for payload length field of ipv6 header
+ *      tc          - value for traffic class field of ipv6 header
+ *      crc_en      - CRC will or will not be appended to the frame
+ */
+void uet_build_ipv6_hdr(struct uet_instance *uet, struct ipv6hdr *ipv6,
+			const uint8_t *dip, const uint8_t *sip,
+			uint16_t payload_len, uint8_t tc, bool crc_en)
+{
+	memset(ipv6, 0, sizeof(*ipv6));
+	ipv6->version = 6;
+	ipv6->priority = (tc >> 4);
+	ipv6->flow_lbl[0] = (tc << 4);
+	ipv6->payload_len = htons(payload_len + (crc_en ? CRC_LEN : 0));
+	ipv6->nexthdr = uet->uet_ipproto;
+	ipv6->hop_limit = IPDEFTTL;
+	memcpy(&ipv6->saddr, sip, 16);
+	memcpy(&ipv6->daddr, dip, 16);
+}
+
+/*
+ * update ipv6 payload length field
+ *
+ * parms:
+ *      ipv6        - ptr to location where ipv6 header is located
+ *      payload_len - value for payload length field of ipv6 header
+ */
+void uet_update_ipv6_pl(struct ipv6hdr *ipv6, uint16_t payload_len)
+{
+	ipv6->payload_len = htons(payload_len);
+}
+
+/*
  * build ethernet header
  *
  * parms:
@@ -633,9 +720,10 @@ void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len)
  *      dmac - ptr to destination mac address
  *      smac - ptr to source mac address
  */
-void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac)
+void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac,
+		       bool is_ipv6)
 {
-	eth->h_proto = htons(ETH_P_IP);
+	eth->h_proto = htons(is_ipv6 ? ETH_P_IPV6 : ETH_P_IP);
 	memcpy(eth->h_dest, dmac, ETH_ALEN);
 	memcpy(eth->h_source, smac, ETH_ALEN);
 }
@@ -971,6 +1059,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	}
 	switch (ethertype) {
 	case ETH_P_IP:
+		pp->is_ipv6 = false;
 		ipv4 = (struct iphdr *) p;
 		pp->ip_protocol = ipv4->protocol;
 		pp->ip_len = (ipv4->ihl << 2);
@@ -978,6 +1067,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 				      sizeof(struct iphdr));
 		break;
 	case ETH_P_IPV6:
+		pp->is_ipv6 = true;
 		rc = uet_get_ipv6_nexthdr(uet, pp);
 		if (rc != 0)
 			return rc;
