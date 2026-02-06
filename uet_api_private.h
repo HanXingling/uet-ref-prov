@@ -381,9 +381,9 @@ struct uet_tx_rtr_token_cb {
 	uint32_t initiator_id[UET_MAX_RTR_TOKEN+1];    /* remote initiator id */
 };
 
-/* key for ipv4 endpoint lookup */
-struct uet_ipv4_ep_key {
-	uint32_t ipv4_addr;
+/* key for endpoint lookup */
+struct uet_ep_key {
+	struct uet_fa ip_addr;
 	uint16_t pid_on_fep;
 	uint32_t index;
 };
@@ -409,8 +409,8 @@ struct uet_instance {
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
 				      /* used for assigning tx restart tokens */
 	struct uet_tx_rtr_token_cb tx_rtr_token_cb;
-	struct uet_rw_lock ipv4_ep_lkup_lock;  /* lock for ipv4 ep lookup tbl */
-	struct uet_ep *ipv4_ep_hash_table;        /* ipv4 endpoint hash table */
+	struct uet_rw_lock ep_lkup_lock;           /* lock for ep lookup tbl */
+	struct uet_ep *ep_hash_table;                 /* endpoint hash table */
 };
 
 /* memory region descriptor allocation control block struct */
@@ -482,14 +482,14 @@ struct uet_ep {
 	pthread_mutex_t data_lock;        /* lock for data path thread safety */
 	uet_ep_state_t ep_state;                         /* state of endpoint */
 	struct dlist_entry ep_list_entry;              /* endpoint list entry */
-	UT_hash_handle ipv4_ep_hh;  /* handle for ipv4 endpoint hash function */
+	UT_hash_handle ep_hh;            /* handle for endpoint hash function */
 	struct uet_domain *uet_domain;                /* ptr to domain struct */
 	struct fi_info *info;                 /* ptr to libfabric info struct */
 	struct fid_ep *ep;                /* ptr to libfabric endpoint struct */
 	void *context;               /* user context associated with endpoint */
 	struct uet_addr uet_addr;               /* uet addr of ep, host order */
-	uint32_t ipv4_addr;                    /* ipv4 addr of ep, host order */
-	struct uet_ipv4_ep_key ipv4_ep_key;   /* key for ipv4 endpoint lookup */
+	struct uet_fa ip_addr;                   /* ip addr of ep, host order */
+	struct uet_ep_key ep_key;                  /* key for endpoint lookup */
 	uint8_t msg_ip_tos;                            /* ip tos for messages */
 	struct uet_cq send_cq;                       /* send completion queue */
 	struct uet_cq recv_cq;                    /* receive completion queue */

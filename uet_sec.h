@@ -35,12 +35,13 @@ int uet_sec_build_hdr(uint32_t sdi,
 		      uint8_t *pkt,
 		      int pkt_len,
 		      uint8_t **new_pkt,
-		      int *new_pkt_len);
+		      int *new_pkt_len,
+		      bool is_ipv6);
 
 /*
  * Update the TSC field in the security header. Used for retransmits.
  */
-int uet_sec_update_hdr_tsc(uint8_t *pkt);
+int uet_sec_update_hdr_tsc(uint8_t *pkt, bool is_ipv6);
 
 /*
  * Encryption does not occur inplace.
@@ -75,5 +76,6 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 		    int pkt_len,
 		    int *tag_len);
 
-int uet_sec_init(void);
+int uet_sec_init(struct uet_fa *local_ip,
+		 bool is_ipv6);
 

@@ -37,7 +37,7 @@
 #define UET_LOG_WARN 2
 #define UET_LOG_INFO 3
 #define UET_LOG_DBG  4
-#define UET_LOG_LVL  UET_LOG_DBG /* max log level to print (+below) */
+#define UET_LOG_LVL  UET_LOG_INFO /* max log level to print (+below) */
 
 #define UET_SES_LBL "[SES] "
 #define UET_PDS_LBL "[PDS] "

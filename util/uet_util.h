@@ -68,6 +68,7 @@ struct uet_parsed_pkt {
 	uint16_t ip_len;
 	uint16_t ip_payload_len;
 	uint8_t ip_protocol;                        /* next protocol after ip */
+	bool is_ipv6;                      /* true if ip points to ipv6 header */
 	void *udp;
 	uint16_t udp_len;
 	void *entropy;                                  /* uet entropy header */
@@ -137,12 +138,16 @@ struct uet_instance; /* forward reference */
 int uet_gettime(time_t *time_ms);
 void uet_mac_addr_to_str(char *mac_addr_str, uint8_t *mac_addr);
 void uet_ipv4_addr_to_str(uint32_t ipv4_addr, char *ipv4_addr_str);
+void uet_ipv6_addr_to_str(const uint8_t *ipv6_addr, char *ipv6_addr_str);
+void uet_ip_addr_to_str(const struct uet_fa *fa, bool is_ipv6, char *str);
 char *uet_ses_rc_to_str(uet_ses_rc_t rc);
 void uet_print_mac_addr(uint8_t *mac);
 void uet_print_ipv4_addr(uint32_t ipv4_addr);
+void uet_print_ipv6_addr(const uint8_t *ipv6_addr);
 void uet_print_uet_addr(struct uet_addr *uet_addr);
 void uet_print_mac_hdr(struct ethhdr *eth);
 void uet_print_ipv4_hdr(struct iphdr *ipv4);
+void uet_print_ipv6_hdr(struct ipv6hdr *ipv6);
 void uet_print_uet_hdr(struct uet_parsed_pkt *pp);
 void uet_print_pkt_hdrs(struct uet_parsed_pkt *pp);
 size_t uet_roundup_8(size_t val);
@@ -152,8 +157,13 @@ uint16_t uet_ipv4_csum(struct iphdr *ipv4);
 void uet_build_ipv4_hdr(struct uet_instance *uet, struct iphdr *ipv4,
 			uint32_t dip, uint32_t sip, uint16_t tot_len,
 			uint8_t tos, bool crc_en);
+void uet_build_ipv6_hdr(struct uet_instance *uet, struct ipv6hdr *ipv6,
+			const uint8_t *dip, const uint8_t *sip,
+			uint16_t payload_len, uint8_t tc, bool crc_en);
 void uet_update_ipv4_tl(struct iphdr *ipv4, uint16_t tot_len);
-void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac);
+void uet_update_ipv6_pl(struct ipv6hdr *ipv6, uint16_t payload_len);
+void uet_build_eth_hdr(struct ethhdr *eth, uint8_t *dmac, uint8_t *smac,
+		       bool is_ipv6);
 void uet_pkt_hex_dump(void *pkt, uint32_t length, uint64_t addr, bool is_tx);
 void uet_rw_lock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);
 void uet_rw_unlock(struct uet_rw_lock *lock, uet_rw_lock_access_t access);

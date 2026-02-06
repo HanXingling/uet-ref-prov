@@ -129,7 +129,8 @@ struct uet_cfg {
 	int num_iterations;                 /* number of messages to exchange */
 	size_t msg_size;                         /* size of messages in bytes */
 	char *peer_ip_addr_string;             /* peer ip addr in string form */
-	uint32_t peer_ipv4_addr;                                /* host order */
+	struct uet_fa peer_ip_addr;                             /* host order */
+	bool is_ipv6;
 	struct uet_addr peer_uet_addr;                    /* peer uet address */
 	uint32_t job_id;                                    /* id of this job */
 };
@@ -153,7 +154,7 @@ struct uet_context {
 	uet_cq_handle_t tx_cq_handle;
 	uet_cq_handle_t rx_cq_handle;
 	uet_addr_handle_t peer_addr_handle;
-	uint32_t local_ipv4_addr;                          /* host byte order */
+	struct uet_fa local_ip_addr;                       /* host byte order */
 	struct fid_fabric fabric;
 	struct fid_domain domain;
 	struct fid_ep ep;
@@ -295,6 +296,7 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 			     struct uet_context *ctx)
 {
 	struct in_addr peer_in_addr;
+	struct in6_addr peer_in6_addr;
 	struct uet_addr *addr;
 
 	ctx->cfg.job_id = UET_DEF_JOB_ID;
@@ -331,25 +333,33 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 		ctx->cfg.peer_ip_addr_string = argv[2];
 	}
 
-	if (inet_pton(AF_INET, ctx->cfg.peer_ip_addr_string,
-		      &peer_in_addr) != 1) {
-		UET_PRINT_ERRNO("Invalid usage: bad IPv4 address");
+	memset(&ctx->cfg.peer_ip_addr, 0, sizeof(struct uet_fa));
+
+	if (inet_pton(AF_INET6, ctx->cfg.peer_ip_addr_string,
+		      &peer_in6_addr) == 1) {
+		memcpy(ctx->cfg.peer_ip_addr.v6, &peer_in6_addr, 16);
+		ctx->cfg.is_ipv6 = true;
+	} else if (inet_pton(AF_INET, ctx->cfg.peer_ip_addr_string,
+			     &peer_in_addr) == 1) {
+		ctx->cfg.peer_ip_addr.v4 = ntohl(peer_in_addr.s_addr);
+		ctx->cfg.is_ipv6 = false;
+	} else {
+		UET_PRINT_ERRNO("Invalid usage: bad IP address");
 		return UET_ERR_RC;
 	}
-	ctx->cfg.peer_ipv4_addr = ntohl(peer_in_addr.s_addr);
 
 	addr = &ctx->cfg.peer_uet_addr;
 	addr->ver = UET_ADDR_VERSION;
-	addr->flags = UET_ADDR_FEP_CAP_V     |
-		      UET_ADDR_FA_V          |
-		      UET_ADDR_PID_ON_FEP_V  |
-		      UET_ADDR_INDEX_V       |
-		      UET_ADDR_INITIATOR_V   |
-		      UET_ADDR_RELATIVE_MODE |
-		      UET_ADDR_IPV4          |
-		      UET_ADDR_BIG_MSG_SIZE;
+	addr->flags = (UET_ADDR_FEP_CAP_V     |
+		       UET_ADDR_FA_V          |
+		       UET_ADDR_PID_ON_FEP_V  |
+		       UET_ADDR_INDEX_V       |
+		       UET_ADDR_INITIATOR_V   |
+		       UET_ADDR_RELATIVE_MODE |
+		       (ctx->cfg.is_ipv6 ? UET_ADDR_IPV6 : UET_ADDR_IPV4) |
+		       UET_ADDR_BIG_MSG_SIZE);
 	addr->fep_cap = UET_FEP_CAP_AI_FULL;
-	addr->fa.v4 = ctx->cfg.peer_ipv4_addr;
+	memcpy(&addr->fa, &ctx->cfg.peer_ip_addr, sizeof(struct uet_fa));
 	addr->pid_on_fep = UET_ADDR_DEF_PID_ON_FEP;
 	addr->num_indices = 1;
 	addr->start_index = UET_ADDR_DEF_INDEX;
@@ -436,7 +446,7 @@ static uet_rc_t uet_validate_iov_msg(struct uet_context *ctx)
 static uet_rc_t uet_init_transport(struct uet_context *ctx)
 {
 	int ret;
-	char ip_addr_str[INET_ADDRSTRLEN];
+	char ip_addr_str[INET6_ADDRSTRLEN];
 	void *context = NULL;
 	struct fi_info *hints = NULL, *info;
 	struct uet_addr *uet_addr;
@@ -447,7 +457,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	if (!ctx->cfg.client)
 		setenv(UET_SEC_SERVER, "1", 1);
 
-	ret = uet_initialize(&ctx->uet_handle);
+	ret = uet_initialize(&ctx->uet_handle, ctx->cfg.is_ipv6);
 	if (ret) {
 		UET_ERR("uet_initialize: %s", fi_strerror(-ret));
 		goto exit;
@@ -489,7 +499,9 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		else
 			printf("UNKNOWN\n");
 		uet_addr = (struct uet_addr *) info->src_addr;
-		uet_ipv4_addr_to_str(uet_addr->fa.v4, ip_addr_str);
+		uet_ip_addr_to_str(&uet_addr->fa,
+				   uet_addr_is_ipv6(uet_addr),
+				   ip_addr_str);
 		printf("  IP Address:      %s\n", ip_addr_str);
 	}
 
@@ -1517,7 +1529,7 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 	 * and likely return ICMP unreachable errors (possibly messing up
 	 * the desired UET flow).
 	 */
-	sleep(1);
+	//sleep(1);
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
 		printf("Starting in %s\n",

@@ -12,6 +12,7 @@
 /* determine if uet packet type is valid */
 static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 				   size_t pkt_size,
+				   bool is_ipv6,
 				   bool *pkt_is_ack,
 				   bool *pkt_is_rd_rsp,
 				   bool *pkt_is_ctrl)
@@ -20,22 +21,22 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 	struct uet_pds_req *pds_hdr;
 	uint16_t pds_type, next_hdr;
 	bool pds_req;
+	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
+					 sizeof(struct iphdr);
 
 	*pkt_is_ack = false;
 	*pkt_is_rd_rsp = false;
 	*pkt_is_ctrl = false;
 
-	/* TODO: IPv6 support and UDP support */
 	pds_hdr = (struct uet_pds_req *)(pkt +
 					 sizeof(struct ethhdr) +
-					 sizeof(struct iphdr) +
+					 ip_hdr_size +
 					 sizeof(struct uet_entropy));
 
 	pds_type = ((ntohs(pds_hdr->prlg.type_next_flags) &
 		     UET_PDS_TYPE_MASK) >> UET_PDS_TYPE_SHIFT);
 
 	if (pds_type == UET_PDS_TYPE_SECURITY) {
-		/* TODO: IPv6 support */
 		sec_hdr = (struct uet_sec *)pds_hdr;
 		if (ntohl(sec_hdr->type_flags_sdi) & UET_SEC_SP_MASK) {
 			pds_hdr = (struct uet_pds_req *)
@@ -124,51 +125,76 @@ bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
 			bool *pkt_is_ctrl)
 {
 	struct ethhdr *eth = (struct ethhdr *)pkt;
-	struct iphdr *ipv4 = (struct iphdr *)(eth + 1);
-
-	/* TODO: IPv6 support */
+	bool is_ipv6;
 
 	if (memcmp(eth->h_dest, uet->nic.mac_addr, ETH_ALEN) != 0) {
 		UET_PDS_WARN("dest MAC mismatch");
 		return false;
 	}
 
-	if (eth->h_proto != htons(ETH_P_IP)) {
-		UET_PDS_WARN("not an IPv4 packet");
+	if (eth->h_proto == htons(ETH_P_IPV6)) {
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)(eth + 1);
+
+		is_ipv6 = true;
+
+		if (ipv6->version != 6) {
+			UET_PDS_WARN("invalid IPv6 header version");
+			return false;
+		}
+
+		if (ipv6->nexthdr != uet->uet_ipproto) {
+			UET_PDS_WARN("unsupported IP protocol");
+			return false;
+		}
+
+		if (ntohs(ipv6->payload_len) + sizeof(struct ipv6hdr) +
+		    sizeof(struct ethhdr) > pkt_size) {
+			UET_PDS_WARN("IPv6 payload length too large");
+			return false;
+		}
+
+		/* IPv6 has no header checksum */
+
+	} else if (eth->h_proto == htons(ETH_P_IP)) {
+		struct iphdr *ipv4 = (struct iphdr *)(eth + 1);
+
+		is_ipv6 = false;
+
+		if (ipv4->version != IPVERSION) {
+			UET_PDS_WARN("invalid IPv4 header version");
+			return false;
+		}
+
+		if (ipv4->ihl != UET_IPV4_IHL_NO_OPTIONS) {
+			UET_PDS_WARN("IPv4 header options not supported");
+			return false;
+		}
+
+		if (ipv4->protocol != uet->uet_ipproto) {
+			UET_PDS_WARN("unsupported IP protocol");
+			return false;
+		}
+
+		if (ipv4->tot_len < htons(uet->nic.min_ip_pkt_size)) {
+			UET_PDS_WARN("IPv4 total length too small");
+			return false;
+		}
+
+		if (ipv4->tot_len > htons((pkt_size - uet->nic.l2_hdr_size))) {
+			UET_PDS_WARN("IPv4 total length too large");
+			return false;
+		}
+
+		if (uet_ipv4_csum(ipv4) != 0) {
+			UET_PDS_WARN("IPv4 header checksum invalid");
+			return false;
+		}
+	} else {
+		UET_PDS_WARN("unsupported ethertype");
 		return false;
 	}
 
-	if (ipv4->version != IPVERSION) {
-		UET_PDS_WARN("invalid IPv4 header version");
-		return false;
-	}
-
-	if (ipv4->ihl != UET_IPV4_IHL_NO_OPTIONS) {
-		UET_PDS_WARN("IPv4 header options not supported");
-		return false;
-	}
-
-	if (ipv4->protocol != uet->uet_ipproto) {
-		UET_PDS_WARN("unsupported IP protocol");
-		return false;
-	}
-
-	if (ipv4->tot_len < htons(uet->nic.min_ip_pkt_size)) {
-		UET_PDS_WARN("IPv4 total length too small");
-		return false;
-	}
-
-	if (ipv4->tot_len > htons((pkt_size - uet->nic.l2_hdr_size))) {
-		UET_PDS_WARN("IPv4 total length too large");
-		return false;
-	}
-
-	if (uet_ipv4_csum(ipv4) != 0) {
-		UET_PDS_WARN("IPv4 header checksum invalid");
-		return false;
-	}
-
-	if (!uet_pds_pkt_type_valid(pkt, pkt_size, pkt_is_ack,
+	if (!uet_pds_pkt_type_valid(pkt, pkt_size, is_ipv6, pkt_is_ack,
 				    pkt_is_rd_rsp, pkt_is_ctrl)) {
 		UET_PDS_WARN("invalid UET PDS packet type");
 		return false;
