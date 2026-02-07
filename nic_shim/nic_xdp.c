@@ -12,6 +12,10 @@
 #include <pthread.h>
 #include <sys/ioctl.h>
 #include <linux/if_link.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <sys/resource.h>
 
 #include <xdp/xsk.h>
@@ -73,6 +77,10 @@ struct xsk_socket_info {
 	bool created;
 	struct xsk_ring_cons rx; /* Rx consumer ring */
 	struct xsk_ring_prod tx; /* Tx producer ring */
+
+	struct xsk_ring_prod fq; /* Rx Fill producer ring */
+	struct xsk_ring_cons cq; /* Tx Completion consumer ring */
+
 	struct xsk_umem_info *umem;
 	struct xsk_socket *xsk;
 	//struct xsk_ring_stats ring_stats;
@@ -82,10 +90,9 @@ struct xsk_socket_info {
 };
 
 struct xdp_data {
-#define MAX_SOCKS 4
-	struct xsk_socket_info *xsks[MAX_SOCKS];
-	uint32_t next_frame[MAX_SOCKS]; /* for Tx */
-	int num_socks; /* or MAX_SOCKS */
+	struct xsk_socket_info **xsks;
+	uint32_t *next_frame; /* for Tx */
+	int num_socks;
 
 	struct xdp_program *xdp_prog;
 	int xdp_ifindex;
@@ -99,7 +106,42 @@ struct xdp_data {
 	int sock_fd;
 };
 
-/* get nic info */
+/*
+ * Get the number of NIC hardware queues available on the interface. AF_XDP
+ * binds one socket per queue, and the XDP BPF program uses rx_queue_index as
+ * the key/index into the xsks_map to find the correct AF_XDP socket. If a
+ * NIC has multiple queues, RSS will distribute incoming packets across all
+ * queues. Any queue without an AF_XDP socket in xsks_map will fall through
+ * to XDP_PASS, bypassing the AF_XDP path entirely.
+ *
+ * This function determines how many queues exist so one AF_XDP socket can
+ * be created per queue. It prefers combined_count, falls back to rx_count,
+ * and defaults to 1 if the ioctl is unsupported.
+ */
+static int nic_xdp_get_num_queues(int sock_fd, const char *ifname)
+{
+	struct ethtool_channels channels = { .cmd = ETHTOOL_GCHANNELS };
+	struct ifreq ifr;
+	int num_queues;
+
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
+	ifr.ifr_data = (char *)&channels;
+
+	if (ioctl(sock_fd, SIOCETHTOOL, &ifr) < 0)
+		return 1; /* error, assume single queue */
+
+	num_queues = channels.combined_count;
+
+	if (num_queues == 0)
+		num_queues = channels.rx_count;
+
+	if (num_queues == 0)
+		num_queues = 1;
+
+	return num_queues;
+}
+
 int nic_xdp_getinfo(struct uet_nic *nic,
 		    struct uet_nic_info *nic_info)
 {
@@ -134,34 +176,35 @@ static inline void nic_xdp_tx_complete(struct xsk_socket_info *xsk,
 	if (!xsk->outstanding_tx) /* nothing to complete */
 		return;
 
-	/* Complete as many as available, up to the batch_size. */
-	batch_size = xsk_cons_nb_avail(&xsk->umem->cq, batch_size);
-
-	/* Kick the Tx ring. */
-	if (xsk_ring_prod__needs_wakeup(&xsk->tx)) {
-		ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0,
-			     MSG_DONTWAIT, NULL, 0);
-		if ((ret < 0) &&
-		    (errno != ENOBUFS) &&
-		    (errno != EAGAIN) &&
-		    (errno != EBUSY) &&
-		    (errno != ENETDOWN)) {
-			assert(0); /* wtf, this is bad */
-		}
+	/*
+	 * Unconditionally kick the Tx ring and don't rely on
+	 * xsk_ring_prod__needs_wakeup(). Some drivers don't properly support
+	 * the XDP_USE_NEED_WAKEUP flag which results in needs_wakeup to
+	 * return false and packets never getting transmitted.
+	 */
+	ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+	if ((ret < 0) &&
+	    (errno != ENOBUFS) &&
+	    (errno != EAGAIN) &&
+	    (errno != EBUSY) &&
+	    (errno != ENETDOWN)) {
+		assert(0); /* wtf, this is bad */
 	}
 
-	/* Get the number of available completions, up to the batch_size. */
-	rcvd = xsk_ring_cons__peek(&xsk->umem->cq, batch_size, &idx);
+	/*
+	 * Peek for completions AFTER the kick so we can see completions that
+	 * were just posted synchronously by the kernel.
+	 */
+	rcvd = xsk_ring_cons__peek(&xsk->cq, batch_size, &idx);
 	if (rcvd > 0) {
 		/* Update the consumer of the completion ring. */
-		xsk_ring_cons__release(&xsk->umem->cq, rcvd);
+		xsk_ring_cons__release(&xsk->cq, rcvd);
 
 		/* Decrement the number of un-completed Tx entries. */
 		xsk->outstanding_tx -= rcvd;
 	}
 }
 
-/* transmit a packet */
 int nic_xdp_tx_pkt(struct uet_nic *nic,
 		   void *pkt,
 		   void *iphdr,
@@ -217,7 +260,6 @@ int nic_xdp_tx_pkt(struct uet_nic *nic,
 	return 0;
 }
 
-/* receive a packet */
 int nic_xdp_rx_pkt(struct uet_nic *nic,
 		   void *pkt,
 		   size_t pkt_buf_size,
@@ -242,23 +284,22 @@ int nic_xdp_rx_pkt(struct uet_nic *nic,
 			continue;
 
 		/* Reserve one packet from the fill queue. */
-		ret = xsk_ring_prod__reserve(&xsk->umem->fq, 1, &idx_fq);
+		ret = xsk_ring_prod__reserve(&xsk->fq, 1, &idx_fq);
 		while (ret != 1) {
 			if (ret < 0)
 				return 0; /* Something is very wrong... */
 
 			/*
 			 * If the required number of slots wasn't avaiable,
-			 * kick the Fill ring and retry.
+			 * kick the fill ring and retry.
 			 */
-			if (xsk_ring_prod__needs_wakeup(&xsk->umem->fq)) {
+			if (xsk_ring_prod__needs_wakeup(&xsk->fq)) {
 				recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0,
 					 MSG_DONTWAIT, NULL, NULL);
 			}
 
-			/* Again, reserve the number of slots in the Fill ring. */
-			ret = xsk_ring_prod__reserve(&xsk->umem->fq, 1,
-						     &idx_fq);
+			/* Reserve the number of slots in the fill ring. */
+			ret = xsk_ring_prod__reserve(&xsk->fq, 1, &idx_fq);
 		}
 
 		/*
@@ -277,30 +318,59 @@ int nic_xdp_rx_pkt(struct uet_nic *nic,
 			xsk->umem->buffer,
 			xsk_umem__add_offset_to_addr(desc->addr));
 
-		if (desc->len > pkt_buf_size) {
-			UET_API_DEBUG("ERROR Rx: pkt too big: %u bytes",
-				      desc->len);
+		/*
+		 * vmxnet3 (and possibly other NICs) pad every AF_XDP frame
+		 * to the maximum Ethernet frame size (1522 bytes) regardless
+		 * of the actual packet length. The desc->len field reflects
+		 * this padded size, NOT the real packet length.
+		 */
+		{
+			struct ethhdr *eth = (struct ethhdr *)xdp_pkt_data;
+			uint16_t ethertype = ntohs(eth->h_proto);
+
+			if (ethertype == ETH_P_IP) {
+				struct iphdr *iph =
+					(struct iphdr *)(xdp_pkt_data +
+							 sizeof(struct ethhdr));
+				len = (ntohs(iph->tot_len) +
+				       sizeof(struct ethhdr));
+			} else if (ethertype == ETH_P_IPV6) {
+				struct ipv6hdr *ip6h =
+					(struct ipv6hdr *)(xdp_pkt_data +
+							   sizeof(struct ethhdr));
+				len = (ntohs(ip6h->payload_len) +
+				       sizeof(struct ipv6hdr) +
+				       sizeof(struct ethhdr));
+			} else {
+				/* non-IP frame, use the desc->len */
+				len = desc->len;
+			}
+		}
+
+		if (len > pkt_buf_size) {
+			UET_API_DEBUG("ERROR Rx: pkt too big: %zu bytes",
+				      len);
 			return 0;
-		} else if (desc->len < nic->min_pkt_size) {
-			UET_API_DEBUG("ERROR Rx: pkt too small: %u bytes",
-				      desc->len);
+		} else if (len < nic->min_pkt_size) {
+			UET_API_DEBUG("ERROR Rx: pkt too small: %zu bytes",
+				      len);
 			return 0;
 		}
 
-		*rx_pkt_size = desc->len;
-		memcpy(pkt, xdp_pkt_data, desc->len);
+		*rx_pkt_size = len;
+		memcpy(pkt, xdp_pkt_data, len);
 
 #ifdef UET_NIC_DEBUG_HEXDUMP
-		uet_pkt_hex_dump(pkt, desc->len, orig_addr, false);
+		uet_pkt_hex_dump(pkt, len, orig_addr, false);
 #endif
 
 		/* Push the addr back at the current Fill index. */
-		*xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq++) = orig_addr;
+		*xsk_ring_prod__fill_addr(&xsk->fq, idx_fq++) = orig_addr;
 
-		/* Submit the newly added frame into the Fill ring. */
-		xsk_ring_prod__submit(&xsk->umem->fq, 1);
+		/* Submit the newly added frame into the fill ring. */
+		xsk_ring_prod__submit(&xsk->fq, 1);
 
-		/* Update the consumer of the Rx ring with 1 packet processed. */
+		/* Update the consumer of the Rx ring. */
 		xsk_ring_cons__release(&xsk->rx, 1);
 
 		return 1; /* done, a packet was processed */
@@ -309,12 +379,11 @@ int nic_xdp_rx_pkt(struct uet_nic *nic,
 	return 0; /* No packets are available! */
 }
 
-/* poll to determine if rx packet is available */
 int nic_xdp_rx_poll(struct uet_nic *nic)
 {
 	struct xdp_data *xdata = (struct xdp_data *)nic->nic_priv_data;
 	struct xsk_socket_info *xsk;
-	uint32_t rx_cnt, idx_rx;
+	uint32_t rx_cnt;
 	int i;
 
 	for (i = 0; i < xdata->num_socks; i++) {
@@ -326,7 +395,7 @@ int nic_xdp_rx_poll(struct uet_nic *nic)
 			return 1; /* At least one packet waiting! */
 
 		/* If nothing is available kick the Rx ring. */
-		if (xsk_ring_prod__needs_wakeup(&xsk->umem->fq)) {
+		if (xsk_ring_prod__needs_wakeup(&xsk->fq)) {
 			recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0,
 				 MSG_DONTWAIT, NULL, NULL);
 		}
@@ -366,32 +435,41 @@ static struct xsk_umem_info *nic_xdp_xsk_configure_umem(void *mem,
 	return umem;
 }
 
-static int nic_xdp_xsk_init_fill_ring(struct xsk_umem_info *umem)
+/*
+ * Populate a socket's fill ring with num_frames UMEM frames starting at
+ * the specified start_frame.
+ */
+static int nic_xdp_xsk_init_fill_ring(struct xsk_ring_prod *fq,
+				      int start_frame,
+				      int num_frames)
 {
 	int rc, i;
 	uint32_t idx;
 
-	/* Reserve entries to fill the entire Fill ring. */
-	rc = xsk_ring_prod__reserve(&umem->fq, MAX_FILL_SIZE, &idx);
-	if (rc != MAX_FILL_SIZE)
+	rc = xsk_ring_prod__reserve(fq, num_frames, &idx);
+	if (rc != num_frames)
 		return -1;
 
-	/* Set the frame address for each of the Fill ring entries. */
-	for (i = 0; i < MAX_FILL_SIZE; i++) {
-		*xsk_ring_prod__fill_addr(&umem->fq, idx++) =
-			(i * XSK_FRAME_SIZE);
+	for (i = 0; i < num_frames; i++) {
+		*xsk_ring_prod__fill_addr(fq, idx++) =
+			((start_frame + i) * XSK_FRAME_SIZE);
 	}
 
-	/* Submit the newly added number of frames into the Fill ring. */
-	xsk_ring_prod__submit(&umem->fq, MAX_FILL_SIZE);
+	xsk_ring_prod__submit(fq, num_frames);
 
 	return 0;
 }
 
+/*
+ * Create an AF_XDP socket bound to the specified queue_id. The UMEM is
+ * shared across all sockets and each socket gets its OWN fill and completion
+ * rings in the kernel.
+ */
 static struct xsk_socket_info *nic_xdp_xsk_create_socket(
 	struct xsk_umem_info *umem,
-	int xdp_rx_queue,
-	char *ifname)
+	int queue_id,
+	char *ifname,
+	bool shared_umem)
 {
 	struct xsk_socket_info *xsk;
 	int rc;
@@ -401,7 +479,8 @@ static struct xsk_socket_info *nic_xdp_xsk_create_socket(
 		.tx_size      = MAX_TX_SIZE,
 		.libxdp_flags = XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD,
 		.xdp_flags    = XDP_FLAGS_DRV_MODE,
-		.bind_flags   = XDP_USE_NEED_WAKEUP,
+		.bind_flags   = (XDP_USE_NEED_WAKEUP |
+				 ((shared_umem) ? XDP_SHARED_UMEM : 0)),
 	};
 
 	xsk = calloc(1, sizeof(*xsk));
@@ -410,9 +489,20 @@ static struct xsk_socket_info *nic_xdp_xsk_create_socket(
 
 	xsk->umem = umem;
 
-	/* Create the AF_XDP socket. */
-	rc = xsk_socket__create(&xsk->xsk, ifname, xdp_rx_queue,
-				umem->umem, &xsk->rx, &xsk->tx, &cfg);
+	if (shared_umem) {
+		rc = xsk_socket__create_shared(&xsk->xsk, ifname, queue_id,
+					       umem->umem, &xsk->rx, &xsk->tx,
+					       &xsk->fq, &xsk->cq, &cfg);
+	} else {
+		/* First socket created uses the UMEM's fill/comp rings. */
+		rc = xsk_socket__create(&xsk->xsk, ifname, queue_id,
+					umem->umem, &xsk->rx, &xsk->tx, &cfg);
+		if (!rc) {
+			xsk->fq = umem->fq;
+			xsk->cq = umem->cq;
+		}
+	}
+
 	if (rc) {
 		free(xsk);
 		return NULL;
@@ -517,7 +607,6 @@ static int nic_xdp_config_xsks_map(struct xdp_data *xdata)
 	return 0;
 }
 
-/* free nic resources */
 void nic_xdp_finalize(struct uet_nic *nic)
 {
 	struct xdp_data *xdata = (struct xdp_data *)nic->nic_priv_data;
@@ -529,12 +618,19 @@ void nic_xdp_finalize(struct uet_nic *nic)
 	if (xdata->sock_fd != -1)
 		close(xdata->sock_fd);
 
-	for (i = 0; i < xdata->num_socks; i++) {
-		if (xdata->xsks[i]) {
-			xsk_socket__delete(xdata->xsks[i]->xsk);
-			free(xdata->xsks[i]);
+	if (xdata->xsks) {
+		for (i = 0; i < xdata->num_socks; i++) {
+			if (xdata->xsks[i]) {
+				xsk_socket__delete(xdata->xsks[i]->xsk);
+				free(xdata->xsks[i]);
+			}
 		}
+
+		free(xdata->xsks);
 	}
+
+	if (xdata->next_frame)
+		free(xdata->next_frame);
 
 	if (xdata->umem) {
 		xsk_umem__delete(xdata->umem->umem);
@@ -551,7 +647,6 @@ void nic_xdp_finalize(struct uet_nic *nic)
 	nic->nic_priv_data = NULL;
 }
 
-/* init nic resources */
 int nic_xdp_initialize(struct uet_nic *nic)
 {
 	char err_msg[1024];
@@ -559,8 +654,8 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	struct sched_param schparam;
 	struct xdp_data *xdata = NULL;
 	pthread_t p_rx_thr, p_tx_thr;
-	struct ifreq ifr;	  /* socket interface request struct */
-	int i, rc, mem_size;
+	struct ifreq ifr;
+	int i, rc, mem_size, fill_per_sock;
 	char *ifname;
 
 	/* Make sure we can abuse memory usage! */
@@ -585,9 +680,10 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	}
 
 	nic->nic_priv_data = (void *)xdata;
-	xdata->num_socks     = 1;
-	xdata->next_frame[0] = MAX_FILL_SIZE; /* Tx frames start after Rx */
-	xdata->xdp_rx_queue  = 0;
+	xdata->num_socks     = 0;
+	xdata->xsks          = NULL;
+	xdata->next_frame    = NULL;
+	xdata->xdp_rx_queue  = 0; /* TX always uses queue/socket 0 */
 	xdata->xdp_prog      = NULL;
 	xdata->xdp_ifindex   = -1;
 	xdata->sock_fd       = -1;
@@ -611,6 +707,33 @@ int nic_xdp_initialize(struct uet_nic *nic)
 		rc = -ENODEV;
 		goto exit_err;
 	}
+
+	/* Create the control socket. */
+	xdata->sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+	if (xdata->sock_fd == -1) {
+		UET_API_ERR("ERROR: Failed to create control socket");
+		rc = -ENODEV;
+		goto exit_err;
+	}
+
+	nic->sock_fd = xdata->sock_fd;
+
+	/*
+	 * Query the NIC's combined queue count to learn how many AF_XDP
+	 * sockets to create.
+	 */
+	xdata->num_socks = nic_xdp_get_num_queues(xdata->sock_fd,
+						   nic->ifname);
+
+	xdata->xsks = calloc(xdata->num_socks, sizeof(*xdata->xsks));
+	xdata->next_frame = calloc(xdata->num_socks, sizeof(*xdata->next_frame));
+	if (!xdata->xsks || !xdata->next_frame) {
+		UET_API_ERR("ERROR: Failed to alloc XDP socket arrays");
+		rc = -ENOMEM;
+		goto exit_err;
+	}
+
+	xdata->next_frame[0] = MAX_FILL_SIZE; /* Tx frames start after Rx */
 
 	/* Load the XDP program from the object file. */
 	xdata->xdp_prog = xdp_program__open_file(STRINGIZEIT(XDP_PROG), NULL, NULL);
@@ -655,21 +778,46 @@ int nic_xdp_initialize(struct uet_nic *nic)
 		goto exit_err;
 	}
 
-	/* Rx, fill up the fill ring by posting receive buffers. */
-	rc = nic_xdp_xsk_init_fill_ring(xdata->umem);
-	if (rc < 0) {
-		UET_API_ERR("ERROR: Failed to fill the fill ring");
-		rc = -ENODEV;
-		goto exit_err;
-	}
+	/*
+	 * Create one AF_XDP socket per NIC queue. With XDP_SHARED_UMEM and
+	 * multiple queues, each AF_XDP socket gets its own fill and
+	 * completion rings in the kernel, even though they all share the
+	 * same UMEM memory region. The kernel pulls receive buffers from the
+	 * socket-specific fill ring that corresponds to the queue a packet
+	 * arrived on. If a socket doesn't have anything posted to its fill
+	 * ring, packets will be silently dropped. Socket 0 (queue 0) owns
+	 * the UMEM binding and inherits the UMEM's fill/completion rings.
+	 * Sockets 1..N get new/fresh rings.
+	 *
+	 * After each socket is created, populate its fill ring with a
+	 * disjoint slice of the RX frame space so the kernel has receive
+	 * buffers ready on every queue. Frames must not overlap between
+	 * sockets.
+	 *
+	 *   socket 0:  frames [0, fill_per_sock)
+	 *   socket 1:  frames [fill_per_sock, 2*fill_per_sock)
+	 *   ...
+	 *   TX pool:   frames [MAX_FILL_SIZE, NUM_FRAMES)
+	 */
+	fill_per_sock = (MAX_FILL_SIZE / xdata->num_socks);
 
 	for (i = 0; i < xdata->num_socks; i++) {
 		xdata->xsks[i] =
-			nic_xdp_xsk_create_socket(xdata->umem,
-						  xdata->xdp_rx_queue,
-						  nic->ifname);
+			nic_xdp_xsk_create_socket(xdata->umem, i,
+						  nic->ifname, (i > 0));
 		if (xdata->xsks[i] == NULL) {
-			UET_API_ERR("ERROR: Failed to create XSK socket");
+			UET_API_ERR("ERROR: Failed to create XSK socket for "
+				    "queue %d", i);
+			rc = -ENODEV;
+			goto exit_err;
+		}
+
+		rc = nic_xdp_xsk_init_fill_ring(&xdata->xsks[i]->fq,
+						(i * fill_per_sock),
+						fill_per_sock);
+		if (rc < 0) {
+			UET_API_ERR("ERROR: Failed to fill the fill ring for "
+				    "queue %d", i);
 			rc = -ENODEV;
 			goto exit_err;
 		}
@@ -687,16 +835,10 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	nic->l2_hdr_size = sizeof(struct ethhdr);
 	nic->min_ip_pkt_size = (nic->min_pkt_size - nic->l2_hdr_size);
 
-	/* open control socket */
-	xdata->sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-	if (xdata->sock_fd == -1) {
-		UET_API_ERR("ERROR: Failed to create control socket");
-		rc = -ENODEV;
-		goto exit_err;
-	}
-
-	nic->sock_fd = xdata->sock_fd;
-
+	/*
+	 * The control socket is used for the various ioctl calls below used
+	 * for getting the MAC address, MTU, IPv4/IPv6 addrs, etc.
+	 */
 	strcpy(ifr.ifr_name, nic->ifname);
 
 	/* get IPv4 address of interface (optional) */
