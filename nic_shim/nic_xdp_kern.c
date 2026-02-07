@@ -12,19 +12,12 @@
 #define ETH_PROTO_IPV4 0x0800
 #define ETH_PROTO_IPV6 0x86DD
 
-#define MAX_SOCKS 4
-
 struct {
 	__uint(type, BPF_MAP_TYPE_XSKMAP);
-	__uint(max_entries, MAX_SOCKS);
+	__uint(max_entries, 1); /* resized from userspace before attach */
 	__uint(key_size, sizeof(int));
 	__uint(value_size, sizeof(int));
 } xsks_map SEC(".maps");
-
-#if 0
-int num_socks = 4;
-static unsigned int rr;
-#endif
 
 int parse_pkt_is_UET(struct xdp_md *ctx)
 {
@@ -65,10 +58,6 @@ int parse_pkt_is_UET(struct xdp_md *ctx)
 
 SEC("uet_nic_xdp_sock") int uet_nic_xdp_sock_prog(struct xdp_md *ctx)
 {
-#if 0
-	rr = (rr + 1) & (num_socks - 1);
-	return bpf_redirect_map(&xsks_map, rr, XDP_DROP);
-#else
 	int index = ctx->rx_queue_index;
 	int rc;
 
@@ -90,7 +79,6 @@ SEC("uet_nic_xdp_sock") int uet_nic_xdp_sock_prog(struct xdp_md *ctx)
 		return bpf_redirect_map(&xsks_map, index, 0);
 
 	return XDP_PASS; /* to kernel stack */
-#endif
 }
 
 char LICENSE[] SEC("license") = "GPL v2";
