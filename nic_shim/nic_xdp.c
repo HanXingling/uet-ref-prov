@@ -653,6 +653,7 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	struct rlimit r = { RLIM_INFINITY, RLIM_INFINITY };
 	struct sched_param schparam;
 	struct xdp_data *xdata = NULL;
+	struct bpf_map *map;
 	pthread_t p_rx_thr, p_tx_thr;
 	struct ifreq ifr;
 	int i, rc, mem_size, fill_per_sock;
@@ -741,6 +742,27 @@ int nic_xdp_initialize(struct uet_nic *nic)
 	if (rc) {
 		libxdp_strerror(rc, err_msg, sizeof(err_msg));
 		UET_API_ERR("ERROR: Failed to load XDP program: %s", err_msg);
+		rc = -ENODEV;
+		goto exit_err;
+	}
+
+	/*
+	 * Resize the xsks_map to match the actual number of NIC queues.
+	 * This must be done after open but before attach (which loads the
+	 * program into the kernel).
+	 */
+	map = bpf_object__find_map_by_name(
+		xdp_program__bpf_obj(xdata->xdp_prog), "xsks_map");
+	if (!map) {
+		UET_API_ERR("ERROR: Failed to find xsks_map in XDP program");
+		rc = -ENODEV;
+		goto exit_err;
+	}
+
+	rc = bpf_map__set_max_entries(map, xdata->num_socks);
+	if (rc) {
+		UET_API_ERR("ERROR: Failed to resize xsks_map to %d",
+			    xdata->num_socks);
 		rc = -ENODEV;
 		goto exit_err;
 	}

@@ -1520,16 +1520,15 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		goto exit;
 
 	/*
-	 * HACK: This sleep is here in attempt to align the client and
-	 * server iniitialization phases so they're both ready to start
-	 * processing. When uet_init_tranport() and the underlying NIC_SHIM
-	 * is initialized, a system ping command is executed to learn the
-	 * next hop MAC and IP addresses. If using XDP or rawsock and one
-	 * side isn't ready, the Linux stack will process received packets
-	 * and likely return ICMP unreachable errors (possibly messing up
-	 * the desired UET flow).
+	 * Give the server time to finish NIC initialization before the client
+	 * starts sending. i.e., XDP initialization (BPF program load, attach,
+	 * UMEM setup, socket creation, xsks_map config) takes significantly
+	 * longer than rawsock. Without this delay the client can blast
+	 * packets before the server's AF_XDP path is fully ready, causing
+	 * missed packets and retransmits.
 	 */
-	//sleep(1);
+	if (ctx->cfg.client)
+		sleep(1);
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
 		printf("Starting in %s\n",
