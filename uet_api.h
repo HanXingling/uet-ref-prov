@@ -1435,6 +1435,7 @@ ssize_t uet_readmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - used to implement the following libfabric fi_atomic api’s:
  *     - fi_atomic
  */
+#if !ENABLE_VERBS
 ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 		   const void *local_op_buf, size_t count,
 		   uet_mr_handle_t mr_handle,
@@ -1442,6 +1443,15 @@ ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 		   uint64_t remote_mem_addr, uint64_t remote_key,
 		   enum fi_datatype datatype, enum fi_op op,
 		   void *context);
+#else
+ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+		   const void *local_op_buf, size_t count,
+		   uet_mr_handle_t mr_handle,
+		   uet_addr_handle_t dst_addr_handle,
+		   uint64_t remote_mem_addr, uint64_t remote_key,
+		   enum fi_datatype datatype, enum fi_op op,
+		   void *context, uint16_t resource_index);
+#endif
 
 /*
  * flexible api for base atomic operation
@@ -1505,6 +1515,7 @@ ssize_t uet_atomicmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
  *   - used to implement the following libfabric fi_atomic api’s:
  *     - fi_fetch_atomic
  */
+#if !ENABLE_VERBS
 ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 			 const void *local_op_buf,
 			 size_t count, uet_mr_handle_t op_mr_handle,
@@ -1515,6 +1526,18 @@ ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 			 uint64_t remote_key,
 			 enum fi_datatype datatype, enum fi_op op,
 			 void *context);
+#else
+ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			 const void *local_op_buf,
+			 size_t count, uet_mr_handle_t op_mr_handle,
+			 void *result_buf,
+			 uet_mr_handle_t result_mr_handle,
+			 uet_addr_handle_t dst_addr_handle,
+			 uint64_t remote_mem_addr,
+			 uint64_t remote_key,
+			 enum fi_datatype datatype, enum fi_op op,
+			 void *context, uint16_t resource_index);
+#endif
 
 /*
  * flexible api for fetch atomic operation
@@ -1588,6 +1611,7 @@ ssize_t uet_fetch_atomicmsg(uet_ep_handle_t ep_handle,
  *   - used to implement the following libfabric fi_atomic api’s:
  *     - fi_compare_atomic
  */
+#if !ENABLE_VERBS
 ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 			   const void *local_op_buf, size_t count,
 			   uet_mr_handle_t op_mr_handle,
@@ -1600,6 +1624,20 @@ ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 			   uint64_t remote_key,
 			   enum fi_datatype datatype,
 			   enum fi_op op, void *context);
+#else
+ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			   const void *local_op_buf, size_t count,
+			   uet_mr_handle_t op_mr_handle,
+			   const void *compare_buf,
+			   uet_mr_handle_t compare_mr_handle,
+			   void *result_buf,
+			   uet_mr_handle_t result_mr_handle,
+			   uet_addr_handle_t dst_addr_handle,
+			   uint64_t remote_mem_addr,
+			   uint64_t remote_key,
+			   enum fi_datatype datatype, enum fi_op op,
+			   void *context, uint16_t resource_index);
+#endif
 
 /*
  * flexible api for compare atomic operation

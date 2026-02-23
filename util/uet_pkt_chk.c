@@ -66,7 +66,6 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 		return false;
 	case UET_PDS_TYPE_ACK:
 		pds_req = false;
-		next_hdr = UET_HDR_RSP;
 		break;
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:

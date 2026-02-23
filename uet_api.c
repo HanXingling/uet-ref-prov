@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+  Copyright (c) 2024, Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -63,6 +63,9 @@ typedef enum {
 	UET_TSEND_API,
 	UET_WRITE_API,
 	UET_READ_API,
+	UET_ATOMIC_API,
+	UET_FETCH_ATOMIC_API,
+	UET_COMPARE_ATOMIC_API
 } uet_send_req_api_t;
 
 #if ENABLE_VERBS
@@ -95,12 +98,12 @@ static void uet_init_uet_addr(struct uet_addr *uet_addr,
 }
 
 /* get pds mode for an endpoint */
-static uet_pds_mode_t uet_get_pds_mode(struct uet_ep *uet_ep)
+static uet_pds_mode_t uet_get_pds_mode(struct uet_ep *uet_ep, bool rma_op)
 {
-	if (uet_ep->info->tx_attr->msg_order & UET_SEND_ORDERING)
-		return UET_PDS_MODE_ROD;
-	else
-		return UET_PDS_MODE_RUD;
+	if (uet_ep->info->tx_attr->msg_order & UET_ORDERING)
+			return UET_PDS_MODE_ROD;
+
+	return UET_PDS_MODE_RUD;
 }
 
 /*
@@ -1738,7 +1741,7 @@ static uet_ses_rc_t uet_get_rx_desc(
 	mr_desc = uet_get_mr_desc(uet_ep, pp);
 	if (mr_desc == NULL) {
 		UET_API_ERR("RX: Invalid RMA Key");
-		ses_rc = UET_RC_OP_VIOLATION;
+		ses_rc = UET_RC_BAD_MKEY;
 		goto err_exit;
 	}
 
@@ -1856,7 +1859,7 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	tx_desc->msg_id = ntohs(ses->cmn.msg_id);
 	tx_desc->uet_ep = uet_ep;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
-	tx_desc->pds_mode = uet_get_pds_mode(uet_ep);
+	tx_desc->pds_mode = uet_get_pds_mode(uet_ep, true);
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
 		tx_desc->seq_num =
 			uet_alloc_av_msg_seq_num(&tx_desc->ephemeral_av.av);
@@ -1948,13 +1951,13 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 	mr_desc = uet_get_mr_desc(uet_ep, pp);
 	if (mr_desc == NULL) {
 		UET_API_ERR("RX: Read Req: Invalid Key");
-		return UET_RC_OP_VIOLATION;
+		return UET_RC_BAD_MKEY;
 	}
 
 	/* check mr permissions */
 	if (!(mr_desc->access & FI_REMOTE_READ)) {
 		UET_API_ERR("RX: Read Req: No Remote Read Permission");
-		return UET_RC_OP_VIOLATION;
+		return UET_RC_PERM_VIOLATION;
 	}
 
 	/* validate requested data is within memory region */
@@ -1978,6 +1981,282 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 					    &tx_desc);
 		if (ses_rc != UET_RC_OK)
 			return ses_rc;
+	}
+
+	return UET_RC_OK;
+}
+
+/*
+ * process a received non-fetching atomic request packet
+ *
+ * parms:
+ *      uet_ep     - ptr to uet endpoint struct
+ *      pp         - ptr to parsed packet struct
+ *      list       - ptr to location where type of list pkt was
+ *                   delivered to is to be returned
+ *
+ * returns:
+ *   - ses return code
+ */
+static uet_ses_rc_t uet_rx_atomic_req_pkt(
+	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
+	uet_ses_list_t *list){
+	uet_ses_rc_t ses_rc;
+	size_t start_off;
+	uint8_t opcode, dt;
+	uint32_t req_len, msg_off, rx_gen, ep_gen;
+	uint64_t data, *addr;
+	struct uet_ses_req_std_atomic *ses_atomic;
+	struct uet_mr_desc *mr_desc;
+
+	ses_atomic = (struct uet_ses_req_std_atomic *) pp->ses;
+
+	*list = UET_EXPECTED; /* overflow list not supported */
+
+	req_len = ntohl(ses_atomic->base.req_len);
+	start_off = ntohll(ses_atomic->base.buf_off);
+
+	/* check for initiator error */
+	if (ses_atomic->base.cmn.ver_flags & UET_SES_REQ_FLAG_IE) {
+		UET_API_ERR("RX: Atomic Req: IE Set");
+		return UET_RC_INITIATOR_ERR;
+	}
+
+	/* check that generation is enabled */
+	if (uet_ep->untagged_gen_disabled) {
+		UET_API_ERR("RX: Atomic Req: Disabled Generation");
+		return UET_RC_DISABLED_GEN;
+	}
+
+	/* check for correct generation */
+	rx_gen = (uint32_t)((ntohl(ses_atomic->base.cmn.ri_gen_job_id) &
+			     UET_SES_REQ_RI_GEN_MASK) >>
+			    UET_SES_REQ_RI_GEN_SHIFT);
+	ep_gen = (uint32_t) uet_ep->untagged_gen;
+	if (rx_gen != ep_gen) {
+		UET_API_ERR("RX: Atomic Req: Bad Generation");
+		return UET_RC_BAD_GENERATION;
+	}
+
+	/* check that atomic request is single packet message */
+	if ((ses_atomic->base.cmn.ver_flags & (UET_SES_REQ_FLAG_SOM |
+			  	   	       UET_SES_REQ_FLAG_EOM)) !=
+	    (UET_SES_REQ_FLAG_SOM | UET_SES_REQ_FLAG_EOM)) {
+		UET_API_ERR("RX: Atomic Req: SOM and EOM Not Set");
+		return UET_RC_OP_VIOLATION;
+	}
+
+	/* check atomic datatype */
+	dt = ses_atomic->ext.atomic_dt;
+	if (dt != UET_TYPE_UINT64) {
+		/* this is the only atomic datatype supported by uet verbs */
+		UET_API_ERR("RX: Atomic Req: Unsupported Data Type 0x%x", dt);
+		return UET_RC_UNSUPPORTED_OP;
+	}
+
+	/* check atomic opcode */
+	opcode = ses_atomic->ext.atomic_opcode;
+	switch (opcode) {
+	case UET_AMO_SUM:
+		/* check req len field of ses hdr */
+		if (req_len != UET_VERBS_ATOMIC_DATA_BYTES) {
+			UET_API_ERR("RX: Atomic Req: Bad Req Len %u", req_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		/* check actual payload len of packet */
+		if (pp->ses_payload_len != req_len) {
+			UET_API_ERR("RX: Atomic Req: "
+			    	    "Bad Packet Payload Len %u",
+				    pp->ses_payload_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		break;
+	default:
+		UET_API_ERR("RX: Atomic Req: Unsupported Opcode 0x%x",
+			    opcode);
+		return UET_RC_UNSUPPORTED_OP;
+	}
+
+	/* find mr descriptor associated with key */
+	mr_desc = uet_get_mr_desc(uet_ep, pp);
+	if (mr_desc == NULL) {
+		UET_API_ERR("RX: Atomic Req: Invalid Key");
+		return UET_RC_BAD_MKEY;
+	}
+
+	/* check mr permissions */
+	if ((mr_desc->access &
+	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) !=
+	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) {
+		UET_API_ERR("RX: Atomic Req: Insufficient Permission");
+		return UET_RC_PERM_VIOLATION;
+	}
+
+	/* validate requested data is within memory region */
+	if ((start_off + UET_VERBS_ATOMIC_DATA_BYTES) >
+	     mr_desc->buf_desc.len) {
+		UET_API_ERR("RX: Atomic Req: Invalid Buffer Offset");
+		return UET_RC_BAD_ADDR;
+	}
+
+	/* implement atomic operation */
+	addr = (uint64_t *) (((uint8_t *) mr_desc->buf_desc.buf) + start_off);
+	data = ntohll(*((uint64_t *) ses_atomic->data));
+	__atomic_fetch_add(addr, data, __ATOMIC_SEQ_CST);
+
+	return UET_RC_OK;
+}
+
+/*
+ * process a received fetching atomic request packet
+ *
+ * parms:
+ *      uet_ep     - ptr to uet endpoint struct
+ *      pp         - ptr to parsed packet struct
+ *      list       - ptr to location where type of list pkt was
+ *                   delivered to is to be returned
+ *      payload    - ptr to payload of response
+ *      ack_d_info - ptr to struct where info about data carried in ack
+ *                   is to be returned
+ *
+ * returns:
+ *   - ses return code
+ */
+static uet_ses_rc_t uet_rx_fetch_atomic_req_pkt(
+	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, uet_ses_list_t *list,
+	uint8_t *payload, struct uet_ack_d_info *ack_d_info) {
+	uet_ses_rc_t ses_rc;
+	size_t start_off;
+	uint8_t opcode, dt;
+	uint32_t req_len, msg_off, rx_gen, ep_gen;
+	uint64_t data, result, expected, desired, *addr;
+	struct uet_ses_req_std_atomic *ses_atomic;
+	struct uet_ses_req_std_cswap *ses_cswap;
+	struct uet_mr_desc *mr_desc;
+
+	ses_atomic = (struct uet_ses_req_std_atomic *) pp->ses;
+	ses_cswap = (struct uet_ses_req_std_cswap *) pp->ses;
+
+	*list = UET_EXPECTED; /* overflow list not supported */
+
+	req_len = ntohl(ses_atomic->base.req_len);
+	start_off = ntohll(ses_atomic->base.buf_off);
+
+	/* check for initiator error */
+	if (ses_atomic->base.cmn.ver_flags & UET_SES_REQ_FLAG_IE) {
+		UET_API_ERR("RX: Fetching Atomic Req: IE Set");
+		return UET_RC_INITIATOR_ERR;
+	}
+
+	/* check that generation is enabled */
+	if (uet_ep->untagged_gen_disabled) {
+		UET_API_ERR("RX: Fetching Atomic Req: Disabled Generation");
+		return UET_RC_DISABLED_GEN;
+	}
+
+	/* check for correct generation */
+	rx_gen = (uint32_t)((ntohl(ses_atomic->base.cmn.ri_gen_job_id) &
+			     UET_SES_REQ_RI_GEN_MASK) >>
+			    UET_SES_REQ_RI_GEN_SHIFT);
+	ep_gen = (uint32_t) uet_ep->untagged_gen;
+	if (rx_gen != ep_gen) {
+		UET_API_ERR("RX: Fetching Atomic Req: Bad Generation");
+		return UET_RC_BAD_GENERATION;
+	}
+
+	/* check that fetching atomic request is single packet message */
+	if ((ses_atomic->base.cmn.ver_flags & (UET_SES_REQ_FLAG_SOM |
+			  	   	       UET_SES_REQ_FLAG_EOM)) !=
+	    (UET_SES_REQ_FLAG_SOM | UET_SES_REQ_FLAG_EOM)) {
+		UET_API_ERR("RX: Fetching Atomic Req: SOM and EOM Not Set");
+		return UET_RC_OP_VIOLATION;
+	}
+
+	/* check atomic datatype */
+	dt = ses_atomic->ext.atomic_dt;
+	if (dt != UET_TYPE_UINT64) {
+		/* this is the only atomic datatype supported by uet verbs */
+		UET_API_ERR("RX: Fetching Atomic Req: "
+			    "Unsupported Data Type 0x%x", dt);
+		return UET_RC_UNSUPPORTED_OP;
+	}
+
+	/* check atomic opcode */
+	opcode = ses_atomic->ext.atomic_opcode;
+	switch (opcode) {
+	case UET_AMO_SUM:
+		/* check req len field of ses hdr */
+		if (req_len != UET_VERBS_ATOMIC_DATA_BYTES) {
+			UET_API_ERR("RX: Fetching Atomic Req: "
+			    	    "Bad Req Len %u", req_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		/* check actual payload len of packet */
+		if (pp->ses_payload_len != req_len) {
+			UET_API_ERR("RX: Fetching Atomic Req: "
+			    	    "Bad Packet Payload Len %u",
+				    pp->ses_payload_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		break;
+	case UET_AMO_CSWAP:
+		/* check req len fields of ses hdr */
+		if (req_len != UET_CSWAP_DATA_BYTES) {
+			UET_API_ERR("RX: CSWAP Req: Bad Req Len %u", req_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		/* check actual payload len of packet */
+		if (pp->ses_payload_len != req_len) {
+			UET_API_ERR("RX: CSWAP Atomic Req: "
+			    	    "Bad Packet Payload Len %u",
+				    pp->ses_payload_len);
+			return UET_RC_OP_VIOLATION;
+		}
+		break;
+	default:
+		UET_API_ERR("RX: Fetching Atomic Req: Unsupported Opcode 0x%x",
+			    opcode);
+		return UET_RC_UNSUPPORTED_OP;
+	}
+
+	/* find mr descriptor associated with key */
+	mr_desc = uet_get_mr_desc(uet_ep, pp);
+	if (mr_desc == NULL) {
+		UET_API_ERR("RX: Fetching Atomic Req: Invalid Key");
+		return UET_RC_BAD_MKEY;
+	}
+
+	/* check mr permissions */
+	if ((mr_desc->access &
+	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) !=
+	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) {
+		UET_API_ERR("RX: Fetching Atomic Req: Insufficient Permission");
+		return UET_RC_PERM_VIOLATION;
+	}
+
+	/* validate requested data is within memory region */
+	if ((start_off + UET_VERBS_ATOMIC_DATA_BYTES) > mr_desc->buf_desc.len) {
+		UET_API_ERR("RX: Fetching Atomic Req: Invalid Buffer Offset");
+		return UET_RC_BAD_ADDR;
+	}
+
+	/* implement atomic operation */
+	ack_d_info->payload_len = UET_VERBS_ATOMIC_DATA_BYTES;
+	ack_d_info->msg_off = 0;
+	addr = (uint64_t *) (((uint8_t *) mr_desc->buf_desc.buf) + start_off);
+	if (opcode == UET_AMO_SUM) {
+		data = ntohll(*((uint64_t *) ses_atomic->data));
+		result = __atomic_fetch_add(addr, data, __ATOMIC_SEQ_CST);
+		*((uint64_t *) payload) = htonll(result);
+	} else {
+		expected = ntohll(ses_cswap->ext.cmp_val_lo);
+		desired = ntohll(ses_cswap->ext.swp_val_lo);
+		if (__atomic_compare_exchange_n(
+			addr, &expected, desired, false,
+			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+			*((uint64_t *) payload) = htonll(desired);
+		else
+			*((uint64_t *) payload) = htonll(*addr);
 	}
 
 	return UET_RC_OK;
@@ -2016,7 +2295,7 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 	ses = (struct uet_ses_req_std *) pp->ses;
 
 	/* only buffer dsend's for rud pdc's */
-	if (uet_get_pds_mode(uet_ep) != UET_PDS_MODE_RUD)
+	if (uet_get_pds_mode(uet_ep, false) != UET_PDS_MODE_RUD)
 		return UET_RC_NO_MATCH;
 
 	/* check for max buffered dsend's */
@@ -2280,7 +2559,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 				if (ses_rc == UET_RC_NO_MATCH)
 					UET_API_ERR(
 					"RX: Unexpected Tagged Message");
-				if (uet_get_pds_mode(uet_ep) ==
+				if (uet_get_pds_mode(uet_ep, false) ==
 				    UET_PDS_MODE_ROD)
 					uet_ep->tagged_gen_disabled = true;
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
@@ -2306,7 +2585,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 							      false, NULL);
 				if (ses_rc == UET_RC_NO_MATCH)
 					UET_API_ERR("RX: Unexpected Message");
-				if (uet_get_pds_mode(uet_ep) ==
+				if (uet_get_pds_mode(uet_ep, false) ==
 				    UET_PDS_MODE_ROD)
 					uet_ep->untagged_gen_disabled = true;
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
@@ -2330,7 +2609,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			if (!(rx_desc->mr_desc->access & FI_REMOTE_WRITE)) {
 				UET_API_ERR("RX: No Remote Write Permission");
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-						UET_RC_OP_VIOLATION));
+						UET_RC_PERM_VIOLATION));
 			}
 
 			/* check if mr buffer is big enough for message */
@@ -2539,6 +2818,49 @@ static uet_ses_rc_t uet_rx_read_data(
 	return UET_RC_OK;
 }
 
+/* process received atomic response data */
+static uet_ses_rc_t uet_rx_atomic_data(
+	    struct uet_ep *uet_ep, struct uet_tx_desc *tx_desc,
+	    uint32_t mod_len, struct uet_parsed_pkt *pp)
+{
+	uint64_t result, *buf_ptr;
+	struct uet_ses_rsp_d *ses;
+
+	ses = (struct uet_ses_rsp_d *) pp->ses;
+
+	if (pp->ses_payload_len > pp->pkt_payload_len) {
+		UET_API_ERR("Atomic Rsp: Invalid Payload Len");
+		return UET_RC_OP_VIOLATION;
+	}
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ) {
+		if (mod_len != tx_desc->buf_desc.len) {
+			UET_API_ERR("Atomic Rsp: Truncated Message Len");
+			return UET_RC_OP_VIOLATION;
+		}
+		if (pp->ses_payload_len != mod_len) {
+			UET_API_ERR("Atomic Rsp: Invalid Payload Len");
+			return UET_RC_OP_VIOLATION;
+		}
+	} else {
+		if (mod_len != UET_CSWAP_DATA_BYTES) {
+			UET_API_ERR("Atomic Rsp: Truncated Message Len");
+			return UET_RC_OP_VIOLATION;
+		}
+		if (pp->ses_payload_len != UET_VERBS_ATOMIC_DATA_BYTES) {
+			UET_API_ERR("Atomic Rsp: Invalid Payload Len");
+			return UET_RC_OP_VIOLATION;
+		}
+	}
+
+	/* copy the result */
+	buf_ptr =  (uint64_t *) (tx_desc->atomic_parms.result_buf);
+	result = ntohll(*((uint64_t *) ses->payload));
+	*buf_ptr = result;
+
+	return UET_RC_OK;
+}
+
 /*
  * pds upcall to ses when request packet is received
  *
@@ -2702,6 +3024,18 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	case UET_MSG_ERR:
 		ses_rc = uet_rx_cancel_pkt(uet_ep, pp);
 		break;
+	case UET_ATOMIC:
+		ses_rc = uet_rx_atomic_req_pkt(uet_ep, pp, &list);
+		ep_gen = (uint32_t) uet_ep->untagged_gen;
+		break;
+	case UET_FETCH_ATOMIC:
+		ses_rc = uet_rx_fetch_atomic_req_pkt(uet_ep, pp, &list,
+						     ses_rsp_d->payload,
+					    	     &ack_d_info);
+		if (ses_rc == UET_RC_OK)
+			goto build_response_w_data;
+		ep_gen = (uint32_t) uet_ep->untagged_gen;
+		break;
 	default:
 		UET_API_ERR("RX: Unsupported Opcode = 0x%x", pp->ses_opcode);
 		ses_rc = uet_get_rx_desc(
@@ -2753,7 +3087,9 @@ build_response_w_data:
 	ses_rsp_d->mod_len = ses_std_req->req_len;
 	ses_rsp_d->msg_off = htonl(ack_d_info.msg_off);
 
-	memcpy(ses_rsp_d->payload, ack_d_info.buf, ack_d_info.payload_len);
+	if (pp->ses_opcode != UET_FETCH_ATOMIC)
+		memcpy(ses_rsp_d->payload, ack_d_info.buf,
+		       ack_d_info.payload_len);
 
 	*rsp_ses_hdr_len =
 		sizeof(struct uet_ses_rsp_d) + ack_d_info.payload_len;
@@ -2794,7 +3130,8 @@ static int uet_build_rd_rsp_ses_hdr(struct uet_tx_desc *tx_desc,
 	ses->cmn.ri_gen_job_id = htonl(tx_desc->job_id <<
 				       UET_SES_RSP_JOB_ID_SHIFT);
 	ses->rd_msg_id = htons(tx_desc->rd_rsp.req_msg_id);
-	ses->payload_len = htons(payload_len << UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
+	ses->payload_len = htons(payload_len <<
+				 UET_SES_RSP_D_PAYLOAD_LEN_SHIFT);
 	ses->mod_len = htonl(tx_desc->rd_rsp.mod_len);
 	ses->msg_off = htonl(tx_desc->remote_msg_off);
 
@@ -2847,6 +3184,99 @@ static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
 }
 
 /*
+ * build ses header for atomic operation request packet to be transmitted
+ *
+ * parms:
+ *      tx_desc - ptr to tx descriptor for message
+ *      ses_hdr - ptr to location where ses header is to be built
+ *
+ * returns:
+ *      FI_SUCCESS on success
+ *      negative value corresponding to fabric errno on error
+ */
+static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
+					void *ses_hdr)
+{
+	struct uet_ses_req_std_cswap *ses;
+	struct uet_av_entry *av;
+	struct uet_ep *uet_ep;
+	uint8_t opcode;
+	int dc = 0;
+	uint64_t *data_val, *ses_atomic_data, *swap_val;
+
+	ses =  (struct uet_ses_req_std_cswap *) ses_hdr;
+	av = (struct uet_av_entry *) tx_desc->dst_addr_handle;
+	uet_ep = tx_desc->uet_ep;
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_REQ)
+		opcode = UET_ATOMIC;
+	else
+		opcode = UET_FETCH_ATOMIC;
+
+	ses->base.cmn.rsvd_opcode = opcode << UET_SES_OPCODE_SHIFT;
+
+	if (tx_desc->op_flags & FI_DELIVERY_COMPLETE)
+		dc = UET_SES_REQ_FLAG_DC;
+
+	ses->base.cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT)	|
+			           UET_SES_REQ_FLAG_SOM 		|
+			           UET_SES_REQ_FLAG_EOM			|
+			           dc					|
+			           UET_SES_REQ_FLAG_REL;
+
+	ses->base.cmn.msg_id = htons(tx_desc->msg_id);
+
+	ses->base.cmn.rsvd_res_index = htons(av->addr->start_index <<
+					     UET_SES_REQ_RES_INDEX_SHIFT);
+	ses->base.cmn.ri_gen_job_id = htonl(
+		(av->untagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
+		(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
+
+	ses->base.cmn.rsvd_pid_on_fep = htons(av->addr->pid_on_fep <<
+					      UET_SES_REQ_PID_ON_FEP_SHIFT);
+
+#if !ENABLE_VERBS
+	ses->base.cmn.rsvd_res_index = htons(av->addr->start_index <<
+					     UET_SES_REQ_RES_INDEX_SHIFT);
+#else
+	ses->base.cmn.rsvd_res_index = htons(tx_desc->resource_index <<
+					     UET_SES_REQ_RES_INDEX_SHIFT);
+#endif
+
+	ses->base.buf_off = htonll(tx_desc->remote_start_off);
+
+	ses->base.initiator = htonl(uet_ep->uet_addr.initiator_id);
+
+	ses->base.mem_key = htonll(tx_desc->remote_key);
+
+	ses->base.cmpl_data = 0;
+
+	ses->ext.cmn.atomic_opcode = tx_desc->atomic_parms.opcode;
+	ses->ext.cmn.atomic_dt = tx_desc->atomic_parms.data_type;
+	ses->ext.cmn.sem_ctrl = UET_AMO_CPU_COHERENT;
+	ses->ext.cmn.rsvd = 0;
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ) {
+		ses->base.req_len = htonl(UET_CSWAP_DATA_BYTES);
+		ses->ext.cmp_val_hi = 0;
+		ses->ext.cmp_val_lo = htonll(
+			*((uint64_t *) tx_desc->atomic_parms.compare_buf));
+		ses->ext.swp_val_hi = 0;
+		swap_val = (uint64_t *) (((size_t) tx_desc->buf_desc.buf) +
+					 tx_desc->buf_desc.buf_off);
+		ses->ext.swp_val_lo = htonll(*swap_val);
+	} else {
+		ses->base.req_len = htonl(tx_desc->buf_desc.len);
+		data_val = (uint64_t *) (((size_t) tx_desc->buf_desc.buf) +
+				         tx_desc->buf_desc.buf_off);
+		ses_atomic_data = (uint64_t *) &ses->ext.cmp_val_hi;
+		*ses_atomic_data = htonll(*data_val);
+	}
+
+	return FI_SUCCESS;
+}
+
+/*
  * build ses header for packet to be transmitted
  *
  * parms:
@@ -2879,6 +3309,11 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)
 		return uet_build_rtr_req_ses_hdr(tx_desc, ses);
+
+	if (tx_desc->desc_flags & (UET_TX_DESC_FLAG_ATOMIC_REQ       |
+		         	   UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ |
+		         	   UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ))
+		return uet_build_atomic_req_ses_hdr(tx_desc, ses_hdr);
 
 	req_len = tx_desc->buf_desc.len;
 	if (tx_desc->remaining_bytes == req_len) {
@@ -3088,6 +3523,15 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	switch (ses_rc) {
 	case UET_RC_OK:
 		if (opcode == UET_RESPONSE_W_DATA) {
+			if (tx_desc->desc_flags &
+			    (UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ |
+			     UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ)) {
+				if (uet_rx_atomic_data(
+					tx_desc->uet_ep, tx_desc, mod_len,
+					rsp_pp) != UET_RC_OK)
+					goto err_exit;
+				return FI_SUCCESS;
+			}
 			if (mod_len != tx_desc->buf_desc.len) {
 				UET_API_ERR("Read Rsp: "
 					    "Truncated Message Length");
@@ -3154,6 +3598,9 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 		goto err_exit;
 	case UET_RC_BAD_JOB_ID:
 		UET_API_ERR("Msg Rsp: Bad Job ID");
+		goto err_exit;
+	case UET_RC_BAD_MKEY:
+		UET_API_ERR("Msg Rsp: Bad MKEY");
 		goto err_exit;
 	case UET_RC_BAD_ADDR:
 		UET_API_ERR("Msg Rsp: Bad Address");
@@ -3330,7 +3777,7 @@ static void uet_dsend_init(struct uet_tx_desc *tx_desc)
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND)
 		return;
 
-	if (uet_get_pds_mode(tx_desc->uet_ep) != UET_PDS_MODE_RUD)
+	if (uet_get_pds_mode(tx_desc->uet_ep, false) != UET_PDS_MODE_RUD)
 		return;
 
 	if (!((tx_desc->cq_flags & FI_MSG) || (tx_desc->cq_flags & FI_TAGGED)))
@@ -3400,13 +3847,13 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	int rc;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
-	struct uet_ses_req_std ses_req;
+	struct uet_ses_req_std_cswap ses_req;
 	struct uet_ses_rsp_d ses_rsp_d;
 	uet_pds_tx_flags_t flags;
 	size_t payload_len, max_payload_len, ses_len, pkt_len;
 	void *ses, *pkt_buf;
 	uet_pds_next_hdr_t next_hdr;
-	struct uet_pds_info *pds_info;
+	struct uet_pds_info *pds_info = NULL;
 	size_t iov_index = 0;
 	size_t saved_offset = 0;
 
@@ -3442,10 +3889,21 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			ses = &ses_rsp_d;
 			ses_len = sizeof(struct uet_ses_rsp_d);
 		} else {
-			pds_info = NULL;
 			next_hdr = UET_HDR_REQ_STD;
 			ses = &ses_req;
-			ses_len = sizeof(struct uet_ses_req_std);
+
+			if (tx_desc->desc_flags &
+			    (UET_TX_DESC_FLAG_ATOMIC_REQ |
+			     UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ)) {
+				ses_len = sizeof(struct uet_ses_req_std_atomic)
+					  + UET_VERBS_ATOMIC_DATA_BYTES;
+				pkt_len = 0;
+			} else if (tx_desc->desc_flags &
+			   	   UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ) {
+				ses_len = sizeof(struct uet_ses_req_std_cswap);
+				pkt_len = 0;
+			} else
+				ses_len = sizeof(struct uet_ses_req_std);
 		}
 
 		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
@@ -3459,18 +3917,20 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			if (!pkt_buf) {
 				UET_API_ERR("TX: Msg Buffer is null");
 				UET_API_ERR("TX: Failed to gather iov");
-				return -1;
+				rc = -FI_ENOMEM;
+				uet_tx_desc_set_err(tx_desc, -rc,
+					UET_TX_DESC_STATE_ERR_COMPLETE);
+				goto exit;
 			}
 
-		} else {
-			/* TODO: add support for iov and dma'able buffers */
-			/* ViraSemi: please observe IOV implementation */
+		} else
 			pkt_buf = (void *) (((size_t) tx_desc->buf_desc.buf) +
 						tx_desc->buf_desc.buf_off);
-		}
 
 		uet_build_ses_hdr(tx_desc, pkt_len, ses);
-		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+
+		rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc,
+					  tx_desc->pkt_cnt++,
 					  uet_ep, tx_desc->dst_addr_handle,
 					  tx_desc->pds_mode,
 					  flags, pds_info, tx_desc->msg_id,
@@ -3481,11 +3941,6 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 
 		if (rc == FI_SUCCESS) {
 			tx_desc->unack_pkts++;
-			/* TODO: add iov support */
-			/* ViraSemi: please observe IOV implementation
-			 * We are little bit confused what shall be done there
-			 * for IOV?
-			 */
 			tx_desc->buf_desc.buf_off += payload_len;
 			tx_desc->remaining_bytes -= payload_len;
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ)
@@ -3500,6 +3955,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 		}
 	}
 
+exit:
 	return rc;
 }
 
@@ -3859,19 +4315,21 @@ static ssize_t uet_send_req_api_common(
 	uint32_t job_id, const struct iovec *iov, size_t iov_count,
 	uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
-	uint64_t remote_mem_addr, uint64_t remote_key, void *context)
+	uint64_t remote_mem_addr, uint64_t remote_key,
+	struct uet_atomic_parms *parms, void *context)
 #else
 static ssize_t uet_send_req_api_common(
 	uet_send_req_api_t send_req_api, uet_ep_handle_t ep_handle,
 	uint32_t job_key, const struct iovec *iov, size_t iov_count,
 	uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, uint64_t tag, uint64_t *imm_data,
-	uint64_t remote_mem_addr, uint64_t remote_key, void *context,
-	uint16_t resource_index)
+	uint64_t remote_mem_addr, uint64_t remote_key,
+	struct uet_atomic_parms *parms, void *context, uint16_t resource_index)
 #endif /* ENABLE_VERBS */
 {
 	int rc;
 	size_t i;
+	bool atomic_op = false, rma_op = false;
 	uint16_t msg_id;
 	uint32_t msg_len = 0;
 	struct uet_instance *uet;
@@ -3930,6 +4388,21 @@ static ssize_t uet_send_req_api_common(
 		return -FI_EAGAIN;
 	}
 
+	switch (send_req_api) {
+	case UET_WRITE_API:
+	case UET_READ_API:
+		rma_op = true;
+		break;
+	case UET_ATOMIC_API:
+	case UET_FETCH_ATOMIC_API:
+	case UET_COMPARE_ATOMIC_API:
+		rma_op = true;
+		atomic_op = true;
+		break;
+	default:
+		break;
+	}
+
 	/* allocate rx descriptor for read */
 	if (send_req_api == UET_READ_API) {
 		rx_desc = uet_rx_desc_list_pop(uet_ep);
@@ -3968,7 +4441,6 @@ static ssize_t uet_send_req_api_common(
 	memset(tx_desc, 0, sizeof(struct uet_tx_desc));
 	tx_desc->desc_flags = UET_TX_DESC_FLAG_MSG_ID_ALLOCATED |
 			      UET_TX_DESC_FLAG_POST_CQ;
-	tx_desc->buf_desc.type = UET_MSG_BUF_TYPE_CONTIG;
 	if (iov_count == 1) {
 		tx_desc->buf_desc.type = UET_MSG_BUF_TYPE_CONTIG;
 		tx_desc->buf_desc.buf = iov->iov_base;
@@ -3990,10 +4462,18 @@ static ssize_t uet_send_req_api_common(
 	tx_desc->msg_id = msg_id;
 	tx_desc->uet_ep = uet_ep;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
-	tx_desc->pds_mode = uet_get_pds_mode(uet_ep);
+	tx_desc->pds_mode = uet_get_pds_mode(uet_ep, rma_op);
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
 		tx_desc->seq_num = uet_alloc_av_msg_seq_num(av_entry);
 	uet_gettime(&tx_desc->tx_time);
+	if (rma_op) {
+		tx_desc->remote_start_off = remote_mem_addr;
+		tx_desc->remote_key = remote_key;
+	}
+	if (atomic_op) {
+		tx_desc->cq_flags = FI_ATOMIC;
+		tx_desc->atomic_parms = *parms;
+	}
 
 	switch (send_req_api) {
 	case UET_SEND_API:
@@ -4009,15 +4489,20 @@ static ssize_t uet_send_req_api_common(
 			tx_desc->tag_or_immdata = *imm_data;
 		}
 		tx_desc->cq_flags = FI_RMA | FI_WRITE;
-		tx_desc->remote_start_off = remote_mem_addr;
-		tx_desc->remote_key = remote_key;
 		break;
 	case UET_READ_API:
 		tx_desc->desc_flags |= UET_TX_DESC_FLAG_READ_REQ;
 		tx_desc->cq_flags = FI_RMA | FI_READ;
-		tx_desc->remote_start_off = remote_mem_addr;
-		tx_desc->remote_key = remote_key;
 		tx_desc->rx_desc = rx_desc;
+		break;
+	case UET_ATOMIC_API:
+		tx_desc->desc_flags |= UET_TX_DESC_FLAG_ATOMIC_REQ;
+		break;
+	case UET_FETCH_ATOMIC_API:
+		tx_desc->desc_flags |= UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ;
+		break;
+	case UET_COMPARE_ATOMIC_API:
+		tx_desc->desc_flags |= UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ;
 		break;
 	default:
 		break;
@@ -4412,7 +4897,8 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	new_info->rx_attr->iov_limit = UET_IOV_LIMIT;
 	new_info->caps = FI_LOCAL_COMM | FI_REMOTE_COMM | FI_MSG | FI_SEND |
 			 FI_RECV | FI_TAGGED | FI_DIRECTED_RECV | FI_RMA |
-			 FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE;
+			 FI_READ | FI_WRITE | FI_REMOTE_READ |
+			 FI_REMOTE_WRITE | FI_ATOMIC;
 
 	src_addr = calloc(1, sizeof(struct uet_addr));
 	if (src_addr == NULL) {
@@ -5101,7 +5587,8 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 	return (uet_send_req_api_common(
 			UET_SEND_API, ep_handle, job_id, &iov, 1, mr_handle,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context));
 }
 
 ssize_t uet_sendv(
@@ -5112,7 +5599,8 @@ ssize_t uet_sendv(
 	return (uet_send_req_api_common(
 			UET_SEND_API, ep_handle, job_id, iov, count, mr_handle,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context));
 }
 
 #else
@@ -5129,8 +5617,8 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_key,
 	return (uet_send_req_api_common(
 			UET_SEND_API, ep_handle, job_key, &iov, 1, mr_handle,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context,
-			resource_index));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context, resource_index));
 }
 
 ssize_t uet_sendv(
@@ -5142,8 +5630,8 @@ ssize_t uet_sendv(
 	return (uet_send_req_api_common(
 			UET_SEND_API, ep_handle, job_key, iov, count, mr_handle,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context,
-			resource_index));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context, resource_index));
 }
 #endif /* ENABLE_VERBS */
 
@@ -5156,7 +5644,8 @@ ssize_t uet_tsendv(
 	return (uet_send_req_api_common(
 			UET_TSEND_API, ep_handle, job_id, iov, count, mr_handle,
 			dst_addr_handle, tag, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context));
 }
 #endif
 
@@ -5189,7 +5678,8 @@ ssize_t uet_tsend(uet_ep_handle_t ep_handle, uint32_t job_id,
 	return (uet_send_req_api_common(
 			UET_TSEND_API, ep_handle, job_id, &iov, 1, mr_handle,
 			dst_addr_handle, tag, UET_NO_IMM_DATA,
-			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY, context));
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context));
 }
 #endif
 
@@ -5428,7 +5918,7 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 	return (uet_send_req_api_common(
 			UET_WRITE_API, ep_handle, job_id, &iov, 1, mr_handle,
 			dst_addr_handle, UET_NO_TAG, data, remote_mem_addr,
-			remote_key, context));
+			remote_key, NULL, context));
 }
 
 ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
@@ -5444,7 +5934,7 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 	return (uet_send_req_api_common(
 			UET_READ_API, ep_handle, job_id, &iov, 1, mr_handle,
 			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			remote_mem_addr, remote_key, context));
+			remote_mem_addr, remote_key, NULL, context));
 }
 
 #else
@@ -5462,7 +5952,7 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
 	return (uet_send_req_api_common(
 			UET_WRITE_API, ep_handle, job_key, &iov, 1, mr_handle,
 			dst_addr_handle, UET_NO_TAG, data, remote_mem_addr,
-			remote_key, context, resource_index));
+			remote_key, NULL, context, resource_index));
 }
 
 ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
@@ -5479,8 +5969,273 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
 	return (uet_send_req_api_common(
 			UET_READ_API, ep_handle, job_key, &iov, 1, mr_handle,
 			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
-			remote_mem_addr, remote_key, context,
+			remote_mem_addr, remote_key, NULL, context,
 			resource_index));
+}
+#endif /* ENABLE_VERBS */
+
+int uet_query_atomic(uet_domain_handle_t domain_handle,
+		     enum fi_datatype datatype, enum fi_op op,
+		     struct fi_atomic_attr *attr, uint64_t flags)
+{
+	bool valid = false;
+
+	if ((datatype == FI_UINT64) && (op == FI_SUM) &&
+	    ((flags == FI_ATOMIC) || (flags == FI_FETCH_ATOMIC)))
+		valid = true;
+
+	if ((datatype == FI_UINT64) && (op == FI_CSWAP) &&
+	    (flags == FI_COMPARE_ATOMIC))
+		valid = true;
+
+	if (!valid)
+		return -FI_EOPNOTSUPP;
+
+	attr->count = 1;
+	attr->size = sizeof(uint64_t);
+
+	return FI_SUCCESS;
+}
+
+/* convert libfabric atomic datatype to uet atomic datatype */
+static uint8_t uet_atomic_datatype(enum fi_datatype datatype)
+{
+	return UET_TYPE_UINT64;
+}
+
+/* convert libfabric atomic op to uet atomic opcode */
+static uint8_t uet_atomic_opcode(enum fi_op op)
+{
+	if (op == FI_SUM)
+		return UET_AMO_SUM;
+	return UET_AMO_CSWAP;
+}
+
+static int uet_atomic_common(uet_ep_handle_t ep_handle,
+			     const void *local_op_buf, size_t count,
+		             uet_mr_handle_t op_mr_handle,
+		             const void *compare_buf,
+		             uet_mr_handle_t compare_mr_handle,
+		             void *result_buf,
+		             uet_mr_handle_t result_mr_handle,
+		             enum fi_datatype datatype,
+		             enum fi_op op, uint64_t query_flags,
+			     struct iovec *iov,
+		             struct uet_atomic_parms *parms)
+{
+	int rc;
+	uet_domain_handle_t domain_handle;
+	struct uet_ep *uet_ep;
+	struct fi_atomic_attr attr;
+
+	uet_ep = (struct uet_ep *) ep_handle;
+        domain_handle = (uet_domain_handle_t) uet_ep->uet_domain;
+
+	if (count != 1)
+		return -FI_EOPNOTSUPP;
+
+	rc = uet_query_atomic(domain_handle, datatype, op,
+			      &attr, query_flags);
+
+	if (rc)
+		return rc;
+
+	if (count > attr.count)
+		return -FI_EMSGSIZE;
+
+	iov->iov_base = (void *) local_op_buf;
+	iov->iov_len = attr.size;
+
+	parms->opcode = uet_atomic_opcode(op);
+	parms->data_type = uet_atomic_datatype(datatype);
+	parms->data_size = attr.size;
+	parms->compare_buf = compare_buf;
+	parms->result_buf = result_buf;
+
+	return FI_SUCCESS;
+}
+
+#if !ENABLE_VERBS
+ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+		   const void *local_op_buf, size_t count,
+		   uet_mr_handle_t mr_handle,
+		   uet_addr_handle_t dst_addr_handle,
+		   uint64_t remote_mem_addr, uint64_t remote_key,
+		   enum fi_datatype datatype, enum fi_op op,
+		   void *context)
+{
+        int rc;
+        struct iovec iov;
+        struct uet_atomic_parms parms;
+
+        rc = uet_atomic_common(ep_handle, local_op_buf, count,
+                               mr_handle, NULL, UET_NULL_HANDLE,
+                               NULL, UET_NULL_HANDLE, datatype,
+                               op, FI_ATOMIC, &iov, &parms);
+
+        if (rc)
+                return rc;
+
+        return (uet_send_req_api_common(
+                        UET_ATOMIC_API, ep_handle, job_id, &iov, 1,
+                        mr_handle, dst_addr_handle, UET_NO_TAG,
+                        UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+                        &parms, context));
+}
+#else
+ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+		   const void *local_op_buf, size_t count,
+		   uet_mr_handle_t mr_handle,
+		   uet_addr_handle_t dst_addr_handle,
+		   uint64_t remote_mem_addr, uint64_t remote_key,
+		   enum fi_datatype datatype, enum fi_op op,
+		   void *context, uint16_t resource_index)
+{
+        int rc;
+        struct iovec iov;
+        struct uet_atomic_parms parms;
+
+        rc = uet_atomic_common(ep_handle, local_op_buf, count,
+                               mr_handle, NULL, UET_NULL_HANDLE,
+                               NULL, UET_NULL_HANDLE, datatype,
+                               op, FI_ATOMIC, &iov, &parms);
+
+        if (rc)
+                return rc;
+
+        return (uet_send_req_api_common(
+                        UET_ATOMIC_API, ep_handle, job_id, &iov, 1,
+                        mr_handle, dst_addr_handle, UET_NO_TAG,
+                        UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+                        &parms, context, resource_index));
+}
+#endif
+
+#if !ENABLE_VERBS
+ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			 const void *local_op_buf,
+			 size_t count, uet_mr_handle_t op_mr_handle,
+			 void *result_buf,
+			 uet_mr_handle_t result_mr_handle,
+			 uet_addr_handle_t dst_addr_handle,
+			 uint64_t remote_mem_addr,
+			 uint64_t remote_key,
+			 enum fi_datatype datatype, enum fi_op op,
+			 void *context)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+		               op_mr_handle, NULL, UET_NULL_HANDLE,
+		               result_buf, result_mr_handle, datatype,
+		               op, FI_FETCH_ATOMIC, &iov, &parms);
+
+	if (rc)
+		return rc;
+
+	return (uet_send_req_api_common(
+			UET_FETCH_ATOMIC_API, ep_handle, job_id, &iov, 1,
+			op_mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context));
+}
+#else
+ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			 const void *local_op_buf,
+			 size_t count, uet_mr_handle_t op_mr_handle,
+			 void *result_buf,
+			 uet_mr_handle_t result_mr_handle,
+			 uet_addr_handle_t dst_addr_handle,
+			 uint64_t remote_mem_addr,
+			 uint64_t remote_key,
+			 enum fi_datatype datatype, enum fi_op op,
+			 void *context, uint16_t resource_index)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+		               op_mr_handle, NULL, UET_NULL_HANDLE,
+		               result_buf, result_mr_handle, datatype,
+		               op, FI_FETCH_ATOMIC, &iov, &parms);
+
+	if (rc)
+		return rc;
+
+
+	return (uet_send_req_api_common(
+			UET_FETCH_ATOMIC_API, ep_handle, job_id, &iov, 1,
+			op_mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context, resource_index));
+}
+#endif /* ENABLE_VERBS */
+
+#if !ENABLE_VERBS
+ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			   const void *local_op_buf, size_t count,
+			   uet_mr_handle_t op_mr_handle,
+			   const void *compare_buf,
+			   uet_mr_handle_t compare_mr_handle,
+			   void *result_buf,
+			   uet_mr_handle_t result_mr_handle,
+			   uet_addr_handle_t dst_addr_handle,
+			   uint64_t remote_mem_addr,
+			   uint64_t remote_key,
+			   enum fi_datatype datatype,
+			   enum fi_op op, void *context)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+		               op_mr_handle, compare_buf, compare_mr_handle,
+		               result_buf, result_mr_handle, datatype,
+		               op, FI_COMPARE_ATOMIC, &iov, &parms);
+	if (rc)
+		return rc;
+
+	return (uet_send_req_api_common(
+			UET_COMPARE_ATOMIC_API, ep_handle, job_id, &iov, 1,
+			result_mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context));
+}
+#else
+ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
+			   const void *local_op_buf, size_t count,
+			   uet_mr_handle_t op_mr_handle,
+			   const void *compare_buf,
+			   uet_mr_handle_t compare_mr_handle,
+			   void *result_buf,
+			   uet_mr_handle_t result_mr_handle,
+			   uet_addr_handle_t dst_addr_handle,
+			   uint64_t remote_mem_addr,
+			   uint64_t remote_key,
+			   enum fi_datatype datatype, enum fi_op op,
+			   void *context, uint16_t resource_index)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+		               op_mr_handle, compare_buf, compare_mr_handle,
+		               result_buf, result_mr_handle, datatype,
+		               op, FI_COMPARE_ATOMIC, &iov, &parms);
+
+	if (rc)
+		return rc;
+
+	return (uet_send_req_api_common(
+			UET_COMPARE_ATOMIC_API, ep_handle, job_id, &iov, 1,
+			result_mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context, resource_index));
 }
 #endif /* ENABLE_VERBS */
 
@@ -5662,35 +6417,10 @@ ssize_t uet_readmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
 	return -FI_ENOSYS;
 }
 
-ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
-		   const void *local_op_buf, size_t count,
-		   uet_mr_handle_t mr_handle,
-		   uet_addr_handle_t dst_addr_handle,
-		   uint64_t remote_mem_addr, uint64_t remote_key,
-		   enum fi_datatype datatype, enum fi_op op,
-		   void *context)
-{
-	return -FI_ENOSYS;
-}
-
 ssize_t uet_atomicmsg(uet_ep_handle_t ep_handle, uint32_t job_id,
 		      const struct fi_msg_atomic *msg,
 		      uint64_t flags, uet_addr_handle_t dst_addr_handle,
 		      uet_mr_handle_t *mr_handle)
-{
-	return -FI_ENOSYS;
-}
-
-ssize_t uet_fetch_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
-			 const void *local_op_buf,
-			 size_t count, uet_mr_handle_t op_mr_handle,
-			 void *result_buf,
-			 uet_mr_handle_t result_mr_handle,
-			 uet_addr_handle_t dst_addr_handle,
-			 uint64_t remote_mem_addr,
-			 uint64_t remote_key,
-			 enum fi_datatype datatype, enum fi_op op,
-			 void *context)
 {
 	return -FI_ENOSYS;
 }
@@ -5703,22 +6433,6 @@ ssize_t uet_fetch_atomicmsg(uet_ep_handle_t ep_handle,
 			    uet_mr_handle_t *result_mr_handle,
 			    size_t result_count, uint64_t flags,
 			    uet_addr_handle_t dst_addr_handle)
-{
-	return -FI_ENOSYS;
-}
-
-ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
-			   const void *local_op_buf, size_t count,
-			   uet_mr_handle_t op_mr_handle,
-			   const void *compare_buf,
-			   uet_mr_handle_t compare_mr_handle,
-			   void *result_buf,
-			   uet_mr_handle_t result_mr_handle,
-			   uet_addr_handle_t dst_addr_handle,
-			   uint64_t remote_mem_addr,
-			   uint64_t remote_key,
-			   enum fi_datatype datatype,
-			   enum fi_op op, void *context)
 {
 	return -FI_ENOSYS;
 }
@@ -5738,11 +6452,3 @@ ssize_t uet_compare_atomicmsg(uet_ep_handle_t ep_handle,
 {
 	return -FI_ENOSYS;
 }
-
-int uet_query_atomic(uet_domain_handle_t domain_handle,
-		     enum fi_datatype datatype, enum fi_op op,
-		     struct fi_atomic_attr *attr, uint64_t flags)
-{
-	return -FI_ENOSYS;
-}
-

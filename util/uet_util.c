@@ -440,6 +440,12 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		case UET_READ:
 			printf("READ, SOM = %d, EOM = %d\n", som, eom);
 			break;
+		case UET_ATOMIC:
+			printf("ATOMIC, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_FETCH_ATOMIC:
+			printf("FETCH ATOMIC, SOM = %d, EOM = %d\n", som, eom);
+			break;
 		default:
 			printf("Unknown (0x%x), SOM = %d, EOM = %d\n",
 			       opcode, som, eom);
@@ -501,6 +507,9 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		opcode = ((ses_rsp->cmn.list_opcode &
 			   UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT);
 		switch (opcode) {
+		case UET_DEFAULT_RESPONSE:
+			printf("DEFAULT RESPONSE\n");
+			break;
 		case UET_RESPONSE:
 			printf("RESPONSE\n");
 			break;
