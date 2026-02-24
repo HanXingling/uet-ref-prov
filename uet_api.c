@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024, Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -2002,11 +2002,10 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
  */
 static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
-	uet_ses_list_t *list){
-	uet_ses_rc_t ses_rc;
+	uet_ses_list_t *list) {
 	size_t start_off;
 	uint8_t opcode, dt;
-	uint32_t req_len, msg_off, rx_gen, ep_gen;
+	uint32_t req_len, rx_gen, ep_gen;
 	uint64_t data, *addr;
 	struct uet_ses_req_std_atomic *ses_atomic;
 	struct uet_mr_desc *mr_desc;
@@ -2127,10 +2126,9 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 static uet_ses_rc_t uet_rx_fetch_atomic_req_pkt(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, uet_ses_list_t *list,
 	uint8_t *payload, struct uet_ack_d_info *ack_d_info) {
-	uet_ses_rc_t ses_rc;
 	size_t start_off;
 	uint8_t opcode, dt;
-	uint32_t req_len, msg_off, rx_gen, ep_gen;
+	uint32_t req_len, rx_gen, ep_gen;
 	uint64_t data, result, expected, desired, *addr;
 	struct uet_ses_req_std_atomic *ses_atomic;
 	struct uet_ses_req_std_cswap *ses_cswap;
@@ -2856,7 +2854,7 @@ static uet_ses_rc_t uet_rx_atomic_data(
 	}
 
 	/* copy the result */
-	buf_ptr =  (uint64_t *) (tx_desc->atomic_parms.result_buf);
+	buf_ptr = (uint64_t *) (tx_desc->atomic_parms.result_buf);
 	result = ntohll(*((uint64_t *) ses->payload));
 	*buf_ptr = result;
 
@@ -3228,8 +3226,6 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 
 	ses->base.cmn.msg_id = htons(tx_desc->msg_id);
 
-	ses->base.cmn.rsvd_res_index = htons(av->addr->start_index <<
-					     UET_SES_REQ_RES_INDEX_SHIFT);
 	ses->base.cmn.ri_gen_job_id = htonl(
 		(av->untagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
 		(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
@@ -6205,7 +6201,7 @@ ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 
 	return (uet_send_req_api_common(
 			UET_COMPARE_ATOMIC_API, ep_handle, job_id, &iov, 1,
-			result_mr_handle, dst_addr_handle, UET_NO_TAG,
+			op_mr_handle, dst_addr_handle, UET_NO_TAG,
 			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
 			&parms, context));
 }
@@ -6237,7 +6233,7 @@ ssize_t uet_compare_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 
 	return (uet_send_req_api_common(
 			UET_COMPARE_ATOMIC_API, ep_handle, job_id, &iov, 1,
-			result_mr_handle, dst_addr_handle, UET_NO_TAG,
+			op_mr_handle, dst_addr_handle, UET_NO_TAG,
 			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
 			&parms, context, resource_index));
 }

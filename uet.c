@@ -70,6 +70,7 @@
 
 #define UET_NUM_ITERATIONS	100
 #define UET_MSG_SIZE		4096	/* in bytes */
+#define UET_MIN_ATOMIC_MSG_SIZE 24
 #define UET_NUM_BUFS		((size_t) 8)
 #define UET_DEFAULT_TAG		((uint64_t) 1)
 #define UET_WRITE_IMM_DATA	((uint64_t) 0x0CAA)
@@ -1069,6 +1070,12 @@ static uet_rc_t uet_atomic_client(struct uet_context *ctx)
 
 	if ((attr.count != 1) || (attr.size != sizeof(uint64_t))) {
 		UET_ERR("uet_query_atomic: bad attr");
+		return UET_ERR_RC;
+	}
+
+	if (ctx->cfg.msg_size < UET_MIN_ATOMIC_MSG_SIZE) {
+		UET_ERR("atomic test requires min msg size of %d",
+	                UET_MIN_ATOMIC_MSG_SIZE);
 		return UET_ERR_RC;
 	}
 
