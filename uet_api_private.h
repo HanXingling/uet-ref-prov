@@ -172,6 +172,7 @@ struct uet_mr_desc {
 
 /* hash lookup key for received messages */
 struct uet_rx_msg_key {
+	bool ipv6_addr;
 	struct uet_fa src_ip;
 	uint32_t initiator;
 	uint16_t spdcid;
@@ -406,6 +407,7 @@ struct uet_tx_rtr_token_cb {
 
 /* key for endpoint lookup */
 struct uet_ep_key {
+	bool ipv6_addr;
 	struct uet_fa ip_addr;
 	uint16_t pid_on_fep;
 	uint16_t index;

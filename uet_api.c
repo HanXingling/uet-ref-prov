@@ -514,8 +514,9 @@ static void uet_ep_key_init(struct uet_ep_key *key,
 	memset(key, 0, sizeof(struct uet_ep_key));
 
 	if (pp->is_ipv6) {
+		key->ipv6_addr = true;
 		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
-		memcpy(key->ip_addr.v6, &ipv6->daddr, 16);
+		memcpy(key->ip_addr.v6, &ipv6->daddr, UET_IPV6_ADDR_OCTETS);
 	} else {
 		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
 		key->ip_addr.v4 = ntohl(ipv4->daddr);
@@ -529,7 +530,7 @@ static void uet_ep_key_init(struct uet_ep_key *key,
 		UET_SES_REQ_RES_INDEX_SHIFT;
 }
 
-/* insert entry into ipv4 endpoint hash table */
+/* insert entry into ip endpoint hash table */
 static void uet_ep_hash_insert(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
@@ -542,7 +543,7 @@ static void uet_ep_hash_insert(struct uet_ep *uet_ep)
 	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
-/* remove entry from ipv4 endpoint hash table */
+/* remove entry from ip endpoint hash table */
 static void uet_ep_hash_remove(struct uet_ep *uet_ep)
 {
 	struct uet_instance *uet;
@@ -554,7 +555,7 @@ static void uet_ep_hash_remove(struct uet_ep *uet_ep)
 	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
-/* remove all entries from ipv4 endpoint hash table and free associated mem */
+/* remove all entries from ip endpoint hash table and free associated mem */
 static void uet_ep_hash_finalize(struct uet_instance *uet)
 {
 	uet_rw_lock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
@@ -562,7 +563,7 @@ static void uet_ep_hash_finalize(struct uet_instance *uet)
 	uet_rw_unlock(&uet->ep_lkup_lock, UET_RW_LOCK_WR_ACCESS);
 }
 
-/* ipv4 endpoint hash table lookup */
+/* ip endpoint hash table lookup */
 static struct uet_ep *uet_ep_hash_lookup(struct uet_instance *uet,
 					      struct uet_ep_key *key)
 {
@@ -587,8 +588,9 @@ static void uet_rx_msg_key_init(struct uet_rx_msg_key *key,
 	memset(key, 0, sizeof(struct uet_rx_msg_key));
 
 	if (pp->is_ipv6) {
+		key->ipv6_addr = true;
 		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
-		memcpy(key->src_ip.v6, &ipv6->saddr, 16);
+		memcpy(key->src_ip.v6, &ipv6->saddr, UET_IPV6_ADDR_OCTETS);
 	} else {
 		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
 		key->src_ip.v4 = ntohl(ipv4->saddr);
@@ -5156,6 +5158,8 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->send_cq.cq_state = UET_CQ_DOWN;
 	uet_ep->recv_cq.cq_state = UET_CQ_DOWN;
 
+	if (uet_ep->uet_addr.flags & UET_ADDR_IPV6)
+		uet_ep->ep_key.ipv6_addr = true;
 	memcpy(&uet_ep->ep_key.ip_addr, &uet_ep->ip_addr,
 	       sizeof(struct uet_fa));
 	uet_ep->ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
