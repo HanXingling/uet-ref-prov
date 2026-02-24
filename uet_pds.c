@@ -1113,6 +1113,7 @@ int uet_pds_initialize(struct uet_instance *uet)
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
 	uet->pds.msl            = UET_DEFAULT_MSL;
 	uet->pds.ack_ip_tos     = uet_dscp_to_tos(UET_IP_DEFAULT_ACK_DSCP);
+	uet->pds.max_ack_data	= UET_DEFAULT_PDS_MAX_ACK_DATA;
 
 	memset(&pds_state, 0, sizeof(struct uet_pds_state));
 
@@ -2111,12 +2112,11 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 			UET_PDS_ERR("PDC %u PSN %u SES NACK",
 				    pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn);
 			rc = -EINVAL;
-		} else {
+		} else
 			/* transmit ACK */
 			rc = uet_pds_tx_ack_pkt(uet, pdc, pdc_pkt,
 						rsp_next_hdr, rsp_ses_hdr_len,
 						rsp_ses_hdr, gtd_del);
-		}
 	} else {
 		UET_PDS_ERR("PDC %u PSN %u SES upcall failed (rx_req=%d)",
 			    pdc_pkt->pkt_pp.pds_dpdcid,

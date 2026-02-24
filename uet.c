@@ -14,18 +14,18 @@
  *
  * Description of message operation (applies to both untagged and
  *                                   tagged messages):
- *   - the server is started first with the IPv4 address of the
+ *   - the server is started first with the IP address of the
  *     client as a command line arg
- *   - the client is then started with the IPv4 address of the
+ *   - the client is then started with the IP address of the
  *     server as a command line arg
  *   - the client sends a message to the server
  *   - the server receives the message and then sends it back
  *     to the client
  *
  * Description of RMA operation:
- *   - the server is started first with the IPv4 address of the
+ *   - the server is started first with the IP address of the
  *     client as a command line arg
- *   - the client is then started with the IPv4 address of the
+ *   - the client is then started with the IP address of the
  *     server as a command line arg
  *   - the client sends a control message to the server that identifies the
  *     address and key of its' RMA buffer
@@ -46,20 +46,19 @@
  * compile time
  *
  * Usage:
- *   ./uet <server | client> [tag | rma | test] <remote IPv4 address>
+ *   ./uet <server | client>
+ *	<rma | untag | tag | tag_any_src | unexp_untag | unexp_tag |
+ *       defer_send | defer_tag | defer_tag_any_src | atomic | all>
+ *	<remote IP address>
  *
- *   tag, rma, and test are optional args
- *     - if the 'tag' arg is present, tagged message data transfers are used
- *     - if the 'rma' arg is present, RMA data transfers are used
- *     - if the 'test' arg is present, the test suite is executed
- *     - if neither 'tag', 'rma', nor 'test' is present,
- *       untagged message data transfers are used
+ *   the penultimate arg specifies the test suite to execute,
+ *   'all' executes all of the test suites
  *
  * Server Usage Example:
- *   ./uet server 192.168.1.18
+ *   ./uet server all 192.168.1.18
  *
  * Client Usage Example:
- *   ./uet client 192.168.1.24
+ *   ./uet client all 192.168.1.24
  */
 
 #include <stdio.h>
@@ -71,6 +70,7 @@
 
 #define UET_NUM_ITERATIONS	100
 #define UET_MSG_SIZE		4096	/* in bytes */
+#define UET_MIN_ATOMIC_MSG_SIZE 24
 #define UET_NUM_BUFS		((size_t) 8)
 #define UET_DEFAULT_TAG		((uint64_t) 1)
 #define UET_WRITE_IMM_DATA	((uint64_t) 0x0CAA)
@@ -111,7 +111,8 @@ void UET_USAGE(char *cmd)
 "             unexp_tag\n"
 "             defer_send\n"
 "             defer_tag\n"
-"             defer_tag_any_src\n",
+"             defer_tag_any_src\n"
+"             atomic\n",
 cmd);
 }
 
@@ -122,7 +123,7 @@ struct uet_cfg {
 	bool tag;                              /* true => use tagged messages */
 	bool tag_any_src;          /* true => tagged buffers match any source */
 	bool rma;                               /* true => use rma operations */
-	bool test;				    /* true => run test suite */
+	bool atomic;                         /* true => use atomic operations */
 	bool unexpected_msg_test;  /* true => this is unexpected message test */
 	bool dsend_test;			/* true => this is dsend test */
 	bool iov_test;				     /* true => test uses iov */
@@ -203,7 +204,6 @@ static void uet_free_res(struct uet_context *ctx)
 			UET_ERR("uet_av_remove: %s", fi_strerror(-rc));
 		ctx->peer_addr_handle = UET_NULL_HANDLE;
 	}
-
 
 	if (ctx->ep_handle != UET_NULL_HANDLE) {
 		rc = uet_ep_close(ctx->ep_handle);
@@ -318,13 +318,15 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 
 	if (argc == 4) {
 		if (strcmp(argv[2], "tag") != 0) {
-			if (strcmp(argv[2], "rma") != 0) {
-				UET_ERR("Invalid usage: 2nd arg must be "
-					"'tag' or 'rma'");
+			if ((strcmp(argv[2], "rma") != 0) &&
+			    (strcmp(argv[2], "atomic") != 0)) {
+				UET_ERR("Invalid usage: bad test arg");
 				return UET_ERR_RC;
 			}
-
-			ctx->cfg.rma = true;
+			if (strcmp(argv[2], "rma") == 0)
+				ctx->cfg.rma = true;
+			else
+				ctx->cfg.atomic = true;
 		} else {
 			ctx->cfg.tag = true;
 		}
@@ -473,6 +475,8 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		hints->caps |= FI_TAGGED;
 	else if (ctx->cfg.rma)
 		hints->caps |= (FI_MSG | FI_RMA);
+	else if (ctx->cfg.atomic)
+		hints->caps |= (FI_ATOMIC | FI_RMA);
 	else
 		hints->caps |= FI_MSG;
 
@@ -522,6 +526,12 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 				goto exit;
 			}
 		}
+		if (ctx->cfg.atomic) {
+			if (!(ctx->info->caps & FI_ATOMIC)) {
+				UET_ERR("Atomic operations not supported");
+				goto exit;
+			}
+		}
 		if (!(ctx->info->caps & FI_MSG)) {
 			UET_ERR("Message operations not supported");
 			goto exit;
@@ -537,7 +547,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		goto exit;
 	}
 
-	if (ctx->cfg.rma) {
+	if (ctx->cfg.rma || ctx->cfg.atomic) {
 		ctx->mr_buf = malloc(ctx->cfg.msg_size);
 		if (ctx->mr_buf == NULL) {
 			UET_PRINT_ERRNO("malloc");
@@ -553,7 +563,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		ret = uet_mr_reg(ctx->domain_handle, ctx->mr_buf,
 				 ctx->cfg.msg_size,
 				 FI_WRITE | FI_REMOTE_WRITE |
-				 FI_READ  | FI_REMOTE_READ,
+				 FI_READ  | FI_REMOTE_READ | FI_ATOMIC,
 				 UET_MR_KEY_NONE, UET_FLAGS_NONE, context,
 				 &ctx->mr_handle);
 		if (ret) {
@@ -587,7 +597,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 
 	uet_print_uet_addr(&ctx->local_uet_addr);
 
-	if (ctx->cfg.rma) {
+	if (ctx->cfg.rma || ctx->cfg.atomic) {
 		ret = uet_ep_bind_mr(ctx->ep_handle, ctx->mr_handle,
 				     UET_FLAGS_NONE);
 		if (ret) {
@@ -619,7 +629,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		goto exit;
 	}
 
-	if (ctx->cfg.rma) {
+	if (ctx->cfg.rma || ctx->cfg.atomic) {
 		ret = uet_mr_enable(ctx->mr_handle);
 		if (ret) {
 			UET_ERR("uet_mr_enable: %s", fi_strerror(-ret));
@@ -640,7 +650,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		goto exit;
 	}
 
-	if (!(ctx->cfg.rma) && ctx->cfg.client)
+	if (!ctx->cfg.rma && !ctx->cfg.atomic && ctx->cfg.client)
 		uet_init_msg_buf(ctx, ctx->tx_msg);
 
 	ctx->rx_msg = malloc(ctx->cfg.msg_size);
@@ -679,7 +689,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 		ctx->tx_iov[ctx->tx_count].iov_len = buffer_size;
 
 
-		if (!(ctx->cfg.rma) && ctx->cfg.client) {
+		if (!ctx->cfg.rma && !ctx->cfg.atomic && ctx->cfg.client) {
 			uet_init_iov_buf(
 				buffer_size,
 				ctx->tx_iov[ctx->tx_count].iov_base);
@@ -973,6 +983,266 @@ static uet_rc_t uet_rma_server(struct uet_context *ctx)
 	}
 
 	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	return UET_SUCCESS_RC;
+}
+
+#define ATOMIC_SUM_VALUE	2
+
+/*
+ * perform client atomic data transfer exchange as follows:
+ *   - query support for atomic operation that is expected to be unsupported
+ *   - query support for atomic operations that are expected to be supported
+ *   - do atomic fetch add of 0 to get current value from server RMA buffer
+ *   - wait for atomic fetch completion
+ *   - do atomic non-fetch add of known constant to server RMA buffer
+ *   - wait for atomic completion
+ *   - validate result
+ *   - do atomic fetch add of known constant to server RMA buffer
+ *   - wait for atomic fetch completion
+ *   - validate result
+ *   - do atomic fetch add of known constant to server RMA buffer
+ *   - validate result
+ *   - do atomic cswap using value that is expected to fail compare
+ *   - wait for atomic cswap completion
+ *   - validate result
+ *   - do atomic cswap using value that is expected to swap
+ *   - wait for atomic cswap completion
+ *   - validate result
+ *   - write to server RMA buffer
+ *     - include immediate data to generate completion at server
+ *   - wait for write completion
+ *
+ * returns:
+ *   UET_SUCCESS_RC
+ *   UET_ERROR_RC
+ */
+static uet_rc_t uet_atomic_client(struct uet_context *ctx)
+{
+	int query_ret;
+	ssize_t ret;
+	struct fi_atomic_attr attr;
+	uint64_t *local_op_buf, *result_buf, *compare_buf, val;
+	void *context = NULL;
+	uint64_t imm_data = UET_WRITE_IMM_DATA;
+	struct fi_cq_data_entry cq_entry;
+
+	query_ret = uet_query_atomic(ctx->domain_handle, FI_UINT32, FI_SUM,
+				     &attr, FI_FETCH_ATOMIC);
+	if (query_ret != -FI_EOPNOTSUPP) {
+		UET_ERR("uet_query_atomic: %s", fi_strerror(-query_ret));
+		return UET_ERR_RC;
+	}
+
+	query_ret = uet_query_atomic(ctx->domain_handle, FI_UINT64, FI_SUM,
+				     &attr, FI_ATOMIC);
+	if (query_ret < 0) {
+		UET_ERR("uet_query_atomic: %s", fi_strerror(-query_ret));
+		return UET_ERR_RC;
+	}
+
+	if ((attr.count != 1) || (attr.size != sizeof(uint64_t))) {
+		UET_ERR("uet_query_atomic: bad attr");
+		return UET_ERR_RC;
+	}
+
+	query_ret = uet_query_atomic(ctx->domain_handle, FI_UINT64, FI_SUM,
+				     &attr, FI_FETCH_ATOMIC);
+	if (query_ret < 0) {
+		UET_ERR("uet_query_atomic: %s", fi_strerror(-query_ret));
+		return UET_ERR_RC;
+	}
+
+	if ((attr.count != 1) || (attr.size != sizeof(uint64_t))) {
+		UET_ERR("uet_query_atomic: bad attr");
+		return UET_ERR_RC;
+	}
+
+	query_ret = uet_query_atomic(ctx->domain_handle, FI_UINT64, FI_CSWAP,
+				     &attr, FI_COMPARE_ATOMIC);
+	if (query_ret != FI_SUCCESS) {
+		UET_ERR("uet_query_atomic: %s", fi_strerror(-query_ret));
+		return UET_ERR_RC;
+	}
+
+	if ((attr.count != 1) || (attr.size != sizeof(uint64_t))) {
+		UET_ERR("uet_query_atomic: bad attr");
+		return UET_ERR_RC;
+	}
+
+	if (ctx->cfg.msg_size < UET_MIN_ATOMIC_MSG_SIZE) {
+		UET_ERR("atomic test requires min msg size of %d",
+	                UET_MIN_ATOMIC_MSG_SIZE);
+		return UET_ERR_RC;
+	}
+
+	local_op_buf = (uint64_t *) ctx->mr_buf;
+	result_buf = local_op_buf + 1;
+	compare_buf = result_buf + 1;
+
+	*local_op_buf = 0;
+
+	ret = uet_fetch_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+			       attr.count, ctx->mr_handle, result_buf,
+			       ctx->mr_handle, ctx->peer_addr_handle,
+			       ctx->remote_mr.rma_buf_addr, ctx->remote_mr.key,
+			       FI_UINT64, FI_SUM, context);
+	if (ret < 0) {
+		UET_ERR("uet_fetch_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	val = *result_buf;
+
+	*local_op_buf = (uint64_t) ATOMIC_SUM_VALUE;
+
+	ret = uet_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+		         attr.count, ctx->mr_handle, ctx->peer_addr_handle,
+			 ctx->remote_mr.rma_buf_addr, ctx->remote_mr.key,
+			 FI_UINT64, FI_SUM, context);
+	if (ret < 0) {
+		UET_ERR("uet_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	val += *local_op_buf;
+
+	ret = uet_fetch_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+			       attr.count, ctx->mr_handle, result_buf,
+			       ctx->mr_handle, ctx->peer_addr_handle,
+			       ctx->remote_mr.rma_buf_addr, ctx->remote_mr.key,
+			       FI_UINT64, FI_SUM, context);
+	if (ret < 0) {
+		UET_ERR("uet_fetch_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	if (*result_buf != val) {
+		UET_ERR("uet_fetch_atomic: bad result %lu", *result_buf);
+		return UET_ERR_RC;
+	}
+
+	ret = uet_fetch_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+			       attr.count, ctx->mr_handle, result_buf,
+			       ctx->mr_handle, ctx->peer_addr_handle,
+			       ctx->remote_mr.rma_buf_addr, ctx->remote_mr.key,
+			       FI_UINT64, FI_SUM, context);
+	if (ret < 0) {
+		UET_ERR("uet_fetch_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	val += *local_op_buf;
+
+	if (*result_buf != val) {
+		UET_ERR("uet_fetch_atomic: bad result %lu", *result_buf);
+		return UET_ERR_RC;
+	}
+
+	val += *local_op_buf;
+	*local_op_buf = val + 1;
+	*compare_buf = val - 1;
+
+	ret = uet_compare_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+				 attr.count, ctx->mr_handle, compare_buf,
+				 ctx->mr_handle, result_buf, ctx->mr_handle,
+				 ctx->peer_addr_handle,
+				 ctx->remote_mr.rma_buf_addr,
+				 ctx->remote_mr.key,
+				 FI_UINT64, FI_CSWAP, context);
+	if (ret < 0) {
+		UET_ERR("uet_compare_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	if (*result_buf != val) {
+		UET_ERR("uet_compare_atomic: bad result %lu", *result_buf);
+		return UET_ERR_RC;
+	}
+
+	*compare_buf = val;
+
+	ret = uet_compare_atomic(ctx->ep_handle, ctx->cfg.job_id, local_op_buf,
+				 attr.count, ctx->mr_handle, compare_buf,
+				 ctx->mr_handle, result_buf, ctx->mr_handle,
+				 ctx->peer_addr_handle,
+				 ctx->remote_mr.rma_buf_addr,
+				 ctx->remote_mr.key,
+				 FI_UINT64, FI_CSWAP, context);
+	if (ret < 0) {
+		UET_ERR("uet_compare_atomic: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	if (*result_buf != *local_op_buf) {
+		UET_ERR("uet_compare_atomic: bad result %lu", *result_buf);
+		return UET_ERR_RC;
+	}
+
+	ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
+			ctx->cfg.msg_size, &imm_data, ctx->mr_handle,
+			ctx->peer_addr_handle, ctx->remote_mr.rma_buf_addr,
+			ctx->remote_mr.key, context);
+	if (ret < 0) {
+		UET_ERR("uet_write: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	return UET_SUCCESS_RC;
+}
+
+/*
+ * perform server atomic data transfer exchange as follows:
+ *   - wait for remote write completion to client has completed atomic
+ *     operation tests
+ *
+ * returns:
+ *   UET_SUCCESS_RC
+ *   UET_ERROR_RC
+ */
+static uet_rc_t uet_atomic_server(struct uet_context *ctx)
+{
+	struct fi_cq_data_entry cq_entry;
+
+	if (uet_compl_wait(ctx->rx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
 		UET_ERR("uet_compl_wait");
 		return UET_ERR_RC;
 	}
@@ -1531,19 +1801,19 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		sleep(1);
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
-		printf("Starting in %s\n",
-				(use_iov == 1) ? "iov_mode" : "buf_mode");
-		ctx->cfg.iov_test = (use_iov == 1);
 		pds = getenv(UET_PDS);
 		/* TODO: IOV support for SNG mode */
 		if (((pds == NULL) || (strcmp(pds, "sng") == 0)) &&
 				      (use_iov == 1)) {
-			UET_WARN("IOV test for SNG mode is not implemented yet");
 			continue;
 		}
 
+		ctx->cfg.iov_test = (use_iov == 1);
+		printf("Starting in %s\n",
+				(use_iov == 1) ? "iov_mode" : "buf_mode");
+
 		/* perform control message exchange */
-		if (ctx->cfg.rma) {
+		if (ctx->cfg.rma || ctx->cfg.atomic) {
 			if (ctx->cfg.client) {
 				rc = uet_rma_client_ctrl_exchange(ctx);
 				if (rc != UET_SUCCESS_RC)
@@ -1562,6 +1832,10 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 					rc = uet_rma_client(ctx);
 					if (rc != UET_SUCCESS_RC)
 						goto exit;
+				} else if (ctx->cfg.atomic) {
+					rc = uet_atomic_client(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
 				} else {
 					if (ctx->cfg.unexpected_msg_test)
 						rc = uet_msg_client_unexpected(ctx);
@@ -1573,6 +1847,10 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 			} else { /* server */
 				if (ctx->cfg.rma) {
 					rc = uet_rma_server(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				} else if (ctx->cfg.atomic) {
+					rc = uet_atomic_server(ctx);
 					if (rc != UET_SUCCESS_RC)
 						goto exit;
 				} else {
@@ -1768,6 +2046,29 @@ int main(int argc, char *argv[])
 		rc = uet_run(test_argc, test_argv, ctx);
 		if (rc != UET_SUCCESS_RC)
 			exit(rc);
+	}
+
+	if (do_all || (strcmp(test, "atomic") == 0)) {
+		char *pds = getenv(UET_PDS);
+		if ((pds == NULL) || (strcmp(pds, "sng") == 0)) {
+			printf("\nAtomic Test\n");
+			printf(  "===========\n");
+			test_argc = 4;
+			test_argv[0] = cmd;
+			test_argv[1] = c_s;
+			test_argv[2] = "atomic";
+			test_argv[3] = ip;
+			test_argv[4] = NULL;
+			memset(ctx, 0, sizeof(struct uet_context));
+
+			rc = uet_run(test_argc, test_argv, ctx);
+			if (rc != UET_SUCCESS_RC)
+				exit(rc);
+		} else
+			/* TODO: remove this restriction when pds mode	*/
+			/*       supports clear				*/
+			printf("\nAtomic test currently only supported in "
+			       "sng mode\n");
 	}
 
 	exit(0);

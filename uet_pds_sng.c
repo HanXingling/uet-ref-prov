@@ -37,7 +37,7 @@ struct uet_pds_sng_tx_state {
 		void *pkt;
 		size_t pkt_len;
 		bool dma_rdy;
-		uint8_t ses_hdr[sizeof(struct uet_ses_req_std)];
+		uint8_t ses_hdr[UET_MAX_SES_HDR_BYTES];
 		size_t ses_hdr_len;
 	} pkt_parms;
 };
@@ -462,7 +462,8 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, void *pkt,
 	}
 
 	/* allocate buffer for ack packet */
-	ack_state = calloc(1, sizeof(struct uet_pds_ack_state) + ack_pkt_len);
+	ack_state = calloc(1, sizeof(struct uet_pds_ack_state) + ack_pkt_len +
+			      CRC_LEN);
 	if (ack_state == NULL) {
 		UET_API_PRINT_ERRNO("calloc");
 		return -ENOMEM;

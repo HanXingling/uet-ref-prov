@@ -24,7 +24,7 @@ if [ -z "$LIBFABRIC" ]; then
 fi
 
 # Valid "test", "pds", and "shim" names
-test_names=(all rma tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
+test_names=(all rma atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
 pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
 shim_names=(rawsock xdp)
 

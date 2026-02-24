@@ -40,6 +40,15 @@
 #define UET_SEND_ORDERING                                                \
 (FI_ORDER_RAS | FI_ORDER_SAR | FI_ORDER_SAS | FI_ORDER_SAW | FI_ORDER_WAS)
 
+#define UET_RW_ORDERING                                                 \
+(FI_ORDER_ATOMIC_RAR | FI_ORDER_ATOMIC_RAW | FI_ORDER_ATOMIC_WAR |	\
+ FI_ORDER_ATOMIC_WAW | FI_ORDER_RAR | FI_ORDER_RAS | FI_ORDER_RAW |	\
+ FI_ORDER_RMA_RAR | FI_ORDER_RMA_RAW | FI_ORDER_RMA_WAR |		\
+ FI_ORDER_RMA_WAW | FI_ORDER_SAR | FI_ORDER_SAW | FI_ORDER_WAR |	\
+ FI_ORDER_WAS)
+
+#define UET_ORDERING	(UET_SEND_ORDERING | UET_RW_ORDERING)
+
 	/* timeout for partially received messages that have gone idle */
 #define UET_IDLE_RX_MSG_TIMEOUT		5000	/* in msecs */
 
@@ -163,9 +172,10 @@ struct uet_mr_desc {
 
 /* hash lookup key for received messages */
 struct uet_rx_msg_key {
+	bool ipv6_addr;
 	struct uet_fa src_ip;
-	uint16_t spdcid;
 	uint32_t initiator;
+	uint16_t spdcid;
 	uint16_t msg_id;
 };
 
@@ -294,6 +304,15 @@ typedef enum {
 	UET_TX_DESC_STATE_COMPLETE,               /* ready to post completion */
 } uet_tx_desc_state_t;
 
+/* atomic parameters */
+struct uet_atomic_parms {
+	uint8_t opcode; 				 /* uet atomic opcode */
+	uint8_t data_type;	     /* uet type of data for atomic operation */
+	uint32_t data_size;	 	 /* size of data for atomic operation */
+	const void *compare_buf;	     /* ptr to compare data for cswap */
+	void *result_buf;		              /* ptr to result buffer */
+};
+
 /* tx msg descriptor */
 struct uet_tx_desc {
 	struct dlist_entry list_entry;               /* for inserting in list */
@@ -309,6 +328,10 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_READ_REQ		(1 << 7)
 #define UET_TX_DESC_FLAG_READ_RSP		(1 << 8)
 #define UET_TX_DESC_FLAG_CANCEL_PENDING		(1 << 9)
+#define UET_TX_DESC_FLAG_ATOMIC_REQ		(1 << 10)
+#define UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ	(1 << 11)
+#define UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ	(1 << 12)
+
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t pkt_cnt;                /* number of pkt tx for this message */
@@ -340,6 +363,7 @@ struct uet_tx_desc {
 	struct uet_rx_desc *rx_desc;     /* associated rx descriptor for read */
 	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
 	struct uet_ephemeral_av ephemeral_av;  /* av for tx of read rsp & rtr */
+	struct uet_atomic_parms atomic_parms;  /* parms for atomic operations */
 #if ENABLE_VERBS
 	uint16_t resource_index;       /* for verbs, passing index outside av */
 #endif
@@ -383,9 +407,10 @@ struct uet_tx_rtr_token_cb {
 
 /* key for endpoint lookup */
 struct uet_ep_key {
+	bool ipv6_addr;
 	struct uet_fa ip_addr;
 	uint16_t pid_on_fep;
-	uint32_t index;
+	uint16_t index;
 };
 
 struct uet_ep; /* forward reference */

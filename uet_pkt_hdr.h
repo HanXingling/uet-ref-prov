@@ -564,6 +564,9 @@ typedef enum {
 	UET_TYPE_FP16                = 0x11,
 } uet_ses_atomic_dt_t;
 
+#define UET_VERBS_ATOMIC_DATA_BYTES	8
+#define UET_CSWAP_DATA_BYTES		32
+
 /* uet ses atomic extension header */
 struct UET_PACKED uet_ses_atomic_ext {
 	uint8_t atomic_opcode;
@@ -574,6 +577,13 @@ struct UET_PACKED uet_ses_atomic_ext {
 	uint8_t rsvd;
 };
 
+/* uet ses standard request header with atomic extension header */
+struct UET_PACKED uet_ses_req_std_atomic {
+	struct uet_ses_req_std base;
+	struct uet_ses_atomic_ext ext;
+	uint8_t data[];
+};
+
 /* uet ses atomic compare/swap extension header */
 struct UET_PACKED uet_ses_atomic_cmpswp_ext {
 	struct uet_ses_atomic_ext cmn;
@@ -582,6 +592,21 @@ struct UET_PACKED uet_ses_atomic_cmpswp_ext {
 	uint64_t swp_val_hi;
 	uint64_t swp_val_lo;
 };
+
+/* uet ses standard request header with atomic compare/swap extension header */
+struct UET_PACKED uet_ses_req_std_cswap {
+	struct uet_ses_req_std base;
+	struct uet_ses_atomic_cmpswp_ext ext;
+};
+
+/* union of ses request structs */
+union UET_PACKED uet_ses_req {
+	struct uet_ses_req_std std;
+	struct uet_ses_req_std_atomic atomic;
+	struct uet_ses_req_std_cswap cswap;
+};
+
+#define UET_MAX_SES_HDR_BYTES	sizeof(union uet_ses_req)
 
 /* uet ses response opcodes */
 typedef enum {
