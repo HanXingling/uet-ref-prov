@@ -2256,7 +2256,7 @@ static uet_ses_rc_t uet_rx_fetch_atomic_req_pkt(
 			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
 			*((uint64_t *) payload) = htonll(desired);
 		else
-			*((uint64_t *) payload) = htonll(*addr);
+			*((uint64_t *) payload) = htonll(expected);
 	}
 
 	return UET_RC_OK;
