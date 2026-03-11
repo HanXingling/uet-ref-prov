@@ -597,7 +597,6 @@ static void uet_rx_msg_key_init(struct uet_rx_msg_key *key,
 	}
 
 	key->spdcid = pp->pds_spdcid;
-	key->initiator = ses->initiator;
 	key->msg_id = ses->cmn.msg_id;
 }
 

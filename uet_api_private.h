@@ -174,7 +174,6 @@ struct uet_mr_desc {
 struct uet_rx_msg_key {
 	bool ipv6_addr;
 	struct uet_fa src_ip;
-	uint32_t initiator;
 	uint16_t spdcid;
 	uint16_t msg_id;
 };
