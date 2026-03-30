@@ -1201,7 +1201,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pds_ack = (struct uet_pds_ack *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_ack);
 		pp->pds_cack_psn = ntohl(pds_ack->cack_psn);
-		pp->pds_psn = (ntohl(pds_ack->ack_psn_offset) +
+		pp->pds_psn = ((int16_t)ntohs(pds_ack->ack_psn_offset) +
 			       pp->pds_cack_psn);
 		pp->pds_spdcid = ntohs(pds_ack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
