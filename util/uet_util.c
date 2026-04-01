@@ -437,11 +437,17 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		case UET_WRITE:
 			printf("WRITE, SOM = %d, EOM = %d\n", som, eom);
 			break;
+		case UET_SYNC_WRITE:
+			printf("SYNC WRITE, SOM = %d, EOM = %d\n", som, eom);
+			break;
 		case UET_READ:
 			printf("READ, SOM = %d, EOM = %d\n", som, eom);
 			break;
 		case UET_ATOMIC:
 			printf("ATOMIC, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_SYNC_ATOMIC:
+			printf("SYNC ATOMIC, SOM = %d, EOM = %d\n", som, eom);
 			break;
 		case UET_FETCH_ATOMIC:
 			printf("FETCH ATOMIC, SOM = %d, EOM = %d\n", som, eom);
@@ -1269,6 +1275,13 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		case UET_RNDV_SEND:
 		case UET_RNDV_TSEND:
 			pp->ses_len += sizeof(struct uet_ses_rndv_ext);
+			break;
+		case UET_SYNC_WRITE:
+			pp->ses_len += sizeof(struct uet_ses_sync_ext);
+			break;
+		case UET_SYNC_ATOMIC:
+			pp->ses_len += sizeof(struct uet_ses_atomic_ext) +
+				       sizeof(struct uet_ses_sync_ext);
 			break;
 		default:
 			break;

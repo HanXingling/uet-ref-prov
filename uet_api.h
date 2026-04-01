@@ -1309,6 +1309,47 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_key,
 #endif
 
 /*
+ * simple api for sync rma write
+ *
+ * parms:
+ *   ep_handle        - handle identifying local uet endpoint instance
+ *   job_id           - job id associated with operation
+ *   buf              - ptr to data buffer to write from
+ *   len              - length of data buffer in bytes
+ *   data             - ptr to immediate data, NULL => no imediate data
+ *   mr_handle        - handle identifying memory region associated with
+ *                      ‘buf’, may be UET_NULL_HANDLE, required when
+ *                      FI_MR_LOCAL mode bit is set, see fi_rma
+ *   dst_addr_handle  - handle identifying destination uet address
+ *   remote_mem_addr  - remote memory address
+ *   remote_key       - remote protection key
+ *   context          - user specified pointer to associate with the operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ *
+ * notes:
+ *   - can be used to implement the following libfabric fi_rma api’s:
+ *     - fi_write, fi_writedata
+ */
+#if !ENABLE_VERBS
+ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
+		       void *buf, size_t len, uint64_t *data,
+		       uet_mr_handle_t mr_handle,
+		       uet_addr_handle_t dst_addr_handle,
+		       uint64_t remote_mem_addr, uint64_t remote_key,
+		       void *context);
+#else
+ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_key,
+		       void *buf, size_t len, uint64_t *data,
+		       uet_mr_handle_t mr_handle,
+		       uet_addr_handle_t dst_addr_handle,
+		       uint64_t remote_mem_addr, uint64_t remote_key,
+		       void *context, uint16_t resource_index);
+#endif
+
+/*
  * flexible api for rma write
  *
  * parms:
@@ -1451,6 +1492,53 @@ ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 		   uint64_t remote_mem_addr, uint64_t remote_key,
 		   enum fi_datatype datatype, enum fi_op op,
 		   void *context, uint16_t resource_index);
+#endif
+
+/*
+ * simple api for sync atomic operation
+ *
+ * parms:
+ *   ep_handle       - handle identifying local uet endpoint instance
+ *   job_id          - job id associated with operation
+ *   local_op_buf    - ptr to local data buffer containing array of
+ *                     operands for the atomic operation, see fi_atomic
+ *   count           - number of entries in ‘local_op_buf’
+ *   mr_handle       - handle identifying memory region associated with
+ *                     ‘local_op_buf’, may be UET_NULL_HANDLE, required
+ *                     when FI_MR_LOCAL mode bit is set, see fi_rma
+ *   dst_addr_handle - handle identifying uet destination address
+ *   remote_mem_addr - remote memory address
+ *   remote_key      - remote protection key
+ *   datatype        - data type associated with atomic operands,
+ *                     see fi_atomic
+ *   op              - atomic operation to perform, see fi_atomic
+ *   context         - user specified pointer to associate with the
+ *                     operation
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ *
+ * notes:
+ *   - used to implement the following libfabric fi_atomic api’s:
+ *     - fi_atomic
+ */
+#if !ENABLE_VERBS
+ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
+		        const void *local_op_buf, size_t count,
+		        uet_mr_handle_t mr_handle,
+		        uet_addr_handle_t dst_addr_handle,
+		        uint64_t remote_mem_addr, uint64_t remote_key,
+		        enum fi_datatype datatype, enum fi_op op,
+		        void *context);
+#else
+ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
+		        const void *local_op_buf, size_t count,
+		        uet_mr_handle_t mr_handle,
+		        uet_addr_handle_t dst_addr_handle,
+		        uint64_t remote_mem_addr, uint64_t remote_key,
+		        enum fi_datatype datatype, enum fi_op op,
+		        void *context, uint16_t resource_index);
 #endif
 
 /*
