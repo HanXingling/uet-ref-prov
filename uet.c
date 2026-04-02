@@ -1357,7 +1357,7 @@ static uet_rc_t uet_atomic_client(struct uet_context *ctx)
 
 /*
  * perform server atomic data transfer exchange as follows:
- *   - wait for remote write completion to client has completed atomic
+ *   - wait for remote write completion to indicate client has completed atomic
  *     operation tests
  *
  * returns:

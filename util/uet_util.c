@@ -1336,7 +1336,8 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		if (rc != 0)
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_rsp_d);
-		cur_len += pp->ses_len;
+		p = ((uint8_t *) pkt) + cur_len;
+		pp->payload = p;
 		pp->hdr_len = cur_len;
 		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
 		pp->ses_opcode = (ses_rsp_d->cmn.list_opcode &
