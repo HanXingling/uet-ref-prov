@@ -137,12 +137,16 @@ struct uet_pdc {
 	uint32_t             next_psn; /* next Tx pkt seq number */
 	struct bitmap       *tx_bm;
 	uint32_t             tx_bm_base_psn; /* start PSN for initiator MPR */
+	uint32_t             max_cack_psn; /* highest cack PSN received */
 
 	/* target side fields */
 	struct bitmap      *rx_bm;
 	uint32_t            rx_bm_base_psn; /* start PSN for target MPR */
 	uint32_t            cack_psn; /* coalesced ack PSN */
 	uint32_t            max_clear_psn; /* highest clear PSN */
+	uint32_t            prev_ar_psn; /* highest PSN received with ar flag */
+	uint32_t            max_rcvd_psn; /* highest PSN received */
+	uint32_t            accepted_bytes; /* bytes received between ACKs */
 
 	/* security fields, for Tx */
 	bool                sec_enabled;
@@ -670,6 +674,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;
 	pdc->rx_bm_base_psn = UET_DEFAULT_START_PSN;
+	pdc->max_cack_psn   = UET_DEFAULT_START_PSN - 1;
 	memcpy(&pdc->ini_hkey, &pdc_key, sizeof(pdc_key));
 	HASH_ADD(pdc_ini_hh, pds_state.pdc_ini_ht, ini_hkey,
 		 sizeof(pdc_key), pdc);
@@ -763,6 +768,9 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc->next_psn       = pdc->tx_bm_base_psn;
 	pdc->cack_psn       = UET_DEFAULT_START_PSN - 1;
 	pdc->max_clear_psn  = UET_DEFAULT_START_PSN - 1;
+	pdc->prev_ar_psn    = UET_DEFAULT_START_PSN - 1;
+	pdc->max_rcvd_psn   = UET_DEFAULT_START_PSN - 1;
+	pdc->accepted_bytes = 0;
 	memcpy(&pdc->tgt_hkey, &pdc_key, sizeof(pdc_key));
 	HASH_ADD(pdc_tgt_hh, pds_state.pdc_tgt_ht, tgt_hkey,
 		 sizeof(pdc_key), pdc);
@@ -1136,6 +1144,9 @@ int uet_pds_initialize(struct uet_instance *uet)
 	uet->pds.msl            = UET_DEFAULT_MSL;
 	uet->pds.ack_ip_tos     = uet_dscp_to_tos(UET_IP_DEFAULT_ACK_DSCP);
 	uet->pds.max_ack_data	= UET_DEFAULT_PDS_MAX_ACK_DATA;
+	uet->pds.per_pkt_ack_enabled = UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED;
+	uet->pds.ack_gen_min_pkt_add = UET_DEFAULT_PDS_ACK_GEN_MIN_PKT_ADD;
+	uet->pds.ack_gen_trigger = UET_DEFAULT_PDS_ACK_GEN_PKT_TRIGGER;
 
 	memset(&pds_state, 0, sizeof(struct uet_pds_state));
 
@@ -1460,11 +1471,15 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	/* fill in the PDS header */
 
-	pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT)          |
-		     (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT) |
+	pds_flags = ((pds_pkt_type << UET_PDS_TYPE_SHIFT) |
 		     (next_hdr << UET_PDS_NEXT_HDR_SHIFT));
 	if (pdc->state == PDC_STATE_SYN) {
 		pds_flags |= (UET_PDS_REQ_FLAGS_SYN <<
+			      UET_PDS_FLAGS_SHIFT);
+	}
+
+	if (uet->pds.per_pkt_ack_enabled || (flags & UET_PDS_FLAG_EOM)) {
+		pds_flags |= (UET_PDS_REQ_FLAGS_AR <<
 			      UET_PDS_FLAGS_SHIFT);
 	}
 
@@ -1541,8 +1556,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
 
 	/* set this packet in the tx_bm */
-	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u",
-		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,
+	UET_PDS_DBG("PDC %u tx_bm: base=%u clear_psn=%u psn=%u SET bit=%u",
+		    pdc->pdc_id, pdc->tx_bm_base_psn,
+		    pdc_pkt->pkt_pp.pds_clear_psn, pdc_pkt->psn,
 		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
 
 	bm_set(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn), pdc_pkt);
@@ -1581,7 +1597,8 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 	/* set the retransmit flag in the PDS header */
 	pds_hdr = (struct uet_pds_req *)pdc_pkt->pkt_pp.pds;
 	pds_hdr->prlg.type_next_flags |=
-		 htons(UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT);
+		htons((UET_PDS_REQ_FLAGS_RETX << UET_PDS_FLAGS_SHIFT) |
+		      (UET_PDS_REQ_FLAGS_AR << UET_PDS_FLAGS_SHIFT));
 	pdc_pkt->pkt_pp.pds_flags |= UET_PDS_REQ_FLAGS_RETX;
 
 	/* retransmit the packet */
@@ -2119,6 +2136,25 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 	return 0;
 }
 
+static bool uet_pds_should_sack(struct uet_instance *uet,
+				struct uet_pdc *pdc,
+				struct uet_pdc_pkt *pdc_pkt)
+{
+	if ((pdc_pkt->pkt_pp.pds_flags & UET_PDS_REQ_FLAGS_AR) ||
+	    (pdc_pkt->pkt_pp.pds_flags & UET_PDS_REQ_FLAGS_SYN) ||
+	    pdc_pkt->needs_clear) {
+		return true;
+	}
+
+	if (pdc->accepted_bytes >= uet->pds.ack_gen_trigger)
+		return true;
+
+	if (pdc->prev_ar_psn == pdc->max_rcvd_psn)
+		return true;
+
+	return false;
+}
+
 static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				     struct uet_pdc *pdc,
 				     struct uet_pdc_pkt *pdc_pkt)
@@ -2160,12 +2196,17 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 			rc = -EINVAL;
 		} else {
 			pdc_pkt->needs_clear = gtd_del;
+			pdc->accepted_bytes +=
+				uet_max(pdc_pkt->pkt_pp.pkt_payload_len,
+					uet->pds.ack_gen_min_pkt_add);
 			uet_pds_update_cack(pdc, pdc_pkt);
-
 			/* transmit ACK */
-			rc = uet_pds_tx_ack_pkt(uet, pdc, pdc_pkt,
-						rsp_next_hdr, rsp_ses_hdr_len,
-						rsp_ses_hdr, gtd_del);
+			if (uet_pds_should_sack(uet, pdc, pdc_pkt)) {
+				rc = uet_pds_tx_ack_pkt(uet, pdc, pdc_pkt,
+							rsp_next_hdr, rsp_ses_hdr_len,
+							rsp_ses_hdr, gtd_del);
+				pdc->accepted_bytes = 0;
+			}
 		}
 	} else {
 		UET_PDS_ERR("PDC %u PSN %u SES upcall failed (rx_req=%d)",
@@ -2258,6 +2299,31 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 	return 0;
 }
 
+static void uet_pds_process_cack(struct uet_pdc *pdc,
+				 struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	int shift_count;
+	int i;
+
+	UET_PDS_UPDATE_PSN(pdc->max_cack_psn, pp->pds_cack_psn);
+
+	shift_count = (int32_t)(pdc->max_cack_psn + 1 - pdc->tx_bm_base_psn);
+	if (shift_count <= 0)
+		return;
+
+	/* Free all packets being shifted out of the window */
+	for (i = 0; i < shift_count; i++) {
+		if (!bm_get(pdc->tx_bm, i, (void **)&pdc_pkt))
+			continue;
+
+		if (!pdc_pkt->tx_pkt_acked) {
+			pdc_pkt->tx_pkt_acked = true;
+			dlist_remove(&pdc_pkt->node);
+		}
+	}
+}
+
 static int uet_pds_process_ack(struct uet_instance *uet,
 			       struct uet_parsed_pkt *pp)
 {
@@ -2317,6 +2383,7 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 
 	pdc_pkt->tx_pkt_acked = true;
 	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
+	uet_pds_process_cack(pdc, pp);
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
@@ -2401,6 +2468,11 @@ static int uet_pds_process_data_pkt(struct uet_instance *uet,
 	int i = 0;
 	int rc;
 
+	UET_PDS_UPDATE_PSN(pdc->max_rcvd_psn, pdc_pkt->pkt_pp.pds_psn);
+
+	if (pdc_pkt->pkt_pp.pds_flags & UET_PDS_REQ_FLAGS_AR)
+		UET_PDS_UPDATE_PSN(pdc->prev_ar_psn, pdc_pkt->pkt_pp.pds_psn);
+
 	/*
 	 * The processing logic of PDS request packet is as follows:
 	 * 1. Place the packet into rx bitmap.
@@ -2413,7 +2485,6 @@ static int uet_pds_process_data_pkt(struct uet_instance *uet,
 	 * 5. Advance the rx_bm_base_psn according to cack and free unused
 	 *    pdc packets.
 	 */
-
 	if (pdc_pkt->pkt_pp.pds_type == UET_PDS_TYPE_RUD_REQ) {
 		/* for RUD, call into SES immediately ignoring order */
 		rc = uet_pds_upcall_ses_rx_req(uet, pdc, pdc_pkt);
@@ -2732,8 +2803,10 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	else if (rtx)
 		return 0;
 
-	UET_PDS_DBG("PDC %u rx_bm: base=%u psn=%u SET bit=%u",
-		    pdc->pdc_id, pdc->rx_bm_base_psn, pdc_pkt->pkt_pp.pds_psn,
+	UET_PDS_DBG("PDC %u rx_bm: base=%u clear psn=%u psn=%u SET bit=%u",
+		    pdc->pdc_id, pdc->rx_bm_base_psn,
+		    pdc_pkt->pkt_pp.pds_clear_psn,
+		    pdc_pkt->pkt_pp.pds_psn,
 		    (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn));
 
 	bm_set(pdc->rx_bm, (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn),
