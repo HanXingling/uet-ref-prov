@@ -558,17 +558,19 @@ update_cnt:
 		entry->terminating_rx_desc = rx_desc;
 	}
 
-	if (entry->tot_cnt && ((entry->cur_cnt + 1) > entry->tot_cnt)) {
-		UET_API_ERR("RX: Too Many Messages for Sync Group");
-		if (!terminating_op)
-			return UET_RC_OP_VIOLATION;
-		entry->terminating_err = true;
-		entry->terminating_err_code = FI_EIO;
-		entry->tot_cnt = entry->cur_cnt + 1;
-	}
+	if (new_msg) {
+		if (entry->tot_cnt &&
+		    ((entry->cur_cnt + 1) > entry->tot_cnt)) {
+			UET_API_ERR("RX: Too Many Messages for Sync Group");
+			if (!terminating_op)
+				return UET_RC_OP_VIOLATION;
 
-	if (new_msg)
+			entry->terminating_err = true;
+			entry->terminating_err_code = FI_EIO;
+			entry->tot_cnt = entry->cur_cnt + 1;
+		}
 		entry->cur_cnt++;
+	}
 
 	return UET_RC_OK;
 }
