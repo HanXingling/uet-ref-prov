@@ -23,7 +23,7 @@
 #define UET_DEFAULT_MAX_TX_RETRIES   4
 #define UET_DEFAULT_MSL              2000	/* max seg lifetime in msecs */
 #define UET_DEFAULT_PDS_MAX_ACK_DATA 16		/* in bytes */
-#define UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED 1
+#define UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED 0
 #define UET_DEFAULT_PDS_ACK_GEN_MIN_PKT_ADD 1024 /* in bytes */
 #define UET_DEFAULT_PDS_ACK_GEN_PKT_TRIGGER 16384 /* in bytes */
 

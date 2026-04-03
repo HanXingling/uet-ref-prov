@@ -1148,6 +1148,12 @@ int uet_pds_initialize(struct uet_instance *uet)
 	uet->pds.ack_gen_min_pkt_add = UET_DEFAULT_PDS_ACK_GEN_MIN_PKT_ADD;
 	uet->pds.ack_gen_trigger = UET_DEFAULT_PDS_ACK_GEN_PKT_TRIGGER;
 
+	/* configure ack mode */
+	if (getenv("UET_PDS_PER_PKT_ACK_ENB")) {
+		uet->pds.per_pkt_ack_enabled =
+			strtoul(getenv("UET_PDS_PER_PKT_ACK_ENB"), NULL, 10);
+	}
+
 	memset(&pds_state, 0, sizeof(struct uet_pds_state));
 
 	/* initialize the PDCs */
@@ -2299,7 +2305,8 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 	return 0;
 }
 
-static void uet_pds_process_cack(struct uet_pdc *pdc,
+static void uet_pds_process_cack(struct uet_instance *uet,
+				 struct uet_pdc *pdc,
 				 struct uet_parsed_pkt *pp)
 {
 	struct uet_pdc_pkt *pdc_pkt;
@@ -2320,6 +2327,7 @@ static void uet_pds_process_cack(struct uet_pdc *pdc,
 		if (!pdc_pkt->tx_pkt_acked) {
 			pdc_pkt->tx_pkt_acked = true;
 			dlist_remove(&pdc_pkt->node);
+			uet->pds.upcall.rx_rsp(pdc_pkt->tx_pkt_handle, NULL);
 		}
 	}
 }
@@ -2381,9 +2389,13 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		return -EINVAL;
 	}
 
+	/*
+	 * The packets explicitly acknowledged and implicitly acknowledged
+	 * by coalesced ack are processed separately.
+	 */
 	pdc_pkt->tx_pkt_acked = true;
 	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
-	uet_pds_process_cack(pdc, pp);
+	uet_pds_process_cack(uet, pdc, pp);
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
