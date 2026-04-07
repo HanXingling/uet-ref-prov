@@ -2250,6 +2250,7 @@ int main(int argc, char *argv[])
 		test_argv[1] = c_s;
 		test_argv[2] = ip;
 		test_argv[3] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
 
 		rc = uet_run(test_argc, test_argv, ctx);
 		if (rc != UET_SUCCESS_RC)
