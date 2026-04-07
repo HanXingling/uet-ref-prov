@@ -1336,10 +1336,10 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		if (rc != 0)
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_rsp_d);
-		p = ((uint8_t *) pkt) + cur_len;
+		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+		p = ((uint8_t *) ses_rsp_d) + pp->ses_len;
 		pp->payload = p;
 		pp->hdr_len = cur_len;
-		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
 		pp->ses_opcode = (ses_rsp_d->cmn.list_opcode &
 				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
 		pp->ses_msg_id = ntohs(ses_rsp_d->cmn.msg_id);
