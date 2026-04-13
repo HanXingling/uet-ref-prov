@@ -3476,7 +3476,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	ses_std_req = (struct uet_ses_req_std *) pp->ses;
 	rx_ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
 
-	ver = (ses_std_req->cmn.ver_flags && UET_SES_VER_MASK) >>
+	ver = (ses_std_req->cmn.ver_flags & UET_SES_VER_MASK) >>
 		UET_SES_VER_SHIFT;
 
 	if (ver != UET_SES_VER) {
