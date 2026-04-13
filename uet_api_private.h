@@ -32,6 +32,13 @@
 #define UET_MAX_MSG_ID		0xffff
 #define UET_MAX_MSG_SIZE	(0xffffffff - 1)
 
+/*
+ * the UET_MAX_SYNC_GRP value was chosen to try and achieve a balance
+ * that minimizes failures due to lack of sync group resources while
+ * not reserving excessive sync group resources
+ */
+#define UET_MAX_SYNC_GRP	(UET_MAX_MSG_ID / 2)
+
 #define UET_MAX_RTR_TOKEN	0xffff
 #define UET_RTR_TOKEN_NONE	0
 
@@ -57,6 +64,10 @@
 
 	/* timeout for buffered rtr messages that have gone idle */
 #define UET_IDLE_RTR_MSG_TIMEOUT	5000	/* in msecs */
+
+	/* max liftime for rx sync group,                             */
+	/* protects against abandoned sync groups that have gone idle */
+#define UET_RX_SYNC_GRP_MAX_LIFETIME	60000	/* in msecs */
 
 	/* initial max backoff time for msg retransmissions, */
 	/* used by exponential backoff algorithm             */
@@ -249,6 +260,8 @@ struct uet_rx_desc {
 	time_t prev_pkt_time;     /* time most recent pkt of msg was received */
 	struct uet_tx_desc *tx_desc;     /* associated tx descriptor for read */
 	size_t expected_rd_rsp;          /* number of expected read responses */
+					/* ptr to sync group info for message */
+	struct uet_sync_grp_src_fep_entry *sync_grp_src_fep_entry;
 };
 
 /* rx msg descriptor ring entry */
@@ -330,7 +343,7 @@ struct uet_tx_desc {
 #define UET_TX_DESC_FLAG_ATOMIC_REQ		(1 << 10)
 #define UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ	(1 << 11)
 #define UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ	(1 << 12)
-
+#define UET_TX_DESC_FLAG_SYNC_REQ		(1 << 13)
 	int desc_flags;                          /* flags for this descriptor */
 	struct uet_msg_buf_desc buf_desc;                /* buffer descriptor */
 	uint64_t pkt_cnt;                /* number of pkt tx for this message */
@@ -348,6 +361,7 @@ struct uet_tx_desc {
 	uet_pds_mode_t pds_mode;                      /* packet delivery mode */
 	size_t unack_pkts;        /* number of unacknowledged pkts oustanding */
 	size_t remaining_bytes;              /* num msg bytes not transmitted */
+	bool transmitted; 		       /* used for zero-byte requests */
 	struct uet_mr_desc *mr_desc;          /* ptr to mr desc if applicable */
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	uint64_t seq_num;	   /* local sequence number used for ordering */
@@ -363,6 +377,7 @@ struct uet_tx_desc {
 	struct uet_rd_rsp_info rd_rsp;             /* info for tx of read rsp */
 	struct uet_ephemeral_av ephemeral_av;  /* av for tx of read rsp & rtr */
 	struct uet_atomic_parms atomic_parms;  /* parms for atomic operations */
+	uint16_t sync_grp;				 /* sync group number */
 #if ENABLE_VERBS
 	uint16_t resource_index;       /* for verbs, passing index outside av */
 #endif
@@ -390,6 +405,65 @@ struct uet_msg_id_cb {
 	uint8_t state[UET_MAX_MSG_ID+1];
 	       /* used to lookup rx desc with msg id index for read responses */
 	struct uet_rx_desc *rx_desc[UET_MAX_MSG_ID+1];
+};
+
+/* sync group av hash table lookup key, used by initiator */
+struct uet_sync_grp_av_key {
+	uint64_t av_handle;
+};
+
+/* sync group av hash table entry, used by initiator */
+struct uet_sync_grp_av_entry {
+	UT_hash_handle sync_grp_av_hh;         /* handle for sync grp av hash */
+	struct uet_sync_grp_av_key sync_grp_av_key;
+	uint16_t sync_grp;
+};
+
+/* sync group counts */
+struct uet_sync_grp_cnts {
+	uint16_t cur_cnt;              /* running count of msgs in sync group */
+	uint16_t tot_cnt;           /* total number of messages in sync group */
+	uint16_t cmpl_cnt;         /* num completions received for sync group */
+};
+
+/* sync group control block struct, used by initiator */
+struct uet_sync_grp_cb {
+	uint16_t next_sync_grp;             /* used for sync group allocation */
+#define UET_SYNC_GRP_AVAILABLE 0x00                           /* state values */
+#define UET_SYNC_GRP_ALLOCATED 0x02
+	uint8_t state[UET_MAX_SYNC_GRP+1];
+	struct uet_sync_grp_cnts cnts[UET_MAX_SYNC_GRP+1];
+};
+
+/* sync group src fep hash table lookup key, used by target */
+struct uet_sync_grp_src_fep_key {
+	bool ipv6_addr;
+	struct uet_fa src_ip;
+	uint16_t sync_grp;
+};
+
+/* parms needed for deferred exection of atomic operation */
+struct uet_sync_grp_atomic_parms {
+        uint8_t opcode;                                  /* uet atomic opcode */
+        uint8_t data_type;           /* uet type of data for atomic operation */
+	uint64_t *addr; 			     /* target memory address */
+	uint64_t data;  			       /* atomic operand data */
+};
+
+/* sync group src fep hash table entry, used by target */
+struct uet_sync_grp_src_fep_entry {
+	UT_hash_handle sync_grp_src_fep_hh;              /* hash table handle */
+	struct uet_sync_grp_src_fep_key sync_grp_src_fep_key;     /* hash key */
+	struct uet_sync_grp_cnts cnts;                   /* cnts for sync grp */
+	bool terminating_atomic;        /* sync group terminated by atomic op */
+	                   /* info needed for deferred execution of atomic op */
+	struct uet_sync_grp_atomic_parms atomic_parms;
+		    /* ptr to rx desc for message that terminates sync group, */
+		    /* i.e., the rx desc for a write imm                      */
+	struct uet_rx_desc *terminating_rx_desc;
+	bool terminating_err;  /* true => err associated with terminating msg */
+	int terminating_err_code;             /* err code for terminating msg */
+	time_t timeout;         /* timeout for partially received sync groups */
 };
 
 /* tx restart token control block struct */
@@ -428,13 +502,15 @@ struct uet_instance {
 	time_t idle_rx_msg_timeout;           /* timeout for partial rx msg's */
 	time_t idle_dsend_msg_timeout;     /* timeout for deferred send msg's */
 	time_t idle_rtr_msg_timeout;        /* timeout for buffered rtr msg's */
+	time_t max_rx_sync_grp_lifetime;   /* max lifetime for rx sync groups */
 	uint32_t max_msg_retransmits;     /* max num retransmissions of a msg */
 	uint32_t max_rtr_q_entries;         /* max num of rtr msg's to buffer */
 	struct uet_msg_id_cb msg_id_cb;        /* used for assigning msg id's */
+	struct uet_sync_grp_cb sync_grp_cb; /* used for assigning sync groups */
 				      /* used for assigning tx restart tokens */
 	struct uet_tx_rtr_token_cb tx_rtr_token_cb;
-	struct uet_rw_lock ep_lkup_lock;           /* lock for ep lookup tbl */
-	struct uet_ep *ep_hash_table;                 /* endpoint hash table */
+	struct uet_rw_lock ep_lkup_lock;            /* lock for ep lookup tbl */
+	struct uet_ep *ep_hash_table;                  /* endpoint hash table */
 };
 
 /* memory region descriptor allocation control block struct */
@@ -548,6 +624,12 @@ struct uet_ep {
 	uint8_t tagged_gen;                /* ses generation for tagged msg's */
 	bool tagged_gen_disabled;    /* true => gen disabled for tagged msg's */
 	size_t num_active_sends;          /* number of active send operations */
+					 /* initiator does sync grp av lookup */
+	struct uet_sync_grp_av_key sync_grp_av_key;
+	struct uet_sync_grp_av_entry *sync_grp_av_hash_table;
+			 	       /* target does sync grp src fep lookup */
+	struct uet_sync_grp_src_fep_key sync_grp_src_fep_key;
+	struct uet_sync_grp_src_fep_entry *sync_grp_src_fep_hash_table;
 };
 
 /* info associated with data to be carried in pds ack */

@@ -437,11 +437,17 @@ void uet_print_uet_hdr(struct uet_parsed_pkt *pp)
 		case UET_WRITE:
 			printf("WRITE, SOM = %d, EOM = %d\n", som, eom);
 			break;
+		case UET_SYNC_WRITE:
+			printf("SYNC WRITE, SOM = %d, EOM = %d\n", som, eom);
+			break;
 		case UET_READ:
 			printf("READ, SOM = %d, EOM = %d\n", som, eom);
 			break;
 		case UET_ATOMIC:
 			printf("ATOMIC, SOM = %d, EOM = %d\n", som, eom);
+			break;
+		case UET_SYNC_ATOMIC:
+			printf("SYNC ATOMIC, SOM = %d, EOM = %d\n", som, eom);
 			break;
 		case UET_FETCH_ATOMIC:
 			printf("FETCH ATOMIC, SOM = %d, EOM = %d\n", som, eom);
@@ -1270,6 +1276,13 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		case UET_RNDV_TSEND:
 			pp->ses_len += sizeof(struct uet_ses_rndv_ext);
 			break;
+		case UET_SYNC_WRITE:
+			pp->ses_len += sizeof(struct uet_ses_sync_ext);
+			break;
+		case UET_SYNC_ATOMIC:
+			pp->ses_len += sizeof(struct uet_ses_atomic_ext) +
+				       sizeof(struct uet_ses_sync_ext);
+			break;
 		default:
 			break;
 		}
@@ -1323,9 +1336,10 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		if (rc != 0)
 			return rc;
 		pp->ses_len = sizeof(struct uet_ses_rsp_d);
-		cur_len += pp->ses_len;
-		pp->hdr_len = cur_len;
 		ses_rsp_d = (struct uet_ses_rsp_d *) pp->ses;
+		p = ((uint8_t *) ses_rsp_d) + pp->ses_len;
+		pp->payload = p;
+		pp->hdr_len = cur_len;
 		pp->ses_opcode = (ses_rsp_d->cmn.list_opcode &
 				  UET_SES_OPCODE_MASK) >> UET_SES_OPCODE_SHIFT;
 		pp->ses_msg_id = ntohs(ses_rsp_d->cmn.msg_id);

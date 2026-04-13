@@ -413,6 +413,8 @@ typedef enum {
 	UET_TSEND_ATOMIC       = 0x0d,
 	UET_TSEND_FETCH_ATOMIC = 0x0e,
 	UET_MSG_ERR            = 0x0f,
+	UET_SYNC_WRITE	       = 0x10,
+	UET_SYNC_ATOMIC        = 0x11
 } uet_ses_req_opcode_t;
 
 #define UET_SES_OPCODE_MASK	0x3f
@@ -577,10 +579,24 @@ struct UET_PACKED uet_ses_atomic_ext {
 	uint8_t rsvd;
 };
 
+/* uet ses sync group extension header */
+struct UET_PACKED uet_ses_sync_ext {
+	uint16_t group;
+	uint16_t cnt;
+};
+
 /* uet ses standard request header with atomic extension header */
 struct UET_PACKED uet_ses_req_std_atomic {
 	struct uet_ses_req_std base;
 	struct uet_ses_atomic_ext ext;
+	uint8_t data[];
+};
+
+/* uet ses standard request header with atomic and sync extension headers */
+struct UET_PACKED uet_ses_req_std_atomic_sync {
+	struct uet_ses_req_std base;
+	struct uet_ses_sync_ext sync_ext;
+	struct uet_ses_atomic_ext atomic_ext;
 	uint8_t data[];
 };
 
@@ -599,10 +615,18 @@ struct UET_PACKED uet_ses_req_std_cswap {
 	struct uet_ses_atomic_cmpswp_ext ext;
 };
 
+/* uet ses standard request header with sync group extension header */
+struct UET_PACKED uet_ses_req_std_sync {
+	struct uet_ses_req_std base;
+	struct uet_ses_sync_ext ext;
+};
+
 /* union of ses request structs */
 union UET_PACKED uet_ses_req {
 	struct uet_ses_req_std std;
+	struct uet_ses_req_std_sync std_sync;
 	struct uet_ses_req_std_atomic atomic;
+	struct uet_ses_req_std_atomic_sync atomic_sync;
 	struct uet_ses_req_std_cswap cswap;
 };
 

@@ -62,8 +62,10 @@ typedef enum {
 	UET_SEND_API,
 	UET_TSEND_API,
 	UET_WRITE_API,
+	UET_WRITE_SYNC_API,
 	UET_READ_API,
 	UET_ATOMIC_API,
+	UET_ATOMIC_SYNC_API,
 	UET_FETCH_ATOMIC_API,
 	UET_COMPARE_ATOMIC_API
 } uet_send_req_api_t;
@@ -212,6 +214,363 @@ static void uet_dealloc_mr_desc(struct uet_domain *uet_dom,
 	offset = ((uint8_t *) mr_desc) - ((uint8_t *) uet_dom->mr_desc);
 	mr_index = offset / sizeof(struct uet_mr_desc);
 	uet_dom->mr_desc_alloc_cb.state[mr_index] = UET_MR_DESC_AVAILABLE;
+}
+
+/*
+ * allocate sync group
+ *
+ * parms:
+ *      uet      - ptr to uet instance struct
+ *      sync_grp - ptr to location where allocated sync group is returned
+ *
+ * returns:
+ *      FI_SUCCESS on success
+ *      negative value corresponding to fabric errno on error
+ */
+static int uet_alloc_sync_grp(struct uet_instance *uet, uint16_t *sync_grp)
+{
+	int cnt;
+	uint16_t next_sync_grp;
+	uint8_t *state, prev_state;
+
+	next_sync_grp = uet->sync_grp_cb.next_sync_grp;
+	for (cnt = 0, state = &uet->sync_grp_cb.state[next_sync_grp];
+	     cnt <= UET_MAX_SYNC_GRP; cnt++) {
+		prev_state = __atomic_exchange_n(
+			state, UET_SYNC_GRP_ALLOCATED, __ATOMIC_SEQ_CST);
+		if (prev_state == UET_SYNC_GRP_AVAILABLE) {
+			*sync_grp = next_sync_grp;
+			uet->sync_grp_cb.next_sync_grp = next_sync_grp + 1;
+			if (uet->sync_grp_cb.next_sync_grp > UET_MAX_SYNC_GRP)
+				uet->sync_grp_cb.next_sync_grp = 0;
+			memset(&uet->sync_grp_cb.cnts[next_sync_grp], 0,
+			       sizeof(struct uet_sync_grp_cnts));
+			return FI_SUCCESS;
+		}
+		if (++next_sync_grp > UET_MAX_SYNC_GRP)
+			next_sync_grp = 0;
+		state = &uet->sync_grp_cb.state[next_sync_grp];
+	}
+
+	UET_API_ERR("No Sync Group Available");
+	return -FI_EBUSY;
+}
+
+/*
+ * deallocate sync group
+ *
+ * parms:
+ *      uet      - ptr to uet instance struct
+ *      sync_grp - sync grp to be deallocated
+ */
+static void uet_dealloc_sync_grp(struct uet_instance *uet, uint16_t sync_grp)
+{
+	uet->sync_grp_cb.state[sync_grp] = UET_SYNC_GRP_AVAILABLE;
+}
+
+/* init key for sync group av lookup */
+static void uet_sync_grp_av_key_init(uint64_t av_handle,
+				     struct uet_sync_grp_av_key *key)
+{
+	memset(key, 0, sizeof(struct uet_sync_grp_av_key));
+	key->av_handle = av_handle;
+}
+
+/* insert entry in sync group av hash table */
+void uet_sync_grp_av_hash_insert(struct uet_ep *uet_ep,
+                                 struct uet_sync_grp_av_entry *entry)
+{
+	HASH_ADD(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table,
+		 sync_grp_av_key, sizeof(struct uet_sync_grp_av_key), entry);
+}
+
+/* remove entry from sync group av hash table */
+static void uet_sync_grp_av_hash_remove(struct uet_ep *uet_ep,
+                                        struct uet_sync_grp_av_entry *entry)
+{
+	HASH_DELETE(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table, entry);
+	free(entry);
+}
+
+/* remove all entries from sync group av hash table and free associated mem */
+static void uet_sync_grp_av_hash_finalize(struct uet_ep *uet_ep)
+{
+	struct uet_sync_grp_av_entry *current, *tmp;
+
+	HASH_ITER(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table,
+		  current, tmp) {
+		uet_sync_grp_av_hash_remove(uet_ep, current);
+	}
+}
+
+/* sync group av hash table lookup */
+static struct uet_sync_grp_av_entry *uet_sync_grp_av_hash_lookup(
+		struct uet_ep *uet_ep, struct uet_sync_grp_av_key *key)
+{
+	struct uet_sync_grp_av_entry *sync_grp_av_entry;
+
+	HASH_FIND(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table, key,
+		  sizeof(struct uet_sync_grp_av_key), sync_grp_av_entry);
+
+	return sync_grp_av_entry;
+}
+
+/* increment current count for sync group at initiator */
+static void uet_inc_sync_grp_cur_cnt_initiator(struct uet_instance *uet,
+				     	       uint16_t sync_grp)
+{
+	uet->sync_grp_cb.cnts[sync_grp].cur_cnt++;
+}
+
+/* set total count for sync group at initiator */
+static void uet_set_sync_grp_tot_cnt_initiator(struct uet_instance *uet,
+				               uint16_t sync_grp)
+{
+	uet->sync_grp_cb.cnts[sync_grp].tot_cnt =
+		uet->sync_grp_cb.cnts[sync_grp].cur_cnt;
+}
+
+/*
+ * get sync group for destination associated with av
+ *  - allocate a sync group if one is not already active for av
+ *  - active sync groups are maintained in a hash table anchored in
+ *    the endpoint
+ *
+ * parms:
+ *      uet_ep            - ptr to uet endpoint struct
+ *      av_handle         - handle identifying the av
+ *      sync_grp_av_entry - ptr to location where ptr to sync group av entry
+ *                          is returned
+ *
+ * returns:
+ *      FI_SUCCESS on success
+ *      negative value corresponding to fabric errno on error
+ */
+static int uet_get_sync_grp_av(struct uet_ep *uet_ep, uint64_t av_handle,
+			       struct uet_sync_grp_av_entry **sync_grp_av_entry)
+{
+	int rc;
+	uint16_t new_sync_grp;
+	struct uet_sync_grp_av_entry *entry;
+	struct uet_sync_grp_av_key key;
+
+	uet_sync_grp_av_key_init(av_handle, &key);
+	entry = uet_sync_grp_av_hash_lookup(uet_ep, &key);
+	if (entry == NULL) {
+		entry = (struct uet_sync_grp_av_entry *)
+				calloc(1, sizeof(struct uet_sync_grp_av_entry));
+		if (entry == NULL)
+			return -FI_ENOMEM;
+
+		rc = uet_alloc_sync_grp(uet_ep->uet_domain->uet, &new_sync_grp);
+		if (rc != FI_SUCCESS) {
+			free(entry);
+			return rc;
+		}
+
+		uet_sync_grp_av_key_init(av_handle, &entry->sync_grp_av_key);
+		entry->sync_grp = new_sync_grp;
+		uet_sync_grp_av_hash_insert(uet_ep, entry);
+	}
+
+	uet_inc_sync_grp_cur_cnt_initiator(uet_ep->uet_domain->uet,
+				   	   entry->sync_grp);
+
+	*sync_grp_av_entry = entry;
+
+	return FI_SUCCESS;
+}
+
+/* free initiator resources associated with sync group */
+static void uet_sync_grp_free_initiator(struct uet_ep *uet_ep,
+			                uint16_t sync_grp,
+			                struct uet_sync_grp_av_entry *entry)
+{
+	if (entry != NULL)
+		uet_sync_grp_av_hash_remove(uet_ep, entry);
+
+	uet_dealloc_sync_grp(uet_ep->uet_domain->uet, sync_grp);
+}
+
+/* terminate an active sync group at initiator */
+static void uet_sync_grp_end_initiator(struct uet_ep *uet_ep,
+			               struct uet_sync_grp_av_entry *entry)
+{
+	uet_set_sync_grp_tot_cnt_initiator(uet_ep->uet_domain->uet,
+					   entry->sync_grp);
+	uet_sync_grp_av_hash_remove(uet_ep, entry);
+}
+
+/* handle sync group completion at initiator */
+static void uet_sync_grp_completion_initiator(struct uet_tx_desc *tx_desc)
+{
+	struct uet_sync_grp_cnts *sync_grp_cnts;
+	struct uet_instance *uet;
+
+	uet = tx_desc->uet_ep->uet_domain->uet;
+
+	sync_grp_cnts = &uet->sync_grp_cb.cnts[tx_desc->sync_grp];
+	sync_grp_cnts->cmpl_cnt++;
+	if (sync_grp_cnts->cmpl_cnt >= sync_grp_cnts->tot_cnt)
+		uet_dealloc_sync_grp(uet, tx_desc->sync_grp);
+}
+
+/* init key for sync group src fep lookup at target */
+static void uet_sync_grp_src_fep_key_init(uint16_t sync_grp,
+					  struct uet_sync_grp_src_fep_key *key,
+					  struct uet_parsed_pkt *pp)
+{
+	memset(key, 0, sizeof(struct uet_sync_grp_src_fep_key));
+
+	if (pp->is_ipv6) {
+		key->ipv6_addr = true;
+		struct ipv6hdr *ipv6 = (struct ipv6hdr *)pp->ip;
+		memcpy(key->src_ip.v6, &ipv6->saddr, UET_IPV6_ADDR_OCTETS);
+	} else {
+		struct iphdr *ipv4 = (struct iphdr *)pp->ip;
+		key->src_ip.v4 = ntohl(ipv4->saddr);
+	}
+
+	key->sync_grp = sync_grp;
+}
+
+/* insert entry in sync group src fep hash table */
+void uet_sync_grp_src_fep_hash_insert(struct uet_ep *uet_ep,
+                                      struct uet_sync_grp_src_fep_entry *entry)
+{
+	time_t now;
+
+	HASH_ADD(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table,
+		 sync_grp_src_fep_key, sizeof(struct uet_sync_grp_src_fep_key),
+		 entry);
+	uet_gettime(&now);
+	entry->timeout = now +
+			 uet_ep->uet_domain->uet->max_rx_sync_grp_lifetime;
+}
+
+/* remove entry from sync group src fep hash table */
+static void uet_sync_grp_src_fep_hash_remove(
+	struct uet_ep *uet_ep,
+	struct uet_sync_grp_src_fep_entry *entry)
+{
+	HASH_DELETE(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table,
+		    entry);
+	free(entry);
+}
+
+/* remove all entries from sync group src fep hash table and free associated mem */
+static void uet_sync_grp_src_fep_hash_finalize(struct uet_ep *uet_ep)
+{
+	struct uet_sync_grp_src_fep_entry *current, *tmp;
+
+	HASH_ITER(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table,
+		  current, tmp) {
+		uet_sync_grp_src_fep_hash_remove(uet_ep, current);
+	}
+}
+
+/* sync group src fep hash table lookup */
+static struct uet_sync_grp_src_fep_entry *uet_sync_grp_src_fep_hash_lookup(
+		struct uet_ep *uet_ep, struct uet_sync_grp_src_fep_key *key)
+{
+	struct uet_sync_grp_src_fep_entry *sync_grp_src_fep_entry;
+
+	HASH_FIND(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table, key,
+		  sizeof(struct uet_sync_grp_src_fep_key),
+		  sync_grp_src_fep_entry);
+
+	return sync_grp_src_fep_entry;
+}
+
+/*
+ * get sync group entry for src fep
+ *  - allocate a sync group entry if one is not already active for src fep
+ *  - sync groups are maintained in a hash table anchored in the endpoint
+ *
+ * parms:
+ *      rx_desc - ptr to rx descriptor for message
+ *      pp      - ptr to parsed packet struct
+ *      new_msg - true => start of new message
+ *
+ * returns:
+ *      UET_RC_OK on success, ptr to sync group entry returned in rx_desc struct
+ *      otherwise, ses error code
+ */
+static int uet_get_sync_grp_src_fep(struct uet_rx_desc *rx_desc,
+				    struct uet_parsed_pkt *pp,
+				    bool new_msg)
+{
+	uet_ses_rc_t ses_rc;
+	union uet_ses_req *ses;
+	struct uet_ses_sync_ext *ext;
+	struct uet_sync_grp_src_fep_key key;
+	struct uet_sync_grp_src_fep_entry *entry;
+	struct uet_ep *uet_ep;
+	bool terminating_op = false;
+	uint16_t ext_group, ext_cnt;
+
+	uet_ep = rx_desc->uet_ep;
+
+	ses = (union uet_ses_req *) pp->ses;
+	ext = &ses->std_sync.ext;
+	ext_group = ntohs(ext->group);
+	ext_cnt = ntohs(ext->cnt);
+
+	if (ses->std_sync.base.cmn.ver_flags & UET_SES_REQ_FLAG_HD)
+		terminating_op = true;
+
+	if (rx_desc->sync_grp_src_fep_entry != NULL) {
+		entry = rx_desc->sync_grp_src_fep_entry;
+		goto update_cnt;
+	}
+
+	uet_sync_grp_src_fep_key_init(ext_group, &key, pp);
+	entry = uet_sync_grp_src_fep_hash_lookup(uet_ep, &key);
+	if (entry == NULL) {
+		entry = (struct uet_sync_grp_src_fep_entry *)
+			calloc(1,
+			       sizeof(struct uet_sync_grp_src_fep_entry));
+		if (entry == NULL) {
+			UET_API_ERR("RX: No Sync Group for RMA Write");
+			return UET_RC_UNCOR_TRNSNT;
+		}
+
+		entry->sync_grp_src_fep_key = key;
+		uet_sync_grp_src_fep_hash_insert(uet_ep, entry);
+	}
+
+	rx_desc->sync_grp_src_fep_entry = entry;
+
+update_cnt:
+	if (terminating_op) {
+		if (entry->cnts.tot_cnt) {
+			UET_API_ERR("RX: Multiple Terminating Ops for Sync "
+				    "Group");
+			return UET_RC_OP_VIOLATION;
+		}
+		if (ext_cnt == 0) {
+			UET_API_ERR("RX: Invalid Sync Group Count");
+			return UET_RC_OP_VIOLATION;
+		}
+		entry->cnts.tot_cnt = ext_cnt;
+		entry->terminating_rx_desc = rx_desc;
+	}
+
+	if (new_msg) {
+		if (entry->cnts.tot_cnt &&
+		    ((entry->cnts.cur_cnt + 1) > entry->cnts.tot_cnt)) {
+			UET_API_ERR("RX: Too Many Messages for Sync Group");
+			if (!terminating_op)
+				return UET_RC_OP_VIOLATION;
+
+			entry->terminating_err = true;
+			entry->terminating_err_code = FI_EIO;
+			entry->cnts.tot_cnt = entry->cnts.cur_cnt + 1;
+		}
+		entry->cnts.cur_cnt++;
+	}
+
+	return UET_RC_OK;
 }
 
 /*
@@ -1091,6 +1450,9 @@ static void uet_tx_cq_post_entry(struct uet_tx_desc *tx_desc)
 	cq = &uet_ep->send_cq;
 	ring = &cq->ring;
 
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
+		uet_sync_grp_completion_initiator(tx_desc);
+
 	if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
 	    (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)) {
 		uet_tx_desc_recycle(tx_desc, true);
@@ -1150,6 +1512,7 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 
 	/* set descriptor fields to retransmit message from start */
 	tx_desc->remaining_bytes = tx_desc->buf_desc.len;
+	tx_desc->transmitted = false;
 	tx_desc->buf_desc.buf_off = 0;
 	tx_desc->pkt_cnt = 0;
 
@@ -1181,7 +1544,7 @@ static void uet_tx_desc_state_transition(struct uet_tx_desc *tx_desc)
 
 	switch (tx_desc->state) {
 	case UET_TX_DESC_STATE_ACTIVE:
-		if (tx_desc->remaining_bytes)
+		if (tx_desc->remaining_bytes || !tx_desc->transmitted)
 			break;
 		if (tx_desc->unack_pkts)
 			tx_desc->state = UET_TX_DESC_STATE_WAIT;
@@ -1272,6 +1635,9 @@ static void uet_tx_cq_post_err(struct uet_tx_desc *tx_desc, int err_code)
 	cq = &uet_ep->send_cq;
 	cq_ring = &cq->ring;
 
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
+		uet_sync_grp_completion_initiator(tx_desc);
+
 	if ((tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_RSP) ||
 	    (tx_desc->desc_flags & UET_TX_DESC_FLAG_RTR_REQ)) {
 		uet_tx_desc_recycle(tx_desc, true);
@@ -1317,6 +1683,8 @@ static void uet_rx_cq_read_entry(void *buf, struct uet_ring *ring)
 	uet_ring_tail_advance(ring);
 }
 
+static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code);
+
 /* post an entry to a rx completion queue */
 static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 {
@@ -1325,13 +1693,55 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 	struct uet_ring *ring;
 	struct uet_cq_ring_entry *ring_entry;
 	struct fi_cq_tagged_entry *cq_entry;
+	struct uet_sync_grp_src_fep_entry *sync_entry;
+	struct uet_rx_desc *terminating_rx_desc;
+	bool handle_terminating_desc = false, terminating_err;
+	int terminating_err_code;
+
+	uet_ep = rx_desc->uet_ep;
+
+	sync_entry = rx_desc->sync_grp_src_fep_entry;
+	if (sync_entry) {
+		terminating_rx_desc = sync_entry->terminating_rx_desc;
+		sync_entry->cnts.cmpl_cnt++;
+		if (sync_entry->cnts.cmpl_cnt == sync_entry->cnts.tot_cnt) {
+			if (sync_entry->terminating_atomic) {
+				if (!sync_entry->terminating_err)
+					/* deferred execution of atomic op,  */
+					/* currently, only sum is supported, */
+					/* appropriate atomic system call    */
+					/* must be used if other ops are     */
+					/* supported in the future           */
+					__atomic_fetch_add(
+						sync_entry->atomic_parms.addr,
+						sync_entry->atomic_parms.data,
+					 	__ATOMIC_SEQ_CST);
+			} else if (terminating_rx_desc &&
+				   (terminating_rx_desc != rx_desc)) {
+				handle_terminating_desc = true;
+				terminating_err = sync_entry->terminating_err;
+				terminating_err_code =
+					sync_entry->terminating_err_code;
+			}
+			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
+		} else if (terminating_rx_desc == rx_desc)
+			return;
+	}
 
 	if (!(rx_desc->desc_flags & UET_RX_DESC_FLAG_POST_CQ)) {
 		uet_rx_desc_recycle(rx_desc, true);
-		return;
+		if (handle_terminating_desc) {
+			if (terminating_err) {
+				uet_rx_cq_post_err(
+					terminating_rx_desc,
+					terminating_err_code);
+				return;
+			} else
+				rx_desc = terminating_rx_desc;
+		} else
+			return;
 	}
 
-	uet_ep = rx_desc->uet_ep;
 	cq = &uet_ep->recv_cq;
 	ring = &cq->ring;
 
@@ -1369,15 +1779,49 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 	struct uet_ring *ring;
 	struct uet_cq_ring_entry *ring_entry;
 	struct fi_cq_err_entry *err_entry;
+	struct uet_sync_grp_src_fep_entry *sync_entry;
+	struct uet_rx_desc *terminating_rx_desc;
+	bool handle_terminating_desc = false, terminating_err;
+	int terminating_err_code;
+
+	uet_ep = rx_desc->uet_ep;
+
+	sync_entry = rx_desc->sync_grp_src_fep_entry;
+	if (sync_entry) {
+		if (!sync_entry->terminating_err) {
+			sync_entry->terminating_err = true;
+			sync_entry->terminating_err_code = err_code;
+		}
+		sync_entry->cnts.cmpl_cnt++;
+		if (sync_entry->cnts.cmpl_cnt == sync_entry->cnts.tot_cnt) {
+			terminating_rx_desc = sync_entry->terminating_rx_desc;
+			if (terminating_rx_desc &&
+			    (terminating_rx_desc != rx_desc)) {
+				handle_terminating_desc = true;
+				terminating_err = sync_entry->terminating_err;
+				terminating_err_code =
+					sync_entry->terminating_err_code;
+			}
+			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
+		}
+	}
 
 	if ((rx_desc->desc_flags & UET_RX_DESC_FLAG_WRITE) ||
 	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_ERR_TRACK) ||
 	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_DSEND)) {
 		uet_rx_desc_recycle(rx_desc, true);
-		return;
+		if (handle_terminating_desc) {
+			if (terminating_err) {
+				rx_desc = terminating_rx_desc;
+				err_code = terminating_err_code;
+			} else {
+				uet_rx_cq_post_entry(terminating_rx_desc);
+				return;
+			}
+		} else
+			return;
 	}
 
-	uet_ep = rx_desc->uet_ep;
 	cq = &uet_ep->recv_cq;
 	ring = &cq->ring;
 
@@ -1415,6 +1859,8 @@ static void uet_ep_free(struct uet_ep *uet_ep)
 
 	uet_rx_msg_hash_finalize(uet_ep);
 	uet_tag_initiator_hash_finalize(uet_ep);
+	uet_sync_grp_av_hash_finalize(uet_ep);
+	uet_sync_grp_src_fep_hash_finalize(uet_ep);
 
 	uet_desc_free(uet_ep);
 
@@ -1680,6 +2126,7 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
  *      uet_ep      - ptr to uet endpoint struct
  *      pp          - ptr to parsed packet struct
  *      write       - true => message is write message
+ *      sync        - true => message is part of sync group
  *      ses_rc      - ses return code, UET_RC_OK => not errored message
  *      msg_key     - ptr to location where key from message lookup is
  *                    to be returned
@@ -1692,7 +2139,7 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
  *   - ses return code
  */
 static uet_ses_rc_t uet_get_rx_desc(
-	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, bool write,
+	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, bool write, bool sync,
 	uet_ses_rc_t ses_rc, struct uet_rx_msg_key *msg_key,
 	struct uet_rx_desc **rx_desc, bool *first_msg_pkt)
 {
@@ -1703,6 +2150,8 @@ static uet_ses_rc_t uet_get_rx_desc(
 	uet_rx_msg_key_init(msg_key, pp);
 	*rx_desc = uet_rx_msg_hash_lookup(uet_ep, msg_key);
 	if (*rx_desc != NULL) {
+		if (sync)
+			uet_get_sync_grp_src_fep(*rx_desc, pp, false);
 		*first_msg_pkt = false;
 		uet_rx_desc_active_list_move_to_tail(uet_ep, *rx_desc);
 		if ((*rx_desc)->ses_rc != UET_RC_OK)
@@ -1735,6 +2184,13 @@ static uet_ses_rc_t uet_get_rx_desc(
 	(*rx_desc)->uet_ep = uet_ep;
 	if (write)
 		(*rx_desc)->desc_flags = UET_RX_DESC_FLAG_WRITE;
+	if (sync) {
+		uet_ses_rc_t sync_ses_rc;
+
+		sync_ses_rc = uet_get_sync_grp_src_fep(*rx_desc, pp, true);
+		if (sync_ses_rc != UET_RC_OK)
+			ses_rc = sync_ses_rc;
+	}
 	if (ses_rc != UET_RC_OK)
 		goto err_exit;
 
@@ -1991,97 +2447,171 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
  * process a received non-fetching atomic request packet
  *
  * parms:
- *      uet_ep     - ptr to uet endpoint struct
- *      pp         - ptr to parsed packet struct
- *      list       - ptr to location where type of list pkt was
- *                   delivered to is to be returned
+ *      uet_ep - ptr to uet endpoint struct
+ *      pp     - ptr to parsed packet struct
+ *      list   - ptr to location where type of list pkt was
+ *               delivered to is to be returned
+ *      sync   - atomic is associated with sync group
  *
  * returns:
  *   - ses return code
  */
 static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp,
-	uet_ses_list_t *list) {
+	uet_ses_list_t *list, bool sync)
+{
+	uet_ses_rc_t ses_rc = UET_RC_OK;
 	size_t start_off;
 	uint8_t opcode, dt;
 	uint32_t req_len, rx_gen, ep_gen;
 	uint64_t data, *addr;
-	struct uet_ses_req_std_atomic *ses_atomic;
+	struct uet_ses_req_std_atomic *ses;
+	struct uet_ses_req_std_atomic_sync *ses_sync;
 	struct uet_mr_desc *mr_desc;
+	struct uet_sync_grp_src_fep_key key;
+	struct uet_sync_grp_src_fep_entry *entry = NULL;
+	bool sync_defer_atomic = false, bool_rx_msg_err;
+	uint16_t sync_ext_group, sync_ext_cnt;
 
-	ses_atomic = (struct uet_ses_req_std_atomic *) pp->ses;
+	ses = (struct uet_ses_req_std_atomic *) pp->ses;
+	ses_sync = (struct uet_ses_req_std_atomic_sync *) pp->ses;
 
 	*list = UET_EXPECTED; /* overflow list not supported */
 
-	req_len = ntohl(ses_atomic->base.req_len);
-	start_off = ntohll(ses_atomic->base.buf_off);
+	if (sync) {
+		dt = ses_sync->atomic_ext.atomic_dt;
+		opcode = ses_sync->atomic_ext.atomic_opcode;
+		sync_ext_group = ntohs(ses_sync->sync_ext.group);
+		sync_ext_cnt = ntohs(ses_sync->sync_ext.cnt);
+		uet_sync_grp_src_fep_key_init(sync_ext_group, &key, pp);
+		entry = uet_sync_grp_src_fep_hash_lookup(uet_ep, &key);
+		if (entry != NULL) {
+			if (entry->cnts.tot_cnt) {
+				UET_API_ERR("RX: Multiple Terminating Ops for "
+					    "Sync Group");
+				ses_rc = UET_RC_OP_VIOLATION;
+				goto err_exit;
+			}
+			entry->terminating_atomic = true;
+			entry->cnts.cmpl_cnt++;
+			entry->cnts.cur_cnt++;
+			entry->cnts.tot_cnt = sync_ext_cnt;
+			if (entry->cnts.cur_cnt > entry->cnts.tot_cnt) {
+				UET_API_ERR("RX: Too Many Messages for Sync "
+					    "Group");
+				ses_rc = UET_RC_OP_VIOLATION;
+				entry->cnts.tot_cnt = entry->cnts.cur_cnt;
+			}
+			if (entry->cnts.cmpl_cnt == entry->cnts.tot_cnt) {
+				uet_sync_grp_src_fep_hash_remove(uet_ep, entry);
+				entry = NULL;
+			} else
+				sync_defer_atomic = true;
+			if (ses_rc != UET_RC_OK)
+				goto err_exit;
+		} else if (sync_ext_cnt == 0) {
+			UET_API_ERR("RX: Invalid Sync Group Count");
+			ses_rc = UET_RC_OP_VIOLATION;
+			goto err_exit;
+		} else if (sync_ext_cnt != 1) {
+			entry = (struct uet_sync_grp_src_fep_entry *)
+				calloc(1,
+				     sizeof(struct uet_sync_grp_src_fep_entry));
+			if (entry == NULL) {
+				UET_API_ERR("RX: No Sync Group for RMA Atomic");
+				ses_rc = UET_RC_UNCOR_TRNSNT;
+				goto err_exit;
+			}
+
+			entry->terminating_atomic = true;
+			entry->cnts.cur_cnt++;
+			entry->cnts.cmpl_cnt++;
+			entry->cnts.tot_cnt = sync_ext_cnt;
+			entry->sync_grp_src_fep_key = key;
+			uet_sync_grp_src_fep_hash_insert(uet_ep, entry);
+			sync_defer_atomic = true;
+		}
+	} else {
+		dt = ses->ext.atomic_dt;
+		opcode = ses->ext.atomic_opcode;
+	}
+
+	req_len = ntohl(ses->base.req_len);
+	start_off = ntohll(ses->base.buf_off);
 
 	/* check for initiator error */
-	if (ses_atomic->base.cmn.ver_flags & UET_SES_REQ_FLAG_IE) {
+	if (ses->base.cmn.ver_flags & UET_SES_REQ_FLAG_IE) {
 		UET_API_ERR("RX: Atomic Req: IE Set");
-		return UET_RC_INITIATOR_ERR;
+		ses_rc = UET_RC_INITIATOR_ERR;
+		goto err_exit;
 	}
 
 	/* check that generation is enabled */
 	if (uet_ep->untagged_gen_disabled) {
 		UET_API_ERR("RX: Atomic Req: Disabled Generation");
-		return UET_RC_DISABLED_GEN;
+		ses_rc = UET_RC_DISABLED_GEN;
+		goto err_exit;
 	}
 
 	/* check for correct generation */
-	rx_gen = (uint32_t)((ntohl(ses_atomic->base.cmn.ri_gen_job_id) &
+	rx_gen = (uint32_t)((ntohl(ses->base.cmn.ri_gen_job_id) &
 			     UET_SES_REQ_RI_GEN_MASK) >>
 			    UET_SES_REQ_RI_GEN_SHIFT);
 	ep_gen = (uint32_t) uet_ep->untagged_gen;
 	if (rx_gen != ep_gen) {
 		UET_API_ERR("RX: Atomic Req: Bad Generation");
-		return UET_RC_BAD_GENERATION;
+		ses_rc = UET_RC_BAD_GENERATION;
+		goto err_exit;
 	}
 
 	/* check that atomic request is single packet message */
-	if ((ses_atomic->base.cmn.ver_flags & (UET_SES_REQ_FLAG_SOM |
-			  	   	       UET_SES_REQ_FLAG_EOM)) !=
+	if ((ses->base.cmn.ver_flags & (UET_SES_REQ_FLAG_SOM |
+		  	   	        UET_SES_REQ_FLAG_EOM)) !=
 	    (UET_SES_REQ_FLAG_SOM | UET_SES_REQ_FLAG_EOM)) {
 		UET_API_ERR("RX: Atomic Req: SOM and EOM Not Set");
-		return UET_RC_OP_VIOLATION;
+		ses_rc = UET_RC_OP_VIOLATION;
+		goto err_exit;
 	}
 
 	/* check atomic datatype */
-	dt = ses_atomic->ext.atomic_dt;
 	if (dt != UET_TYPE_UINT64) {
 		/* this is the only atomic datatype supported by uet verbs */
 		UET_API_ERR("RX: Atomic Req: Unsupported Data Type 0x%x", dt);
-		return UET_RC_UNSUPPORTED_OP;
+		ses_rc = UET_RC_UNSUPPORTED_OP;
+		goto err_exit;
 	}
 
 	/* check atomic opcode */
-	opcode = ses_atomic->ext.atomic_opcode;
 	switch (opcode) {
 	case UET_AMO_SUM:
 		/* check req len field of ses hdr */
 		if (req_len != UET_VERBS_ATOMIC_DATA_BYTES) {
 			UET_API_ERR("RX: Atomic Req: Bad Req Len %u", req_len);
-			return UET_RC_OP_VIOLATION;
+			ses_rc = UET_RC_OP_VIOLATION;
+			goto err_exit;
 		}
 		/* check actual payload len of packet */
 		if (pp->ses_payload_len != req_len) {
 			UET_API_ERR("RX: Atomic Req: "
 			    	    "Bad Packet Payload Len %u",
 				    pp->ses_payload_len);
-			return UET_RC_OP_VIOLATION;
+			ses_rc = UET_RC_OP_VIOLATION;
+			goto err_exit;
 		}
 		break;
 	default:
 		UET_API_ERR("RX: Atomic Req: Unsupported Opcode 0x%x",
 			    opcode);
-		return UET_RC_UNSUPPORTED_OP;
+		ses_rc = UET_RC_UNSUPPORTED_OP;
+		goto err_exit;
 	}
 
 	/* find mr descriptor associated with key */
 	mr_desc = uet_get_mr_desc(uet_ep, pp);
 	if (mr_desc == NULL) {
 		UET_API_ERR("RX: Atomic Req: Invalid Key");
-		return UET_RC_BAD_MKEY;
+		ses_rc = UET_RC_BAD_MKEY;
+		goto err_exit;
 	}
 
 	/* check mr permissions */
@@ -2089,22 +2619,45 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) !=
 	    (FI_ATOMIC | FI_REMOTE_READ | FI_REMOTE_WRITE)) {
 		UET_API_ERR("RX: Atomic Req: Insufficient Permission");
-		return UET_RC_PERM_VIOLATION;
+		ses_rc = UET_RC_PERM_VIOLATION;
+		goto err_exit;
 	}
 
 	/* validate requested data is within memory region */
 	if ((start_off + UET_VERBS_ATOMIC_DATA_BYTES) >
 	     mr_desc->buf_desc.len) {
 		UET_API_ERR("RX: Atomic Req: Invalid Buffer Offset");
-		return UET_RC_BAD_ADDR;
+		ses_rc = UET_RC_BAD_ADDR;
+		goto err_exit;
 	}
 
-	/* implement atomic operation */
+	/* implement atomic operation                                  */
+	/*   - atomic operation may be deferred by sync group protocol */
 	addr = (uint64_t *) (((uint8_t *) mr_desc->buf_desc.buf) + start_off);
-	data = ntohll(*((uint64_t *) ses_atomic->data));
-	__atomic_fetch_add(addr, data, __ATOMIC_SEQ_CST);
+	if (sync)
+		data = ntohll(*((uint64_t *) ses_sync->data));
+	else
+		data = ntohll(*((uint64_t *) ses->data));
+
+	/* currently, only sum of uint64 is supported                  */
+	/*   - if additional atomic ops are supported:                 */
+	/*     - parms for deferred op come from atomic ext hdr in pkt */
+	/*     - appropriate atomic system calls must be used for      */
+	/*       for non-deferred ops                                  */
+	if (sync_defer_atomic) {
+		entry->atomic_parms.opcode = UET_AMO_SUM;
+		entry->atomic_parms.data_type = UET_TYPE_UINT64;
+		entry->atomic_parms.addr = (uint64_t) addr;
+		entry->atomic_parms.data = data;
+	} else
+		__atomic_fetch_add(addr, data, __ATOMIC_SEQ_CST);
 
 	return UET_RC_OK;
+
+err_exit:
+	if (entry)
+		entry->terminating_err = true;
+	return ses_rc;
 }
 
 /*
@@ -2397,13 +2950,14 @@ static void scatter_buffer_to_iov(
  *                delivered to is to be returned
  *      tagged  - true => message is tagged message
  *      write   - true => message is write message
+ *      sync    - true => write is associated with sync group
  *
  * returns:
  *   - ses return code
  */
 static uet_ses_rc_t uet_rx_req_pkt(
 	struct uet_ep *uet_ep, struct uet_parsed_pkt *pp, uet_ses_list_t *list,
-	bool tagged, bool write)
+	bool tagged, bool write, bool sync)
 {
 	uet_ses_rc_t ses_rc;
 	uint16_t max_payload_len;
@@ -2430,7 +2984,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		start_off = 0;
 
 	/* get rx descriptor for message */
-	ses_rc = uet_get_rx_desc(uet_ep, pp, write, UET_RC_OK, &msg_key,
+	ses_rc = uet_get_rx_desc(uet_ep, pp, write, sync, UET_RC_OK, &msg_key,
 				 &rx_desc, &first_msg_pkt);
 	if (ses_rc != UET_RC_OK)
 		return ses_rc;
@@ -2656,7 +3210,8 @@ static uet_ses_rc_t uet_rx_req_pkt(
 				pp->payload, pp->pkt_payload_len,
 				buf_off);
 	} else {
-		buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + buf_off);
+		buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) +
+				     buf_off);
 		memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
 	}
 
@@ -2992,20 +3547,27 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	case UET_SEND:
 	case UET_DEFER_SEND:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
-					false, false);
+					false, false, false);
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
 		break;
 	case UET_TAGGED_SEND:
 	case UET_DEFER_TSEND:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
-					true, false);
+					true, false, false);
 		ep_gen = (uint32_t) uet_ep->tagged_gen;
 		break;
 	case UET_DEFER_RTR:
 		break;
 	case UET_WRITE:
 		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
-					false, true);
+					false, true, false);
+		if (ses_rc == UET_RC_UNCOR_TRNSNT)
+			*ses_nack = true;
+		ep_gen = (uint32_t) uet_ep->untagged_gen;
+		break;
+	case UET_SYNC_WRITE:
+		ses_rc = uet_rx_req_pkt(uet_ep, pp, &list,
+					false, true, true);
 		if (ses_rc == UET_RC_UNCOR_TRNSNT)
 			*ses_nack = true;
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
@@ -3024,7 +3586,11 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		ses_rc = uet_rx_cancel_pkt(uet_ep, pp);
 		break;
 	case UET_ATOMIC:
-		ses_rc = uet_rx_atomic_req_pkt(uet_ep, pp, &list);
+		ses_rc = uet_rx_atomic_req_pkt(uet_ep, pp, &list, false);
+		ep_gen = (uint32_t) uet_ep->untagged_gen;
+		break;
+	case UET_SYNC_ATOMIC:
+		ses_rc = uet_rx_atomic_req_pkt(uet_ep, pp, &list, true);
 		ep_gen = (uint32_t) uet_ep->untagged_gen;
 		break;
 	case UET_FETCH_ATOMIC:
@@ -3038,7 +3604,7 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 	default:
 		UET_API_ERR("RX: Unsupported Opcode = 0x%x", pp->ses_opcode);
 		ses_rc = uet_get_rx_desc(
-				uet_ep, pp, false, UET_RC_UNSUPPORTED_OP,
+				uet_ep, pp, false, false, UET_RC_UNSUPPORTED_OP,
 				&msg_key, &rx_desc, &first_msg_pkt);
 		break;
 	}
@@ -3197,8 +3763,10 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 					void *ses_hdr)
 {
 	struct uet_ses_req_std_cswap *ses;
+	struct uet_ses_req_std_atomic_sync *ses_sync;
 	struct uet_av_entry *av;
 	struct uet_ep *uet_ep;
+	struct uet_instance *uet;
 	uint8_t opcode;
 	int dc = 0;
 	uint64_t *data_val, *ses_atomic_data, *swap_val;
@@ -3207,9 +3775,12 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 	av = (struct uet_av_entry *) tx_desc->dst_addr_handle;
 	uet_ep = tx_desc->uet_ep;
 
-	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_REQ)
-		opcode = UET_ATOMIC;
-	else
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_REQ) {
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
+			opcode = UET_SYNC_ATOMIC;
+		else
+			opcode = UET_ATOMIC;
+	} else
 		opcode = UET_FETCH_ATOMIC;
 
 	ses->base.cmn.rsvd_opcode = opcode << UET_SES_OPCODE_SHIFT;
@@ -3248,10 +3819,12 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 
 	ses->base.cmpl_data = 0;
 
-	ses->ext.cmn.atomic_opcode = tx_desc->atomic_parms.opcode;
-	ses->ext.cmn.atomic_dt = tx_desc->atomic_parms.data_type;
-	ses->ext.cmn.sem_ctrl = UET_AMO_CPU_COHERENT;
-	ses->ext.cmn.rsvd = 0;
+	if (!(tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)) {
+		ses->ext.cmn.atomic_opcode = tx_desc->atomic_parms.opcode;
+		ses->ext.cmn.atomic_dt = tx_desc->atomic_parms.data_type;
+		ses->ext.cmn.sem_ctrl = UET_AMO_CPU_COHERENT;
+		ses->ext.cmn.rsvd = 0;
+	}
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ) {
 		ses->base.req_len = htonl(UET_CSWAP_DATA_BYTES);
@@ -3266,7 +3839,24 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 		ses->base.req_len = htonl(tx_desc->buf_desc.len);
 		data_val = (uint64_t *) (((size_t) tx_desc->buf_desc.buf) +
 				         tx_desc->buf_desc.buf_off);
-		ses_atomic_data = (uint64_t *) &ses->ext.cmp_val_hi;
+
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ) {
+			ses_sync = (struct uet_ses_req_std_atomic_sync *) ses;
+			uet = uet_ep->uet_domain->uet;
+			ses_sync->sync_ext.group = htons(tx_desc->sync_grp);
+			ses_sync->sync_ext.cnt = htons(
+			      uet->sync_grp_cb.cnts[tx_desc->sync_grp].tot_cnt);
+			ses_sync->atomic_ext.atomic_opcode =
+				tx_desc->atomic_parms.opcode;
+			ses_sync->atomic_ext.atomic_dt =
+				tx_desc->atomic_parms.data_type;
+			ses_sync->atomic_ext.sem_ctrl = UET_AMO_CPU_COHERENT;
+			ses_sync->atomic_ext.rsvd = 0;
+			ses_atomic_data =
+				(uint64_t *) &ses_sync->data;
+		} else
+			ses_atomic_data = (uint64_t *) &ses->ext.cmp_val_hi;
+
 		*ses_atomic_data = htonll(*data_val);
 	}
 
@@ -3289,8 +3879,10 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 			     void *ses_hdr)
 {
 	struct uet_ses_req_std *ses;
+	struct uet_ses_req_std_sync *ses_sync;
 	struct uet_av_entry *av;
 	struct uet_ep *uet_ep;
+	struct uet_instance *uet;
 	uint8_t opcode;
 	uint64_t local_token, remote_token;
 	int som = 0, eom = 0, dc = 0;
@@ -3378,7 +3970,10 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 			htonl((av->tagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
 			      (tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT));
 	} else if (tx_desc->cq_flags & FI_WRITE) {
-		opcode = UET_WRITE;
+		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
+			opcode = UET_SYNC_WRITE;
+		else
+			opcode = UET_WRITE;
 		ses->match_bits = htonll(tx_desc->remote_key);
 		if (som &&
 		    (tx_desc->desc_flags & UET_TX_DESC_FLAG_IMM_DATA_VALID)) {
@@ -3424,6 +4019,14 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->initiator = htonl(uet_ep->uet_addr.initiator_id);
 	ses->req_len = htonl((uint32_t) req_len);
+
+	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ) {
+		ses_sync = (struct uet_ses_req_std_sync *) ses;
+		uet = uet_ep->uet_domain->uet;
+		ses_sync->ext.group = htons(tx_desc->sync_grp);
+		ses_sync->ext.cnt = htons(
+			uet->sync_grp_cb.cnts[tx_desc->sync_grp].tot_cnt);
+	}
 
 	return FI_SUCCESS;
 }
@@ -3717,7 +4320,8 @@ static int uet_tx_cancel(struct uet_tx_desc *tx_desc)
 
 	uet_build_ses_hdr(tx_desc, 0, &ses);
 
-	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc,
+				  tx_desc->pkt_cnt++,
 				  tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_EOM, NULL, tx_desc->msg_id,
@@ -3747,7 +4351,8 @@ static int uet_tx_rtr(struct uet_tx_desc *tx_desc)
 
 	uet_build_ses_hdr(tx_desc, 0, &ses);
 
-	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc, tx_desc->pkt_cnt++,
+	rc = pds->downcall.tx_pkt((uet_pkt_handle_t) tx_desc,
+				  tx_desc->pkt_cnt++,
 				  tx_desc->uet_ep,
 				  tx_desc->dst_addr_handle, tx_desc->pds_mode,
 				  UET_PDS_FLAG_SOM | UET_PDS_FLAG_EOM, NULL,
@@ -3844,7 +4449,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	int rc;
 	struct uet_ep *uet_ep;
 	struct uet_pds *pds;
-	struct uet_ses_req_std_cswap ses_req;
+	union uet_ses_req ses_req;
 	struct uet_ses_rsp_d ses_rsp_d;
 	uet_pds_tx_flags_t flags;
 	size_t payload_len, max_payload_len, ses_len, pkt_len;
@@ -3864,7 +4469,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 		flags = UET_PDS_FLAG_NONE;
 
 	max_payload_len = uet_ep->uet_domain->uet->max_payload_len;
-	while (tx_desc->remaining_bytes) {
+	while (tx_desc->remaining_bytes || !tx_desc->transmitted) {
 		if (tx_desc->remaining_bytes > max_payload_len)
 			payload_len = max_payload_len;
 		else {
@@ -3901,6 +4506,9 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 				pkt_len = 0;
 			} else
 				ses_len = sizeof(struct uet_ses_req_std);
+
+			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)
+				ses_len += sizeof(struct uet_ses_sync_ext);
 		}
 
 		if (tx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
@@ -3940,6 +4548,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 			tx_desc->unack_pkts++;
 			tx_desc->buf_desc.buf_off += payload_len;
 			tx_desc->remaining_bytes -= payload_len;
+			tx_desc->transmitted = true;
 			if (tx_desc->desc_flags & UET_TX_DESC_FLAG_READ_REQ)
 				tx_desc->rx_desc->expected_rd_rsp++;
 			/* clear SOM flag after first packet */
@@ -4120,6 +4729,36 @@ static void uet_msg_age(struct uet_ep *uet_ep)
 	uet_rx_msg_age(uet_ep, now);
 	uet_dsend_msg_age(uet_ep, now);
 	uet_rtr_msg_age(uet_ep, now);
+}
+
+/* age out partially received sync group that has gone idle */
+static void uet_rx_sync_grp_age(struct uet_ep *uet_ep)
+{
+	struct uet_sync_grp_src_fep_entry *current, *tmp;
+	time_t now;
+
+	uet_gettime(&now);
+
+	HASH_ITER(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table,
+		  current, tmp) {
+
+		if (now > current->timeout) {
+			if (current->cnts.cur_cnt == current->cnts.cmpl_cnt) {
+				/* only age out sync groups for which no  */
+				/* message is in progress		  */
+				/*  - idle messages will be aged out      */
+				/*    independently                       */
+				UET_API_ERR("RX Sync Group Timeout");
+				if (current->terminating_rx_desc)
+					uet_rx_cq_post_err(
+						current->terminating_rx_desc,
+						FI_EIO);
+				HASH_DELETE(sync_grp_src_fep_hh,
+					    uet_ep->sync_grp_src_fep_hash_table,
+					    current);
+			}
+		}
+	}
 }
 
 /* initiate transmit of ready to restart if appropriate */
@@ -4334,6 +4973,7 @@ static ssize_t uet_send_req_api_common(
 	struct uet_tx_desc *tx_desc;
 	struct uet_rx_desc *rx_desc;
 	struct uet_av_entry *av_entry;
+	struct uet_sync_grp_av_entry *sync_grp_av_entry;
 	struct iovec *iov_handle;
 
 	uet_ep = (struct uet_ep *) ep_handle;
@@ -4374,6 +5014,23 @@ static ssize_t uet_send_req_api_common(
 		return rc;
 	}
 
+	/* handle sync request */
+	switch (send_req_api) {
+	case UET_WRITE_SYNC_API:
+	case UET_ATOMIC_SYNC_API:
+		rc = uet_get_sync_grp_av(uet_ep, (uint64_t) av_entry,
+					 &sync_grp_av_entry);
+		if (rc != FI_SUCCESS) {
+			uet_dealloc_msg_id(uet, msg_id);
+			free(iov_handle);
+			return rc;
+		}
+		break;
+	default:
+		sync_grp_av_entry = NULL;
+		break;
+	}
+
 	pthread_mutex_lock(&uet_ep->data_lock);
 
 	/* allocate tx descriptor */
@@ -4382,15 +5039,21 @@ static ssize_t uet_send_req_api_common(
 		pthread_mutex_unlock(&uet_ep->data_lock);
 		free(iov_handle);
 		uet_dealloc_msg_id(uet, msg_id);
+		if (sync_grp_av_entry)
+			uet_sync_grp_free_initiator(uet_ep,
+						    sync_grp_av_entry->sync_grp,
+						    sync_grp_av_entry);
 		return -FI_EAGAIN;
 	}
 
 	switch (send_req_api) {
 	case UET_WRITE_API:
+	case UET_WRITE_SYNC_API:
 	case UET_READ_API:
 		rma_op = true;
 		break;
 	case UET_ATOMIC_API:
+	case UET_ATOMIC_SYNC_API:
 	case UET_FETCH_ATOMIC_API:
 	case UET_COMPARE_ATOMIC_API:
 		rma_op = true;
@@ -4408,6 +5071,11 @@ static ssize_t uet_send_req_api_common(
 			pthread_mutex_unlock(&uet_ep->data_lock);
 			free(iov_handle);
 			uet_dealloc_msg_id(uet, msg_id);
+			if (sync_grp_av_entry)
+				uet_sync_grp_free_initiator(
+					uet_ep,
+					sync_grp_av_entry->sync_grp,
+					sync_grp_av_entry);
 			return -FI_EAGAIN;
 		}
 		/* init rx descriptor */
@@ -4487,6 +5155,16 @@ static ssize_t uet_send_req_api_common(
 		}
 		tx_desc->cq_flags = FI_RMA | FI_WRITE;
 		break;
+	case UET_WRITE_SYNC_API:
+		tx_desc->sync_grp = sync_grp_av_entry->sync_grp;
+		tx_desc->desc_flags |= UET_TX_DESC_FLAG_SYNC_REQ;
+		if (imm_data) {
+			tx_desc->desc_flags |= UET_TX_DESC_FLAG_IMM_DATA_VALID;
+			tx_desc->tag_or_immdata = *imm_data;
+			uet_sync_grp_end_initiator(uet_ep, sync_grp_av_entry);
+		}
+		tx_desc->cq_flags = FI_RMA | FI_WRITE;
+		break;
 	case UET_READ_API:
 		tx_desc->desc_flags |= UET_TX_DESC_FLAG_READ_REQ;
 		tx_desc->cq_flags = FI_RMA | FI_READ;
@@ -4494,6 +5172,12 @@ static ssize_t uet_send_req_api_common(
 		break;
 	case UET_ATOMIC_API:
 		tx_desc->desc_flags |= UET_TX_DESC_FLAG_ATOMIC_REQ;
+		break;
+	case UET_ATOMIC_SYNC_API:
+		tx_desc->sync_grp = sync_grp_av_entry->sync_grp;
+		tx_desc->desc_flags |= (UET_TX_DESC_FLAG_ATOMIC_REQ |
+					UET_TX_DESC_FLAG_SYNC_REQ);
+		uet_sync_grp_end_initiator(uet_ep, sync_grp_av_entry);
 		break;
 	case UET_FETCH_ATOMIC_API:
 		tx_desc->desc_flags |= UET_TX_DESC_FLAG_ATOMIC_FETCH_REQ;
@@ -4739,6 +5423,7 @@ int uet_initialize(uet_handle_t *handle, bool is_ipv6)
 	uet->idle_rx_msg_timeout = UET_IDLE_RX_MSG_TIMEOUT;
 	uet->idle_dsend_msg_timeout = UET_IDLE_DSEND_MSG_TIMEOUT;
 	uet->idle_rtr_msg_timeout = UET_IDLE_RTR_MSG_TIMEOUT;
+	uet->max_rx_sync_grp_lifetime = UET_RX_SYNC_GRP_MAX_LIFETIME;
 	uet->max_rtr_q_entries = UET_RTR_Q_ENTRIES_MAX;
 	uet->max_msg_retransmits = UET_MSG_RETRANSMIT_MAX;
 	uet->default_msg_ip_tos = uet_dscp_to_tos(UET_IP_DEFAULT_MSG_DSCP);
@@ -5357,6 +6042,7 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
 	pthread_mutex_lock(&uet_ep->data_lock);
 
 	uet_msg_age(uet_ep);
+	uet_rx_sync_grp_age(uet_ep);
 
 	pds->downcall.progress_rx(uet_ep->uet_domain->uet);
 
@@ -5920,6 +6606,23 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 			remote_key, NULL, context));
 }
 
+ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
+		       size_t len, uint64_t *data, uet_mr_handle_t mr_handle,
+		       uet_addr_handle_t dst_addr_handle,
+		       uint64_t remote_mem_addr, uint64_t remote_key,
+		       void *context)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_WRITE_SYNC_API, ep_handle, job_id, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG, data,
+			remote_mem_addr, remote_key, NULL, context));
+}
+
 ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t uet_addr_handle,
@@ -5952,6 +6655,24 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
 			UET_WRITE_API, ep_handle, job_key, &iov, 1, mr_handle,
 			dst_addr_handle, UET_NO_TAG, data, remote_mem_addr,
 			remote_key, NULL, context, resource_index));
+}
+
+ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
+		       size_t len, uint64_t *data, uet_mr_handle_t mr_handle,
+		       uet_addr_handle_t dst_addr_handle,
+		       uint64_t remote_mem_addr, uint64_t remote_key,
+		       void *context, uint16_t resource_index)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_WRITE_SYNC_API, ep_handle, job_key, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG, data,
+			remote_mem_addr, remote_key, NULL, context,
+			resource_index));
 }
 
 ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
@@ -6107,6 +6828,62 @@ ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
                         mr_handle, dst_addr_handle, UET_NO_TAG,
                         UET_NO_IMM_DATA, remote_mem_addr, remote_key,
                         &parms, context, resource_index));
+}
+#endif
+
+#if !ENABLE_VERBS
+ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
+			const void *local_op_buf, size_t count,
+			uet_mr_handle_t mr_handle,
+			uet_addr_handle_t dst_addr_handle,
+			uint64_t remote_mem_addr, uint64_t remote_key,
+			enum fi_datatype datatype, enum fi_op op,
+			void *context)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+			       mr_handle, NULL, UET_NULL_HANDLE,
+			       NULL, UET_NULL_HANDLE, datatype,
+			       op, FI_ATOMIC, &iov, &parms);
+
+	if (rc)
+		return rc;
+
+	return (uet_send_req_api_common(
+			UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context));
+}
+#else
+ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
+			const void *local_op_buf, size_t count,
+			uet_mr_handle_t mr_handle,
+			uet_addr_handle_t dst_addr_handle,
+			uint64_t remote_mem_addr, uint64_t remote_key,
+			enum fi_datatype datatype, enum fi_op op,
+			void *context, uint16_t resource_index)
+{
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
+
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+			       mr_handle, NULL, UET_NULL_HANDLE,
+			       NULL, UET_NULL_HANDLE, datatype,
+			       op, FI_ATOMIC, &iov, &parms);
+
+	if (rc)
+		return rc;
+
+	return (uet_send_req_api_common(
+			UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context, resource_index));
 }
 #endif
 
