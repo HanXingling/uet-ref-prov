@@ -1794,7 +1794,6 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 		}
 		sync_entry->cnts.cmpl_cnt++;
 		if (sync_entry->cnts.cmpl_cnt == sync_entry->cnts.tot_cnt) {
-			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
 			terminating_rx_desc = sync_entry->terminating_rx_desc;
 			if (terminating_rx_desc &&
 			    (terminating_rx_desc != rx_desc)) {
@@ -1803,6 +1802,7 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 				terminating_err_code =
 					sync_entry->terminating_err_code;
 			}
+			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
 		}
 	}
 
