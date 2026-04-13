@@ -243,12 +243,12 @@ static int uet_alloc_sync_grp(struct uet_instance *uet, uint16_t *sync_grp)
 			uet->sync_grp_cb.next_sync_grp = next_sync_grp + 1;
 			if (uet->sync_grp_cb.next_sync_grp > UET_MAX_SYNC_GRP)
 				uet->sync_grp_cb.next_sync_grp = 0;
-			memset(uet->sync_grp_cb.cnts, 0,
-			       sizeof(uet->sync_grp_cb.cnts));
+			memset(&uet->sync_grp_cb.cnts[next_sync_grp], 0,
+			       sizeof(struct uet_sync_grp_cnts));
 			return FI_SUCCESS;
 		}
 		if (++next_sync_grp > UET_MAX_SYNC_GRP)
-			next_sync_grp= 0;
+			next_sync_grp = 0;
 		state = &uet->sync_grp_cb.state[next_sync_grp];
 	}
 
@@ -299,8 +299,7 @@ static void uet_sync_grp_av_hash_finalize(struct uet_ep *uet_ep)
 
 	HASH_ITER(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table,
 		  current, tmp) {
-		HASH_DELETE(sync_grp_av_hh, uet_ep->sync_grp_av_hash_table,
-			    current);
+		uet_sync_grp_av_hash_remove(uet_ep, current);
 	}
 }
 
@@ -466,8 +465,7 @@ static void uet_sync_grp_src_fep_hash_finalize(struct uet_ep *uet_ep)
 
 	HASH_ITER(sync_grp_src_fep_hh, uet_ep->sync_grp_src_fep_hash_table,
 		  current, tmp) {
-		HASH_DELETE(sync_grp_src_fep_hh,
-			    uet_ep->sync_grp_src_fep_hash_table, current);
+		uet_sync_grp_src_fep_hash_remove(uet_ep, current);
 	}
 }
 
@@ -545,7 +543,7 @@ static int uet_get_sync_grp_src_fep(struct uet_rx_desc *rx_desc,
 
 update_cnt:
 	if (terminating_op) {
-		if (entry->tot_cnt) {
+		if (entry->cnts.tot_cnt) {
 			UET_API_ERR("RX: Multiple Terminating Ops for Sync "
 				    "Group");
 			return UET_RC_OP_VIOLATION;
@@ -554,22 +552,22 @@ update_cnt:
 			UET_API_ERR("RX: Invalid Sync Group Count");
 			return UET_RC_OP_VIOLATION;
 		}
-		entry->tot_cnt = ext_cnt;
+		entry->cnts.tot_cnt = ext_cnt;
 		entry->terminating_rx_desc = rx_desc;
 	}
 
 	if (new_msg) {
-		if (entry->tot_cnt &&
-		    ((entry->cur_cnt + 1) > entry->tot_cnt)) {
+		if (entry->cnts.tot_cnt &&
+		    ((entry->cnts.cur_cnt + 1) > entry->cnts.tot_cnt)) {
 			UET_API_ERR("RX: Too Many Messages for Sync Group");
 			if (!terminating_op)
 				return UET_RC_OP_VIOLATION;
 
 			entry->terminating_err = true;
 			entry->terminating_err_code = FI_EIO;
-			entry->tot_cnt = entry->cur_cnt + 1;
+			entry->cnts.tot_cnt = entry->cnts.cur_cnt + 1;
 		}
-		entry->cur_cnt++;
+		entry->cnts.cur_cnt++;
 	}
 
 	return UET_RC_OK;
@@ -1447,7 +1445,6 @@ static void uet_tx_cq_post_entry(struct uet_tx_desc *tx_desc)
 	struct uet_av_entry *av_entry;
 	struct uet_cq_ring_entry *ring_entry;
 	struct fi_cq_tagged_entry *cq_entry;
-	struct uet_sync_grp_cnts *sync_grp_cnts;
 
 	uet_ep = tx_desc->uet_ep;
 	cq = &uet_ep->send_cq;
@@ -1698,25 +1695,34 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 	struct fi_cq_tagged_entry *cq_entry;
 	struct uet_sync_grp_src_fep_entry *sync_entry;
 	struct uet_rx_desc *terminating_rx_desc;
-	bool handle_terminating_desc = false;
+	bool handle_terminating_desc = false, terminating_err;
+	int terminating_err_code;
 
 	uet_ep = rx_desc->uet_ep;
 
 	sync_entry = rx_desc->sync_grp_src_fep_entry;
 	if (sync_entry) {
 		terminating_rx_desc = sync_entry->terminating_rx_desc;
-		sync_entry->cmpl_cnt++;
-		if (sync_entry->cmpl_cnt == sync_entry->tot_cnt) {
+		sync_entry->cnts.cmpl_cnt++;
+		if (sync_entry->cnts.cmpl_cnt == sync_entry->cnts.tot_cnt) {
 			if (sync_entry->terminating_atomic) {
 				if (!sync_entry->terminating_err)
-					/* deferred execution of atomic op */
+					/* deferred execution of atomic op,  */
+					/* currently, only sum is supported, */
+					/* appropriate atomic system call    */
+					/* must be used if other ops are     */
+					/* supported in the future           */
 					__atomic_fetch_add(
 						sync_entry->atomic_parms.addr,
 						sync_entry->atomic_parms.data,
 					 	__ATOMIC_SEQ_CST);
 			} else if (terminating_rx_desc &&
-				   (terminating_rx_desc != rx_desc))
+				   (terminating_rx_desc != rx_desc)) {
 				handle_terminating_desc = true;
+				terminating_err = sync_entry->terminating_err;
+				terminating_err_code =
+					sync_entry->terminating_err_code;
+			}
 			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
 		} else if (terminating_rx_desc == rx_desc)
 			return;
@@ -1725,10 +1731,10 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 	if (!(rx_desc->desc_flags & UET_RX_DESC_FLAG_POST_CQ)) {
 		uet_rx_desc_recycle(rx_desc, true);
 		if (handle_terminating_desc) {
-			if (sync_entry->terminating_err) {
+			if (terminating_err) {
 				uet_rx_cq_post_err(
 					terminating_rx_desc,
-					sync_entry->terminating_err_code);
+					terminating_err_code);
 				return;
 			} else
 				rx_desc = terminating_rx_desc;
@@ -1775,7 +1781,8 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 	struct fi_cq_err_entry *err_entry;
 	struct uet_sync_grp_src_fep_entry *sync_entry;
 	struct uet_rx_desc *terminating_rx_desc;
-	bool handle_terminating_desc = false;
+	bool handle_terminating_desc = false, terminating_err;
+	int terminating_err_code;
 
 	uet_ep = rx_desc->uet_ep;
 
@@ -1785,13 +1792,17 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 			sync_entry->terminating_err = true;
 			sync_entry->terminating_err_code = err_code;
 		}
-		sync_entry->cmpl_cnt++;
-		if (sync_entry->cmpl_cnt == sync_entry->tot_cnt) {
+		sync_entry->cnts.cmpl_cnt++;
+		if (sync_entry->cnts.cmpl_cnt == sync_entry->cnts.tot_cnt) {
 			uet_sync_grp_src_fep_hash_remove(uet_ep, sync_entry);
 			terminating_rx_desc = sync_entry->terminating_rx_desc;
 			if (terminating_rx_desc &&
-			    (terminating_rx_desc != rx_desc))
+			    (terminating_rx_desc != rx_desc)) {
 				handle_terminating_desc = true;
+				terminating_err = sync_entry->terminating_err;
+				terminating_err_code =
+					sync_entry->terminating_err_code;
+			}
 		}
 	}
 
@@ -1800,9 +1811,9 @@ static void uet_rx_cq_post_err(struct uet_rx_desc *rx_desc, int err_code)
 	    (rx_desc->desc_flags & UET_RX_DESC_FLAG_DSEND)) {
 		uet_rx_desc_recycle(rx_desc, true);
 		if (handle_terminating_desc) {
-			if (sync_entry->terminating_err) {
+			if (terminating_err) {
 				rx_desc = terminating_rx_desc;
-				err_code = sync_entry->terminating_err_code;
+				err_code = terminating_err_code;
 			} else {
 				uet_rx_cq_post_entry(terminating_rx_desc);
 				return;
@@ -2468,28 +2479,30 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	*list = UET_EXPECTED; /* overflow list not supported */
 
 	if (sync) {
+		dt = ses_sync->atomic_ext.atomic_dt;
+		opcode = ses_sync->atomic_ext.atomic_opcode;
 		sync_ext_group = ntohs(ses_sync->sync_ext.group);
 		sync_ext_cnt = ntohs(ses_sync->sync_ext.cnt);
 		uet_sync_grp_src_fep_key_init(sync_ext_group, &key, pp);
 		entry = uet_sync_grp_src_fep_hash_lookup(uet_ep, &key);
 		if (entry != NULL) {
-			if (entry->tot_cnt) {
+			if (entry->cnts.tot_cnt) {
 				UET_API_ERR("RX: Multiple Terminating Ops for "
 					    "Sync Group");
 				ses_rc = UET_RC_OP_VIOLATION;
 				goto err_exit;
 			}
 			entry->terminating_atomic = true;
-			entry->cmpl_cnt++;
-			entry->cur_cnt++;
-			entry->tot_cnt = sync_ext_cnt;
-			if (entry->cur_cnt > entry->tot_cnt) {
+			entry->cnts.cmpl_cnt++;
+			entry->cnts.cur_cnt++;
+			entry->cnts.tot_cnt = sync_ext_cnt;
+			if (entry->cnts.cur_cnt > entry->cnts.tot_cnt) {
 				UET_API_ERR("RX: Too Many Messages for Sync "
 					    "Group");
 				ses_rc = UET_RC_OP_VIOLATION;
-				entry->tot_cnt = entry->cur_cnt;
+				entry->cnts.tot_cnt = entry->cnts.cur_cnt;
 			}
-			if (entry->cmpl_cnt == entry->tot_cnt) {
+			if (entry->cnts.cmpl_cnt == entry->cnts.tot_cnt) {
 				uet_sync_grp_src_fep_hash_remove(uet_ep, entry);
 				entry = NULL;
 			} else
@@ -2511,13 +2524,16 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 			}
 
 			entry->terminating_atomic = true;
-			entry->cur_cnt++;
-			entry->cmpl_cnt++;
-			entry->tot_cnt = sync_ext_cnt;
+			entry->cnts.cur_cnt++;
+			entry->cnts.cmpl_cnt++;
+			entry->cnts.tot_cnt = sync_ext_cnt;
 			entry->sync_grp_src_fep_key = key;
 			uet_sync_grp_src_fep_hash_insert(uet_ep, entry);
 			sync_defer_atomic = true;
 		}
+	} else {
+		dt = ses->ext.atomic_dt;
+		opcode = ses->ext.atomic_opcode;
 	}
 
 	req_len = ntohl(ses->base.req_len);
@@ -2558,7 +2574,6 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	}
 
 	/* check atomic datatype */
-	dt = ses->ext.atomic_dt;
 	if (dt != UET_TYPE_UINT64) {
 		/* this is the only atomic datatype supported by uet verbs */
 		UET_API_ERR("RX: Atomic Req: Unsupported Data Type 0x%x", dt);
@@ -2567,7 +2582,6 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	}
 
 	/* check atomic opcode */
-	opcode = ses->ext.atomic_opcode;
 	switch (opcode) {
 	case UET_AMO_SUM:
 		/* check req len field of ses hdr */
@@ -2625,6 +2639,11 @@ static uet_ses_rc_t uet_rx_atomic_req_pkt(
 	else
 		data = ntohll(*((uint64_t *) ses->data));
 
+	/* currently, only sum of uint64 is supported                  */
+	/*   - if additional atomic ops are supported:                 */
+	/*     - parms for deferred op come from atomic ext hdr in pkt */
+	/*     - appropriate atomic system calls must be used for      */
+	/*       for non-deferred ops                                  */
 	if (sync_defer_atomic) {
 		entry->atomic_parms.opcode = UET_AMO_SUM;
 		entry->atomic_parms.data_type = UET_TYPE_UINT64;
@@ -3800,10 +3819,12 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 
 	ses->base.cmpl_data = 0;
 
-	ses->ext.cmn.atomic_opcode = tx_desc->atomic_parms.opcode;
-	ses->ext.cmn.atomic_dt = tx_desc->atomic_parms.data_type;
-	ses->ext.cmn.sem_ctrl = UET_AMO_CPU_COHERENT;
-	ses->ext.cmn.rsvd = 0;
+	if (!(tx_desc->desc_flags & UET_TX_DESC_FLAG_SYNC_REQ)) {
+		ses->ext.cmn.atomic_opcode = tx_desc->atomic_parms.opcode;
+		ses->ext.cmn.atomic_dt = tx_desc->atomic_parms.data_type;
+		ses->ext.cmn.sem_ctrl = UET_AMO_CPU_COHERENT;
+		ses->ext.cmn.rsvd = 0;
+	}
 
 	if (tx_desc->desc_flags & UET_TX_DESC_FLAG_ATOMIC_COMPARE_REQ) {
 		ses->base.req_len = htonl(UET_CSWAP_DATA_BYTES);
@@ -3825,7 +3846,14 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 			ses_sync->sync_ext.group = htons(tx_desc->sync_grp);
 			ses_sync->sync_ext.cnt = htons(
 			      uet->sync_grp_cb.cnts[tx_desc->sync_grp].tot_cnt);
-			ses_atomic_data = (uint64_t *) &ses_sync->data;
+			ses_sync->atomic_ext.atomic_opcode =
+				tx_desc->atomic_parms.opcode;
+			ses_sync->atomic_ext.atomic_dt =
+				tx_desc->atomic_parms.data_type;
+			ses_sync->atomic_ext.sem_ctrl = UET_AMO_CPU_COHERENT;
+			ses_sync->atomic_ext.rsvd = 0;
+			ses_atomic_data =
+				(uint64_t *) &ses_sync->data;
 		} else
 			ses_atomic_data = (uint64_t *) &ses->ext.cmp_val_hi;
 
@@ -4715,7 +4743,7 @@ static void uet_rx_sync_grp_age(struct uet_ep *uet_ep)
 		  current, tmp) {
 
 		if (now > current->timeout) {
-			if (current->cur_cnt == current->cmpl_cnt) {
+			if (current->cnts.cur_cnt == current->cnts.cmpl_cnt) {
 				/* only age out sync groups for which no  */
 				/* message is in progress		  */
 				/*  - idle messages will be aged out      */
@@ -4999,6 +5027,7 @@ static ssize_t uet_send_req_api_common(
 		}
 		break;
 	default:
+		sync_grp_av_entry = NULL;
 		break;
 	}
 
@@ -5010,8 +5039,10 @@ static ssize_t uet_send_req_api_common(
 		pthread_mutex_unlock(&uet_ep->data_lock);
 		free(iov_handle);
 		uet_dealloc_msg_id(uet, msg_id);
-		uet_sync_grp_free_initiator(uet_ep, sync_grp_av_entry->sync_grp,
-				  	    sync_grp_av_entry);
+		if (sync_grp_av_entry)
+			uet_sync_grp_free_initiator(uet_ep,
+						    sync_grp_av_entry->sync_grp,
+						    sync_grp_av_entry);
 		return -FI_EAGAIN;
 	}
 
@@ -5040,9 +5071,11 @@ static ssize_t uet_send_req_api_common(
 			pthread_mutex_unlock(&uet_ep->data_lock);
 			free(iov_handle);
 			uet_dealloc_msg_id(uet, msg_id);
-			uet_sync_grp_free_initiator(uet_ep,
-						    sync_grp_av_entry->sync_grp,
-				          	    sync_grp_av_entry);
+			if (sync_grp_av_entry)
+				uet_sync_grp_free_initiator(
+					uet_ep,
+					sync_grp_av_entry->sync_grp,
+					sync_grp_av_entry);
 			return -FI_EAGAIN;
 		}
 		/* init rx descriptor */
@@ -5121,8 +5154,6 @@ static ssize_t uet_send_req_api_common(
 			tx_desc->tag_or_immdata = *imm_data;
 		}
 		tx_desc->cq_flags = FI_RMA | FI_WRITE;
-		if (send_req_api == UET_WRITE_SYNC_API)
-			tx_desc->desc_flags |= UET_TX_DESC_FLAG_SYNC_REQ;
 		break;
 	case UET_WRITE_SYNC_API:
 		tx_desc->sync_grp = sync_grp_av_entry->sync_grp;
@@ -6802,57 +6833,57 @@ ssize_t uet_atomic(uet_ep_handle_t ep_handle, uint32_t job_id,
 
 #if !ENABLE_VERBS
 ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
-		        const void *local_op_buf, size_t count,
-		        uet_mr_handle_t mr_handle,
-		        uet_addr_handle_t dst_addr_handle,
-		        uint64_t remote_mem_addr, uint64_t remote_key,
-		        enum fi_datatype datatype, enum fi_op op,
-		        void *context)
+			const void *local_op_buf, size_t count,
+			uet_mr_handle_t mr_handle,
+			uet_addr_handle_t dst_addr_handle,
+			uint64_t remote_mem_addr, uint64_t remote_key,
+			enum fi_datatype datatype, enum fi_op op,
+			void *context)
 {
-        int rc;
-        struct iovec iov;
-        struct uet_atomic_parms parms;
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
 
-        rc = uet_atomic_common(ep_handle, local_op_buf, count,
-                               mr_handle, NULL, UET_NULL_HANDLE,
-                               NULL, UET_NULL_HANDLE, datatype,
-                               op, FI_ATOMIC, &iov, &parms);
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+			       mr_handle, NULL, UET_NULL_HANDLE,
+			       NULL, UET_NULL_HANDLE, datatype,
+			       op, FI_ATOMIC, &iov, &parms);
 
-        if (rc)
-                return rc;
+	if (rc)
+		return rc;
 
-        return (uet_send_req_api_common(
-                        UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
-                        mr_handle, dst_addr_handle, UET_NO_TAG,
-                        UET_NO_IMM_DATA, remote_mem_addr, remote_key,
-                        &parms, context));
+	return (uet_send_req_api_common(
+			UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context));
 }
 #else
 ssize_t uet_atomic_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
-		        const void *local_op_buf, size_t count,
-		        uet_mr_handle_t mr_handle,
-		        uet_addr_handle_t dst_addr_handle,
-		        uint64_t remote_mem_addr, uint64_t remote_key,
-		        enum fi_datatype datatype, enum fi_op op,
-		        void *context, uint16_t resource_index)
+			const void *local_op_buf, size_t count,
+			uet_mr_handle_t mr_handle,
+			uet_addr_handle_t dst_addr_handle,
+			uint64_t remote_mem_addr, uint64_t remote_key,
+			enum fi_datatype datatype, enum fi_op op,
+			void *context, uint16_t resource_index)
 {
-        int rc;
-        struct iovec iov;
-        struct uet_atomic_parms parms;
+	int rc;
+	struct iovec iov;
+	struct uet_atomic_parms parms;
 
-        rc = uet_atomic_common(ep_handle, local_op_buf, count,
-                               mr_handle, NULL, UET_NULL_HANDLE,
-                               NULL, UET_NULL_HANDLE, datatype,
-                               op, FI_ATOMIC, &iov, &parms);
+	rc = uet_atomic_common(ep_handle, local_op_buf, count,
+			       mr_handle, NULL, UET_NULL_HANDLE,
+			       NULL, UET_NULL_HANDLE, datatype,
+			       op, FI_ATOMIC, &iov, &parms);
 
-        if (rc)
-                return rc;
+	if (rc)
+		return rc;
 
-        return (uet_send_req_api_common(
-                        UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
-                        mr_handle, dst_addr_handle, UET_NO_TAG,
-                        UET_NO_IMM_DATA, remote_mem_addr, remote_key,
-                        &parms, context, resource_index));
+	return (uet_send_req_api_common(
+			UET_ATOMIC_SYNC_API, ep_handle, job_id, &iov, 1,
+			mr_handle, dst_addr_handle, UET_NO_TAG,
+			UET_NO_IMM_DATA, remote_mem_addr, remote_key,
+			&parms, context, resource_index));
 }
 #endif
 

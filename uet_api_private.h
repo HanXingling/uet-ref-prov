@@ -32,6 +32,11 @@
 #define UET_MAX_MSG_ID		0xffff
 #define UET_MAX_MSG_SIZE	(0xffffffff - 1)
 
+/*
+ * the UET_MAX_SYNC_GRP value was chosen to try and achieve a balance
+ * that minimizes failures due to lack of sync group resources while
+ * not reserving excessive sync group resources
+ */
 #define UET_MAX_SYNC_GRP	(UET_MAX_MSG_ID / 2)
 
 #define UET_MAX_RTR_TOKEN	0xffff
@@ -414,11 +419,11 @@ struct uet_sync_grp_av_entry {
 	uint16_t sync_grp;
 };
 
-/* sync group counts, used by initiator */
+/* sync group counts */
 struct uet_sync_grp_cnts {
 	uint16_t cur_cnt;              /* running count of msgs in sync group */
 	uint16_t tot_cnt;           /* total number of messages in sync group */
-	uint16_t cmpl_cnt;      /* num tx completions received for sync group */
+	uint16_t cmpl_cnt;         /* num completions received for sync group */
 };
 
 /* sync group control block struct, used by initiator */
@@ -449,9 +454,7 @@ struct uet_sync_grp_atomic_parms {
 struct uet_sync_grp_src_fep_entry {
 	UT_hash_handle sync_grp_src_fep_hh;              /* hash table handle */
 	struct uet_sync_grp_src_fep_key sync_grp_src_fep_key;     /* hash key */
-	uint16_t cur_cnt;          /* running count of messages in sync group */
-	uint16_t tot_cnt;           /* total number of messages in sync group */
-	uint16_t cmpl_cnt;   /* running count of completed msgs in sync group */
+	struct uet_sync_grp_cnts cnts;                   /* cnts for sync grp */
 	bool terminating_atomic;        /* sync group terminated by atomic op */
 	                   /* info needed for deferred execution of atomic op */
 	struct uet_sync_grp_atomic_parms atomic_parms;

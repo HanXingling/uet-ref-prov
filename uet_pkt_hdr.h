@@ -595,8 +595,8 @@ struct UET_PACKED uet_ses_req_std_atomic {
 /* uet ses standard request header with atomic and sync extension headers */
 struct UET_PACKED uet_ses_req_std_atomic_sync {
 	struct uet_ses_req_std base;
-	struct uet_ses_atomic_ext atomic_ext;
 	struct uet_ses_sync_ext sync_ext;
+	struct uet_ses_atomic_ext atomic_ext;
 	uint8_t data[];
 };
 
