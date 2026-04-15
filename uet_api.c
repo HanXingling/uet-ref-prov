@@ -44,6 +44,7 @@
 #include "uet_sec.h"
 #include "uet_pds.h"
 #include "uet_api_private.h"
+#include "imp_shim.h"
 
 #define UET_NO_TAG                0
 #define UET_NO_IGNORE_BITS        0
@@ -1984,6 +1985,7 @@ static void uet_domain_free_all(struct uet_instance *uet)
 static void uet_finalize_core(struct uet_instance *uet)
 {
 	uet_ep_hash_finalize(uet);
+	imp_shim_finalize();
 	uet_nic_finalize(UET_NIC(uet));
 	uet_domain_free_all(uet);
 }
@@ -5445,14 +5447,24 @@ int uet_initialize(uet_handle_t *handle, bool is_ipv6)
 	if (rc != FI_SUCCESS)
 		goto err_return;
 
+	rc = imp_shim_init(UET_NIC(uet));
+	if (rc != 0)
+		goto err_imp_shim;
+
 	rc = uet_sec_init(&uet->nic.ip_addr, is_ipv6);
 	if (rc != FI_SUCCESS)
-		goto err_return;
+		goto err_sec;
 
 	uet->max_payload_len = UET_DEFAULT_MAX_PAYLOAD_LEN;
 
 	*handle = uet;
 	return FI_SUCCESS;
+
+err_sec:
+	imp_shim_finalize();
+
+err_imp_shim:
+	uet_nic_finalize(UET_NIC(uet));
 
 err_return:
 	if (uet != NULL)

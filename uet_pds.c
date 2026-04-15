@@ -21,6 +21,7 @@
 #include "uet_pkt_chk.h"
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
+#include "imp_shim.h"
 #include "bitmap.h"
 #include "crc32c.h"
 
@@ -367,6 +368,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			return 0;
 		}
 
+		if (imp_shim_is_enabled())
+			return imp_shim_tx_pkt(UET_NIC(uet), *pkt, pp->ip,
+					       new_pkt_len);
+
 		return uet_nic_tx_pkt(UET_NIC(uet), *pkt, pp->ip, new_pkt_len);
 	}
 
@@ -439,6 +444,10 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			    (tx_pkt) ? "Tx" : "ACK");
 		return 0;
 	}
+
+	if (imp_shim_is_enabled())
+		return imp_shim_tx_pkt(UET_NIC(uet), new_pkt, pp->ip,
+				       new_pkt_len);
 
 	return uet_nic_tx_pkt(UET_NIC(uet), new_pkt, pp->ip, new_pkt_len);
 }
@@ -1097,14 +1106,17 @@ int uet_pds_initialize(struct uet_instance *uet)
 	/* seed random number generator for PDC close and packet drop */
 	srand(time(NULL));
 
-	/* configure random PDC close threshold */
+	/* configure the random PDC close threshold */
 	if (getenv("UET_PDC_CLOSE_THRESH")) {
 		pds_pdc_close_thresh =
 			strtoul(getenv("UET_PDC_CLOSE_THRESH"), NULL, 10);
 	}
 
-	/* configure random packet drop threshold */
-	if (getenv("UET_PKT_DROP_THRESH")) {
+	/* configure the packet drop threshold, this is ignored when the
+	 * impairment shim is enabled as that provides its own drop/delay
+	 * mechanisms
+	 */
+	if (!imp_shim_is_enabled() && getenv("UET_PKT_DROP_THRESH")) {
 		pds_pkt_drop_thresh =
 			strtoul(getenv("UET_PKT_DROP_THRESH"), NULL, 10);
 	}

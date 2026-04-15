@@ -145,7 +145,12 @@ else
     app_name="uet"
 fi
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} ./${app_name}"
+IMP_SHIM=""
+if [ -n "$UET_IMPAIRMENT_SHIM" ]; then
+    IMP_SHIM="UET_IMPAIRMENT_SHIM=${UET_IMPAIRMENT_SHIM}"
+fi
+
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} ${IMP_SHIM} ./${app_name}"
 
 function run_test()
 {

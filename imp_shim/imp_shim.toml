@@ -1,0 +1,48 @@
+
+# Impairment Shim (imp_shim) Configuration
+#
+# Enable by setting the UET_IMPAIRMENT_SHIM environment variable to the
+# path of this file:
+#
+#   export UET_IMPAIRMENT_SHIM=/path/to/imp_shim.toml
+#
+# The imp_shim sits between the PDS/TSS and NIC shim layers and applies
+# random packet dropping and delaying on the Tx path. This enables testing
+# of out-of-order packet processing with RUD as packets will be received
+# out-of-order and/or retransmitted by the peer.
+
+[config]
+
+# Number of Tx queues managed by the imp_shim. Packets are distributed
+# across queues in round-robin fashion. The transmit thread services each
+# queue in round-robin order, pulling from the front of the queue. More paths
+# increases the amount of out-of-order processing that occurs at the receiver.
+num_paths = 4
+
+# Rate at which packets are randomly dropped and not transmitted. The value
+# is in hundredths of a percent (0.01% granularity).
+#
+#   0     = no drops
+#   1     = 0.01% drop chance
+#   100   = 1% drop chance
+#   1000  = 10% drop chance
+#   10000 = 100% drop chance (drop everything)
+#
+# Range: 0 - 10000
+drop_rate = 1
+
+# Maximum random delay assigned to a packet, in nanoseconds. Each packet
+# receives a uniformly random_delay value between 0 and delay_max. A packet's
+# transmit_time is calculated as: now + random_delay. A packet will only be
+# transmitted when it reaches the front of its Tx queue and current_time is
+# greater than or equal to its transmit_time.
+#
+#   0         = no delay (packets sent immediately when dequeued)
+#   10000     = up to 0.01 ms
+#   500000    = up to 0.5 ms
+#   1000000   = up to 1 ms
+#   100000000 = up to 100 ms
+#
+# Range: 0 - N (in nanoseconds)
+delay_max = 10000
+

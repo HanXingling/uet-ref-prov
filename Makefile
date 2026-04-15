@@ -32,21 +32,22 @@ LF_LIBS=-L$(LIBFABRIC)/src/.libs -lfabric
 
 LF_LOCAL_HDRS=-I./libfabric_headers -I./libfabric_headers/include
 
-INCS=-I. -I./util -I./nic_shim -I./crypto
+INCS=-I. -I./util -I./imp_shim -I./nic_shim -I./crypto
 CFLAGS=-Wall \
        -Wno-unused-variable \
        -Wno-implicit-function-declaration \
        -Wno-int-conversion \
        -Wno-address-of-packed-member
-LDFLAGS=
+LDFLAGS=-lpthread
 
-HDRS=$(wildcard *.h util/*.h nic_shim/*.h crypto/*.h)
+HDRS=$(wildcard *.h util/*.h imp_shim/*.h nic_shim/*.h crypto/*.h)
 
 # Shared library sources (common for both variants)
 LIB_SRC=$(filter-out uet.c, \
 	$(filter-out $(wildcard nic_shim/*xdp*), \
 		     $(wildcard *.c \
 				util/*.c \
+				imp_shim/*.c \
 				nic_shim/*.c \
 				crypto/*.c)))
 
@@ -75,6 +76,7 @@ XDP_LIB_SRC=$(filter-out uet.c, \
 	    $(filter-out nic_shim/*xdp_kern*, \
 			 $(wildcard *.c \
 				    util/*.c \
+				    imp_shim/*.c \
 				    nic_shim/*.c \
 				    crypto/*.c)))
 XDP_LIB_OBJ_DIR=obj_xdp_lib
@@ -89,7 +91,7 @@ XDP_KERN_SRC=$(wildcard nic_shim/*xdp_kern*)
 XDP_KERN_BIN=uet_xdp_kern.o
 
 xdp: CFLAGS+=-DENABLE_XDP -DXDP_PROG=$(XDP_KERN_BIN)
-xdp: LDFLAGS+=-lpthread -lbpf -lxdp
+xdp: LDFLAGS+=-lbpf -lxdp
 
 CC_SIM_BIN=uet_cc_sim
 CC_SIM_SRC=$(wildcard cc/*.c cc_sim/*.c)
