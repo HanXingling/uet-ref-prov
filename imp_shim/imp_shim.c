@@ -13,55 +13,57 @@
 #include <sched.h>
 #include <time.h>
 
+#include <ofi_list.h>
+
 #include "uet_log.h"
 #include "uet_nic.h"
 #include "tomlc17.h"
 #include "imp_shim.h"
 
-/* initial number of packet buffers to pre-allocate per path */
-#define IMP_POOL_INIT_PER_PATH 32
+/* initial number of packet buffers to pre-allocate per plane */
+#define IMP_POOL_INIT_PER_PLANE 32
 
 /* packet entry */
 struct imp_pkt {
-	struct imp_pkt  *next;       /* list pointer (free pool or tx queue) */
-	size_t           pkt_size;   /* the size of the packet */
-	size_t           iphdr_off;  /* offset of IP header from pkt_data */
-	struct timespec  tx_time;    /* calculated transmit time */
-	uint8_t          pkt_data[]; /* flexible size for max_pkt_size */
+	struct slist_entry entry;      /* list linkage (free pool or tx queue) */
+	size_t             pkt_size;   /* the size of the packet */
+	size_t             iphdr_off;  /* offset of IP header from pkt_data */
+	struct timespec    tx_time;    /* calculated transmit time */
+	uint8_t            pkt_data[]; /* flexible size for max_pkt_size */
 };
 
-/* per-path Tx queue */
-struct imp_path {
-	struct imp_pkt  *head;  /* packet list */
-	struct imp_pkt  *tail;
-	pthread_mutex_t  lock;  /* mutex for list management */
-	uint32_t         depth; /* current number of packets on the queue */
+/* per-plane Tx queue */
+struct imp_plane {
+	struct slist    list;  /* packet list */
+	pthread_mutex_t lock;  /* mutex for list management */
+	uint32_t        depth; /* current number of packets on the queue */
 };
 
 /* packet entry free pool - grows as needed, never shrinks */
 struct imp_pool {
-	struct imp_pkt  *free_head;  /* free list */
-	pthread_mutex_t  lock;       /* mutex for list management */
-	size_t           entry_size; /* sizeof(imp_pkt) + max_pkt_size */
-	uint32_t         free_count; /* current number of free entries */
-	uint32_t         total;      /* total number of entries allocated */
+	struct slist    free_list;  /* free list */
+	pthread_mutex_t lock;       /* mutex for list management */
+	size_t          entry_size; /* sizeof(imp_pkt) + max_pkt_size */
+	uint32_t        free_count; /* current number of free entries */
+	uint32_t        total;      /* total number of entries allocated */
 };
 
 /* impairment shim state */
 struct imp_shim_state {
-	bool             enabled;
-	struct uet_nic  *nic;
+	bool              enabled;
+	struct uet_nic   *nic;
 
-	bool             running;
-	pthread_t        tx_thread;
+	bool              running;
+	pthread_t         tx_thread;
 
-	int              num_paths; /* number of Tx queues */
-	int              drop_rate; /* hundredths of a percent */
-	uint64_t         delay_max; /* nanoseconds (random 0..delay_max) */
+	int               num_planes; /* number of Tx queues */
+	bool              random_enq; /* random vs round-robin selection */
+	int               drop_rate;  /* hundredths of a percent */
+	uint64_t          delay_max;  /* nanoseconds (random 0..delay_max) */
 
-	struct imp_path *paths;     /* Tx queues */
-	uint32_t         enq_idx;   /* round-robin enqueue index */
-	struct imp_pool  pool;      /* packet buffer free pool */
+	struct imp_plane *planes;     /* Tx queues */
+	uint32_t          enq_idx;    /* round-robin enqueue index */
+	struct imp_pool   pool;       /* packet buffer free pool */
 };
 
 static struct imp_shim_state imp_state;
@@ -87,14 +89,13 @@ static struct imp_pkt *imp_pool_alloc_entry(struct imp_pool *pool)
  */
 static struct imp_pkt *imp_pool_get(struct imp_pool *pool)
 {
-	struct imp_pkt *pkt;
+	struct imp_pkt *pkt = NULL;
 
 	pthread_mutex_lock(&pool->lock);
 
-	if (pool->free_head != NULL) {
-		pkt = pool->free_head;
-		pool->free_head = pkt->next;
-		pkt->next = NULL;
+	if (!slist_empty(&pool->free_list)) {
+		slist_remove_head_container(&pool->free_list,
+					    struct imp_pkt, pkt, entry);
 		pool->free_count--;
 	} else {
 		pkt = imp_pool_alloc_entry(pool);
@@ -113,8 +114,7 @@ static void imp_pool_put(struct imp_pool *pool,
 {
 	pthread_mutex_lock(&pool->lock);
 
-	pkt->next = pool->free_head;
-	pool->free_head = pkt;
+	slist_insert_head(&pkt->entry, &pool->free_list);
 	pool->free_count++;
 
 	pthread_mutex_unlock(&pool->lock);
@@ -122,11 +122,11 @@ static void imp_pool_put(struct imp_pool *pool,
 
 /*
  * Initialize the packet buffer free pool. Pre-allocates entries based on
- * (num_paths * IMP_POOL_INIT_PER_PATH).
+ * (num_planes * IMP_POOL_INIT_PER_PLANE).
  */
 static int imp_pool_init(struct imp_pool *pool,
 			 size_t max_pkt_size,
-			 int num_paths)
+			 int num_planes)
 {
 	struct imp_pkt *pkt;
 	int count;
@@ -134,9 +134,10 @@ static int imp_pool_init(struct imp_pool *pool,
 
 	memset(pool, 0, sizeof(*pool));
 	pthread_mutex_init(&pool->lock, NULL);
+	slist_init(&pool->free_list);
 	pool->entry_size = (sizeof(struct imp_pkt) + max_pkt_size);
 
-	count = (num_paths * IMP_POOL_INIT_PER_PATH);
+	count = (num_planes * IMP_POOL_INIT_PER_PLANE);
 
 	for (i = 0; i < count; i++) {
 		pkt = imp_pool_alloc_entry(pool);
@@ -145,8 +146,7 @@ static int imp_pool_init(struct imp_pool *pool,
 			return -ENOMEM;
 		}
 
-		pkt->next = pool->free_head;
-		pool->free_head = pkt;
+		slist_insert_head(&pkt->entry, &pool->free_list);
 		pool->free_count++;
 	}
 
@@ -157,88 +157,76 @@ static int imp_pool_init(struct imp_pool *pool,
 }
 
 /*
- * Free all packet buffer free pool entries (any entries still on the path
+ * Free all packet buffer free pool entries (any entries still on the plane
  * queues must be drained before calling this function).
  */
 static void imp_pool_finalize(struct imp_pool *pool)
 {
-	struct imp_pkt *pkt, *next;
+	struct imp_pkt *pkt;
 
-	pkt = pool->free_head;
-	while (pkt) {
-		next = pkt->next;
+	while (!slist_empty(&pool->free_list)) {
+		slist_remove_head_container(&pool->free_list,
+					    struct imp_pkt, pkt, entry);
 		free(pkt);
-		pkt = next;
 	}
 
-	pool->free_head = NULL;
 	pool->free_count = 0;
 	pool->total = 0;
 
 	pthread_mutex_destroy(&pool->lock);
 }
 
-/* Enqueue a packet onto a path's Tx queue. */
-static void imp_path_enqueue(struct imp_path *path,
-			     struct imp_pkt *pkt)
+/* Enqueue a packet onto a plane's Tx queue. */
+static void imp_plane_enqueue(struct imp_plane *plane,
+			      struct imp_pkt *pkt)
 {
-	pthread_mutex_lock(&path->lock);
+	pthread_mutex_lock(&plane->lock);
 
-	pkt->next = NULL;
+	slist_insert_tail(&pkt->entry, &plane->list);
+	plane->depth++;
 
-	if (path->tail)
-		path->tail->next = pkt;
-	else
-		path->head = pkt;
-
-	path->tail = pkt;
-	path->depth++;
-
-	pthread_mutex_unlock(&path->lock);
+	pthread_mutex_unlock(&plane->lock);
 }
 
 /*
- * Try to dequeue a packet from the front of a path's Tx queue if its transmit
+ * Try to dequeue a packet from the front of a plane's Tx queue if its transmit
  * time has been reached. Returns the packet if dequeued, NULL otherwise.
  */
-static struct imp_pkt *imp_path_try_dequeue(struct imp_path *path,
-					    struct timespec *now)
+static struct imp_pkt *imp_plane_try_dequeue(struct imp_plane *plane,
+					     struct timespec *now)
 {
-	struct imp_pkt *pkt = NULL;
+	struct imp_pkt *pkt;
 
-	pthread_mutex_lock(&path->lock);
+	pthread_mutex_lock(&plane->lock);
 
-	if (path->head == NULL) {
-		pthread_mutex_unlock(&path->lock);
+	if (slist_empty(&plane->list)) {
+		pthread_mutex_unlock(&plane->lock);
 		return NULL;
 	}
+
+	/* peek at the head packet */
+	pkt = container_of(plane->list.head, struct imp_pkt, entry);
 
 	/* check if the head packet's transmit time has been reached */
-	if ((now->tv_sec > path->head->tx_time.tv_sec) ||
-	    ((now->tv_sec == path->head->tx_time.tv_sec) &&
-	     (now->tv_nsec >= path->head->tx_time.tv_nsec))) {
-		pkt = path->head;
-		path->head = pkt->next;
-		if (path->head == NULL)
-			path->tail = NULL;
-		pkt->next = NULL;
-		path->depth--;
+	if ((now->tv_sec > pkt->tx_time.tv_sec) ||
+	    ((now->tv_sec == pkt->tx_time.tv_sec) &&
+	     (now->tv_nsec >= pkt->tx_time.tv_nsec))) {
+		slist_remove_head(&plane->list);
+		plane->depth--;
+		pthread_mutex_unlock(&plane->lock);
+		return pkt;
 	}
 
-	if (pkt == NULL) {
-		pthread_mutex_unlock(&path->lock);
-		UET_IMP_DBG("packet skipped");
-		return NULL;
-	}
+	pthread_mutex_unlock(&plane->lock);
 
-	pthread_mutex_unlock(&path->lock);
-	return pkt;
+	UET_IMP_DBG("packet skipped");
+	return NULL;
 }
 
 /*
  * Transmit thread.
  *
- * Processes all paths in round-robin fashion. For each path, attempts to
+ * Processes all planes in round-robin fashion. For each plane, attempt to
  * dequeue and transmit the head packet if its transmit time has been
  * reached. After transmission, the packet buffer is returned to the pool.
  */
@@ -247,15 +235,16 @@ static void *imp_tx_thread(void *arg)
 	struct imp_shim_state *st = (struct imp_shim_state *)arg;
 	struct timespec now;
 	struct imp_pkt *pkt;
-	int path_idx;
+	int plane_idx;
 
 	UET_IMP_INFO("Tx thread started");
 
 	while (st->running) {
-		for (path_idx = 0; path_idx < st->num_paths; path_idx++) {
+		for (plane_idx = 0; plane_idx < st->num_planes; plane_idx++) {
 			clock_gettime(CLOCK_MONOTONIC, &now);
 
-			pkt = imp_path_try_dequeue(&st->paths[path_idx], &now);
+			pkt = imp_plane_try_dequeue(&st->planes[plane_idx],
+						    &now);
 			if (pkt == NULL)
 				continue;
 
@@ -287,14 +276,23 @@ static int imp_read_config(const char *config_path)
 		return -EINVAL;
 	}
 
-	/* num_paths (required) */
-	val = toml_seek(result.toptab, "config.num_paths");
+	/* num_planes (required) */
+	val = toml_seek(result.toptab, "config.num_planes");
 	if (val.type != TOML_INT64 || val.u.int64 < 1) {
-		UET_IMP_ERR("config: num_paths must be a positive integer");
+		UET_IMP_ERR("config: num_planes must be a positive integer");
 		toml_free(result);
 		return -EINVAL;
 	}
-	imp_state.num_paths = (int)val.u.int64;
+	imp_state.num_planes = (int)val.u.int64;
+
+	/* random_enq (required) */
+	val = toml_seek(result.toptab, "config.random_enq");
+	if (val.type != TOML_BOOLEAN) {
+		UET_IMP_ERR("config: random_enq must be a boolean");
+		toml_free(result);
+		return -EINVAL;
+	}
+	imp_state.random_enq = val.u.boolean;
 
 	/* drop_rate (required) */
 	val = toml_seek(result.toptab, "config.drop_rate");
@@ -316,9 +314,11 @@ static int imp_read_config(const char *config_path)
 
 	toml_free(result);
 
-	UET_IMP_INFO("config: num_paths=%d drop_rate=%d delay_max=%lu ns",
-		     imp_state.num_paths, imp_state.drop_rate,
-		     (unsigned long)imp_state.delay_max);
+	UET_IMP_INFO("config: num_planes=%d drop_rate=%d delay_max=%lu "
+		     "random_enq=%s",
+		     imp_state.num_planes, imp_state.drop_rate,
+		     (unsigned long)imp_state.delay_max,
+		     imp_state.random_enq ? "true" : "false");
 
 	return 0;
 }
@@ -347,22 +347,24 @@ int imp_shim_init(struct uet_nic *nic)
 
 	/* initialize the packet buffer pool */
 	rc = imp_pool_init(&imp_state.pool, nic->max_pkt_size,
-			   imp_state.num_paths);
+			   imp_state.num_planes);
 	if (rc != 0)
 		return rc;
 
-	/* allocate the per-path Tx queues */
-	imp_state.paths = calloc(imp_state.num_paths,
-				 sizeof(struct imp_path));
-	if (imp_state.paths == NULL) {
-		UET_IMP_ERR("failed to allocate %d paths",
-			    imp_state.num_paths);
+	/* allocate the per-plane Tx queues */
+	imp_state.planes = calloc(imp_state.num_planes,
+				  sizeof(struct imp_plane));
+	if (imp_state.planes == NULL) {
+		UET_IMP_ERR("failed to allocate %d planes",
+			    imp_state.num_planes);
 		imp_pool_finalize(&imp_state.pool);
 		return -ENOMEM;
 	}
 
-	for (i = 0; i < imp_state.num_paths; i++)
-		pthread_mutex_init(&imp_state.paths[i].lock, NULL);
+	for (i = 0; i < imp_state.num_planes; i++) {
+		slist_init(&imp_state.planes[i].list);
+		pthread_mutex_init(&imp_state.planes[i].lock, NULL);
+	}
 
 	imp_state.enabled = true;
 	imp_state.nic = nic;
@@ -373,8 +375,8 @@ int imp_shim_init(struct uet_nic *nic)
 			    &imp_state);
 	if (rc != 0) {
 		UET_IMP_ERR("failed to create Tx thread: %s", strerror(rc));
-		free(imp_state.paths);
-		imp_state.paths = NULL;
+		free(imp_state.planes);
+		imp_state.planes = NULL;
 		imp_pool_finalize(&imp_state.pool);
 		imp_state.enabled = false;
 		return -rc;
@@ -398,19 +400,21 @@ void imp_shim_finalize(void)
 	imp_state.running = false;
 	pthread_join(imp_state.tx_thread, NULL);
 
-	/* drain all the per-path Tx queues back to the pool */
-	for (i = 0; i < imp_state.num_paths; i++) {
-		while ((pkt = imp_state.paths[i].head) != NULL) {
-			imp_state.paths[i].head = pkt->next;
+	/* drain all the per-plane Tx queues back to the pool */
+	for (i = 0; i < imp_state.num_planes; i++) {
+		while (!slist_empty(&imp_state.planes[i].list)) {
+			slist_remove_head_container(&imp_state.planes[i].list,
+						    struct imp_pkt, pkt,
+						    entry);
 			imp_pool_put(&imp_state.pool, pkt);
 		}
 
-		pthread_mutex_destroy(&imp_state.paths[i].lock);
+		pthread_mutex_destroy(&imp_state.planes[i].lock);
 	}
 
-	/* free the per-path Tx queues */
-	free(imp_state.paths);
-	imp_state.paths = NULL;
+	/* free the per-plane Tx queues */
+	free(imp_state.planes);
+	imp_state.planes = NULL;
 
 	/* free all pool entries */
 	UET_IMP_INFO("pool: %u total entries allocated", imp_state.pool.total);
@@ -429,7 +433,7 @@ int imp_shim_tx_pkt(struct uet_nic *nic,
 	struct imp_pkt *imp_pkt;
 	struct timespec now;
 	uint64_t delay_ns;
-	uint32_t path_idx;
+	uint32_t plane_idx;
 
 	/* random drop check */
 	if ((imp_state.drop_rate > 0) &&
@@ -448,14 +452,13 @@ int imp_shim_tx_pkt(struct uet_nic *nic,
 	memcpy(imp_pkt->pkt_data, pkt, pkt_size);
 	imp_pkt->pkt_size  = pkt_size;
 	imp_pkt->iphdr_off = (size_t)((uint8_t *)iphdr - (uint8_t *)pkt);
-	imp_pkt->next      = NULL;
 
 	/* calculate random delay and transmit time */
 	clock_gettime(CLOCK_MONOTONIC, &now);
 
 	delay_ns = (imp_state.delay_max > 0)
 			? ((uint64_t)rand() % imp_state.delay_max) : 0;
-	UET_IMP_DBG("delay packet (%lu ns)", delay_ns);
+	UET_IMP_DBG("delay packet (%lu)", delay_ns);
 
 	/*
 	 * Add the random delay to the current time to get the transmit time.
@@ -471,11 +474,13 @@ int imp_shim_tx_pkt(struct uet_nic *nic,
 		imp_pkt->tx_time.tv_nsec -= ONE_SEC;
 	}
 
-	/* round-robin path selection and pkt insertion */
-	//path_idx = (imp_state.enq_idx++ % imp_state.num_paths);
-	/* random path selection and pkt insertion */
-	path_idx = (rand() % imp_state.num_paths);
-	imp_path_enqueue(&imp_state.paths[path_idx], imp_pkt);
+	/* select a plane for packet enqueue */
+	if (imp_state.random_enq)
+		plane_idx = (rand() % imp_state.num_planes);
+	else
+		plane_idx = (imp_state.enq_idx++ % imp_state.num_planes);
+
+	imp_plane_enqueue(&imp_state.planes[plane_idx], imp_pkt);
 
 	return 0;
 }

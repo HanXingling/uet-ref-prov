@@ -13,11 +13,17 @@
 
 [config]
 
-# Number of Tx queues managed by the imp_shim. Packets are distributed
-# across queues in round-robin fashion. The transmit thread services each
-# queue in round-robin order, pulling from the front of the queue. More paths
-# increases the amount of out-of-order processing that occurs at the receiver.
-num_paths = 4
+# Number of Tx queues (i.e., planes) managed by the imp_shim. Packets are
+# distributed across planes in random or round-robin fashion. The transmit
+# thread services each queue in round-robin order, pulling from the front of
+# the queue. More planes increases the amount of out-of-order processing that
+# occurs at the receiver.
+num_planes = 4
+
+# Select the plane for Tx packet enqueue randomly (true) or round-robin
+# (false). Random selection increases the potential for out-of-order delivery
+# as packets may be spread unevenly across planes.
+random_enq = true
 
 # Rate at which packets are randomly dropped and not transmitted. The value
 # is in hundredths of a percent (0.01% granularity).

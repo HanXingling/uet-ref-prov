@@ -10,18 +10,14 @@
  * random packet dropping and random packet delaying to enable testing
  * of out-of-order packet processing with RUD.
  *
- * The transmit thread processes queues in round-robin fashion, pulling
- * packets from the front of each queue and sending them to the NIC shim
- * when the current time >= the packet's calculated transmit time.
+ * The transmit thread processes Tx queues (i.e., planes) in random or
+ * round-robin fashion, pulling packets from the front of each queue and
+ * sending them to the NIC shim when the current time >= the packet's
+ * calculated transmit time.
  *
  * Enabled via the UET_IMPAIRMENT_SHIM environment variable which points
- * to a TOML configuration file.
- *
- * TOML config variables:
- *   num_paths - number of Tx queues managed by the imp_shim
- *   drop_rate - rate at which packets are randomly dropped
- *               (hundredths of a percent: 100 = 1% drop chance)
- *   delay_max - maximum random delay assigned to a packet (nanoseconds)
+ * to a TOML configuration file. See the example 'imp_shim.toml' file for
+ * configuration details.
  */
 
 #ifndef _IMP_SHIM_H_
@@ -87,3 +83,4 @@ int imp_shim_tx_pkt(struct uet_nic *nic,
 bool imp_shim_is_enabled(void);
 
 #endif /* _IMP_SHIM_H_ */
+
