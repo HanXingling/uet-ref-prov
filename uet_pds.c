@@ -46,6 +46,10 @@
 			(old) = (new);			\
 	} while (0)
 
+#define UET_PDS_PSN_OFFSET(a, b)      ((int32_t)((a) - (b)))
+#define UET_PDS_PSN_AFTER(a, b)       ((int32_t)((a) - (b)) > 0)
+#define UET_PDS_PSN_AFTER_EQ(a, b)    ((int32_t)((a) - (b)) >= 0)
+
 typedef enum {
 	PDC_STATE_UNALLOC,
 	PDC_STATE_SYN,
@@ -1883,7 +1887,7 @@ static void uet_pds_update_cack(struct uet_pdc *pdc,
 			break;
 
 		if (temp->needs_clear &&
-		    (int32_t)(temp->psn - pdc->max_clear_psn) > 0)
+		    UET_PDS_PSN_AFTER(temp->psn, pdc->max_clear_psn))
 			break;
 	}
 
@@ -2233,7 +2237,8 @@ static int uet_pds_shift_rx_window(struct uet_instance *uet,
 	int rc;
 
 	/* Shift the Rx window forward from rx_bm_base_psn to cack_psn + 1 */
-	shift_count = (int32_t)(pdc->cack_psn + 1 - pdc->rx_bm_base_psn);
+	shift_count = UET_PDS_PSN_OFFSET(pdc->cack_psn + 1,
+					 pdc->rx_bm_base_psn);
 	if (shift_count <= 0)
 		return 0;
 
@@ -2315,7 +2320,8 @@ static void uet_pds_process_cack(struct uet_instance *uet,
 
 	UET_PDS_UPDATE_PSN(pdc->max_cack_psn, pp->pds_cack_psn);
 
-	shift_count = (int32_t)(pdc->max_cack_psn + 1 - pdc->tx_bm_base_psn);
+	shift_count = UET_PDS_PSN_OFFSET(pdc->max_cack_psn + 1,
+					 pdc->tx_bm_base_psn);
 	if (shift_count <= 0)
 		return;
 
@@ -2795,8 +2801,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	 * PSN is received, transmit a NACK with UET_CLOSING.
 	 */
 	if (pdc->state == PDC_STATE_CLOSING) {
-		if ((int32_t)(pdc_pkt->pkt_pp.pds_psn -
-			      pdc->close_cmd_psn) > 0) {
+		if (UET_PDS_PSN_AFTER(pdc_pkt->pkt_pp.pds_psn,
+				      pdc->close_cmd_psn)) {
 			UET_PDS_WARN("PDC %u is CLOSING, received PSN %u "
 				     "after CLOSE (close_cmd_psn=%u)",
 				     pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn,
