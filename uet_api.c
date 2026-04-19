@@ -4173,7 +4173,12 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 			((ntohl(ses_rsp->cmn.ri_gen_job_id) &
 			  UET_SES_RSP_RI_GEN_MASK) >>
 			 UET_SES_RSP_RI_GEN_SHIFT);
-		av_entry->untagged_gen = rx_gen;
+
+		if (tx_desc->cq_flags & FI_TAGGED)
+			av_entry->tagged_gen = rx_gen;
+		else
+			av_entry->untagged_gen = rx_gen;
+
 		tx_desc->delay_retx = false;
 		goto retx_exit;
 	case UET_RC_NO_MATCH:
