@@ -1,7 +1,3 @@
----
-created: 2025-11-10T19:46
-updated: 2025-11-17T13:33
----
 
 # UEC Reference Provider (libfabric)
 
@@ -182,7 +178,8 @@ Replace `2` with the desired number of senders.
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
 - **UET_PDC_CLOSE_THRESH** - Randomly close a PDC after message Tx EOM (100=1% chance to close, default=0).
-- **UET_PKT_DROP_THRESH** - Randomly drop a Tx packet before sending (100=1% chance to drop, default=0).
+- **UET_PKT_DROP_THRESH** - Randomly drop a Tx packet before sending (100=1% chance to drop, default=0). Ignored when `UET_IMPAIRMENT_SHIM` is set.
+- **UET_IMPAIRMENT_SHIM** - Path to a TOML configuration file that enables the impairment shim. See [Impairment Shim](#impairment-shim) below.
 
 ## Security
 
@@ -291,6 +288,31 @@ could remain attached. Use `xdp-loader` to unload any XDP programs.
 % sudo xdp-loader status
 % sudo xdp-loader unload --all ens4f0np0
 ```
+
+## Impairment Shim
+
+The impairment shim (`imp_shim`) is a Tx queuing module that sits between the
+PDS/TSS and NIC shim layers. It supports random packet dropping and random
+packet delaying to enable testing of out-of-order packet processing with RUD.
+When enabled, packets arriving at the peer will be received out-of-order and/or
+require retransmission.
+
+The impairment shim is enabled by setting the `UET_IMPAIRMENT_SHIM` environment
+variable to the path of a TOML configuration file. A sample configuration file
+is provided at `imp_shim/imp_shim.toml`.
+
+The TOML configuration file contains a `[config]` section with the following
+variables:
+
+- **`num_paths`** - Number of Tx queues managed by the impairment shim. Packets are distributed across queues randomly. The transmit thread services each queue in round-robin order, pulling from the front of the queue.
+- **`drop_rate`** - Rate at which packets are randomly dropped. The value is in hundredths of a percent (0.01% granularity). For example, 100=1% drop chance.
+- **`delay_max`** - Maximum random delay assigned to a packet, in nanoseconds. Each packet receives a uniformly random delay between 0 and `delay_max`. A packet will only be transmitted when it reaches the front of its Tx queue and the current time is greater than or equal to its calculated transmit time.
+
+Note that only the `uet_pds.c` module can use the impairment shim (`UET_PDS=pds`).
+
+When the impairment shim is enabled, the `UET_PKT_DROP_THRESH` environment
+variable is ignored as the impairment shim provides its own drop mechanism via
+the TOML configuration.
 
 ## Contributing
 

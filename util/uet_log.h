@@ -9,13 +9,13 @@
  *
  * The following printf/LOG macros are defined for each UET layer:
  *
- *     UET_[SES|PDS|TSS]_DBG(fmt, ...)
- *     UET_[SES|PDS|TSS]_INFO(fmt, ...)
- *     UET_[SES|PDS|TSS]_WARN(fmt, ...)
- *     UET_[SES|PDS|TSS]_ERR(fmt, ...)
+ *     UET_[SES|PDS|TSS|IMP]_DBG(fmt, ...)
+ *     UET_[SES|PDS|TSS|IMP]_INFO(fmt, ...)
+ *     UET_[SES|PDS|TSS|IMP]_WARN(fmt, ...)
+ *     UET_[SES|PDS|TSS|IMP]_ERR(fmt, ...)
  *
  * The LOGs for each UET layer are enabled by default. Each layer can be
- * disabled independently by undefining UET_LOG_[SES|PDS|TSS].
+ * disabled independently by undefining UET_LOG_[SES|PDS|TSS|IMP].
  *
  * The ERR and WARN logs also print the file and line number where the
  * error/warning hit.
@@ -32,6 +32,7 @@
 #define UET_LOG_SES /* comment out to disable all SES logs */
 #define UET_LOG_PDS /* comment out to disable all PDS logs */
 #define UET_LOG_TSS /* comment out to disable all TSS logs */
+#define UET_LOG_IMP /* comment out to disable all IMP logs */
 
 #define UET_LOG_ERR  1
 #define UET_LOG_WARN 2
@@ -42,6 +43,7 @@
 #define UET_SES_LBL "[SES] "
 #define UET_PDS_LBL "[PDS] "
 #define UET_TSS_LBL "[TSS] "
+#define UET_IMP_LBL "[IMP] "
 
 #ifdef UET_LOG_EN_CLR
 # define UET_CLR_NORMAL  "\x1b[m"
@@ -68,6 +70,7 @@
 #define UET_SES_CLR UET_CLR_CYAN
 #define UET_PDS_CLR UET_CLR_MAGENTA
 #define UET_TSS_CLR UET_CLR_GREEN
+#define UET_IMP_CLR UET_CLR_BLUE
 
 #define UET_WARN_CLR UET_CLR_YELLOW
 #define UET_ERR_CLR  UET_CLR_RED
@@ -135,10 +138,16 @@
 # else
 #  define UET_TSS_DBG(...)
 # endif
+# ifdef UET_LOG_IMP
+#  define UET_IMP_DBG(fmt, ...) UET_DBG(UET_IMP_LBL fmt, UET_IMP_CLR, ##__VA_ARGS__)
+# else
+#  define UET_IMP_DBG(...)
+# endif
 #else
 # define UET_SES_DBG(...)
 # define UET_PDS_DBG(...)
 # define UET_TSS_DBG(...)
+# define UET_IMP_DBG(...)
 #endif
 
 #if UET_LOG_LVL >= UET_LOG_INFO
@@ -157,10 +166,16 @@
 # else
 #  define UET_TSS_INFO(...)
 # endif
+# ifdef UET_LOG_IMP
+#  define UET_IMP_INFO(fmt, ...) UET_INFO(UET_IMP_LBL fmt, UET_IMP_CLR, ##__VA_ARGS__)
+# else
+#  define UET_IMP_INFO(...)
+# endif
 #else
 # define UET_SES_INFO(...)
 # define UET_PDS_INFO(...)
 # define UET_TSS_INFO(...)
+# define UET_IMP_INFO(...)
 #endif
 
 #if UET_LOG_LVL >= UET_LOG_WARN
@@ -179,10 +194,16 @@
 # else
 #  define UET_TSS_WARN(...)
 # endif
+# ifdef UET_LOG_IMP
+#  define UET_IMP_WARN(fmt, ...) UET_WARN(UET_IMP_LBL fmt, ##__VA_ARGS__)
+# else
+#  define UET_IMP_WARN(...)
+# endif
 #else
 # define UET_SES_WARN(...)
 # define UET_PDS_WARN(...)
 # define UET_TSS_WARN(...)
+# define UET_IMP_WARN(...)
 #endif
 
 #if UET_LOG_LVL >= UET_LOG_ERR
@@ -201,9 +222,15 @@
 # else
 #  define UET_TSS_ERR(...)
 # endif
+# ifdef UET_LOG_IMP
+#  define UET_IMP_ERR(fmt, ...) UET_ERR(UET_IMP_LBL fmt, ##__VA_ARGS__)
+# else
+#  define UET_IMP_ERR(...)
+# endif
 #else
 # define UET_SES_ERR(...)
 # define UET_PDS_ERR(...)
 # define UET_TSS_ERR(...)
+# define UET_IMP_ERR(...)
 #endif
 
