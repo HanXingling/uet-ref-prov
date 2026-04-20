@@ -4060,6 +4060,13 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 	struct uet_av_entry *av_entry;
 
 	tx_desc = (struct uet_tx_desc *) tx_pkt_handle;
+
+	/* packets implicitly acknowledged by cack */
+	if (!rsp_pp) {
+		tx_desc->unack_pkts--;
+		return 0;
+	}
+
 	ses_rsp = (struct uet_ses_rsp *) rsp_pp->ses;
 	ses_rsp_d = (struct uet_ses_rsp_d *) rsp_pp->ses;
 	opcode = rsp_pp->ses_opcode;
@@ -4166,7 +4173,12 @@ static int uet_pds_to_ses_rx_rsp(uet_pkt_handle_t tx_pkt_handle,
 			((ntohl(ses_rsp->cmn.ri_gen_job_id) &
 			  UET_SES_RSP_RI_GEN_MASK) >>
 			 UET_SES_RSP_RI_GEN_SHIFT);
-		av_entry->untagged_gen = rx_gen;
+
+		if (tx_desc->cq_flags & FI_TAGGED)
+			av_entry->tagged_gen = rx_gen;
+		else
+			av_entry->untagged_gen = rx_gen;
+
 		tx_desc->delay_retx = false;
 		goto retx_exit;
 	case UET_RC_NO_MATCH:

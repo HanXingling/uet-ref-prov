@@ -23,6 +23,9 @@
 #define UET_DEFAULT_MAX_TX_RETRIES   4
 #define UET_DEFAULT_MSL              2000	/* max seg lifetime in msecs */
 #define UET_DEFAULT_PDS_MAX_ACK_DATA 16		/* in bytes */
+#define UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED 0
+#define UET_DEFAULT_PDS_ACK_GEN_MIN_PKT_ADD 1024 /* in bytes */
+#define UET_DEFAULT_PDS_ACK_GEN_PKT_TRIGGER 16384 /* in bytes */
 
 struct uet_ep;     /* forward references */
 struct uet_instance;
@@ -304,6 +307,9 @@ struct uet_pds {
 	time_t msl;                    /* max segment lifetime in millisecs */
 	uint8_t ack_ip_tos;                             /* ip tos for ack's */
 	uint16_t max_ack_data;               /* max data carried in pds ack */
+	bool per_pkt_ack_enabled;       /* true=> enable per packet ack mode */
+	uint32_t ack_gen_trigger; /* rx bytes threshold for ack triggering */
+	uint32_t ack_gen_min_pkt_add; /* min bytes per pkt add to accept_bytes */
 };
 
 /* initialize the PDS and set the proper downcall function pointers */
