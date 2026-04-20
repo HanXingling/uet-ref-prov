@@ -27,8 +27,8 @@ void kdf_ctr_cmac_aes_fixed(uint8_t *key,
 	assert((ctr_len % 8) == 0);
 	assert((keybits_out % 8) == 0);
 
-	n = (keybits_out / BLOCK_SIZE);
-	if ((keybits_out % BLOCK_SIZE) != 0)
+	n = (keybits_out / (BLOCK_SIZE * 8));
+	if ((keybits_out % (BLOCK_SIZE * 8)) != 0)
 		n++;
 
 	tmp_fixed_len = ((ctr_len / 8) + fixed_len);
