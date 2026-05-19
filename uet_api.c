@@ -2805,12 +2805,11 @@ static uet_ses_rc_t uet_rx_fetch_atomic_req_pkt(
 	} else {
 		expected = ntohll(ses_cswap->ext.cmp_val_lo);
 		desired = ntohll(ses_cswap->ext.swp_val_lo);
-		if (__atomic_compare_exchange_n(
+		__atomic_compare_exchange_n(
 			addr, &expected, desired, false,
-			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-			*((uint64_t *) payload) = htonll(desired);
-		else
-			*((uint64_t *) payload) = htonll(expected);
+			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+		/* return old value, always equal to expected variable */
+		*((uint64_t *) payload) = htonll(expected);
 	}
 
 	return UET_RC_OK;

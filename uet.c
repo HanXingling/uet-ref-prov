@@ -1333,7 +1333,7 @@ static uet_rc_t uet_atomic_client(struct uet_context *ctx)
 		return UET_ERR_RC;
 	}
 
-	if (*result_buf != *local_op_buf) {
+	if (*result_buf != val) {
 		UET_ERR("uet_compare_atomic: bad result %lu", *result_buf);
 		return UET_ERR_RC;
 	}
