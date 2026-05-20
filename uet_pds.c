@@ -1123,6 +1123,7 @@ static int uet_pds_initiate_pdc_close(struct uet_instance *uet,
 int uet_pds_initialize(struct uet_instance *uet)
 {
 	struct uet_pdc *pdc;
+	char *pds_ack_type;
 	int i;
 
 	/* seed random number generator for PDC close and packet drop */
@@ -1156,6 +1157,20 @@ int uet_pds_initialize(struct uet_instance *uet)
 	if (getenv("UET_PDS_PER_PKT_ACK_ENB")) {
 		uet->pds.per_pkt_ack_enabled =
 			strtoul(getenv("UET_PDS_PER_PKT_ACK_ENB"), NULL, 10);
+	}
+
+	/* configure ack type */
+	pds_ack_type = getenv("UET_PDS_ACK_TYPE");
+	if (pds_ack_type == NULL || strcmp(pds_ack_type, "ack") == 0) {
+		uet->pds.ack_type = UET_PDS_TYPE_ACK;
+	} else if (strcmp(pds_ack_type, "ack_cc") == 0) {
+		uet->pds.ack_type = UET_PDS_TYPE_ACK_CC;
+	} else if (strcmp(pds_ack_type, "ack_ccx") == 0) {
+		uet->pds.ack_type = UET_PDS_TYPE_ACK_CCX;
+	} else {
+		UET_PDS_ERR("Invalid env variable UET_PDS_ACK_TYPE=%s",
+			    pds_ack_type);
+		return -EINVAL;
 	}
 
 	memset(&pds_state, 0, sizeof(struct uet_pds_state));
@@ -1852,7 +1867,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR_CLS
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
-		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
+		htons((uet->pds.ack_type << UET_PDS_TYPE_SHIFT) |
 		      (next_hdr << UET_PDS_NEXT_HDR_SHIFT) |
 		      (flags << UET_PDS_FLAGS_SHIFT));
 
@@ -2052,7 +2067,7 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 
 	/* TODO: add SACK header, UET_PDS_ACK_FLAGS_AX */
 	ack_pds->prlg.type_next_flags =
-		htons((UET_PDS_TYPE_ACK << UET_PDS_TYPE_SHIFT) |
+		htons((uet->pds.ack_type << UET_PDS_TYPE_SHIFT) |
 		      (UET_HDR_RSP << UET_PDS_NEXT_HDR_SHIFT) |
 		      (UET_PDS_ACK_FLAGS_NONE << UET_PDS_FLAGS_SHIFT));
 

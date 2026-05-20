@@ -175,6 +175,7 @@ Replace `2` with the desired number of senders.
 - **UET_NIC_SHIM** - [ `rawsock` | `xdp` ]
 - **UET_PDS** - [ `sng` | `pds` ] (default=`sng` stop-n-go)
 - **UET_PDS_PER_PKT_ACK_ENB** - [ `0` | `1` ] (default=`0`)
+- **UET_PDS_ACK_TYPE** - [ `ack` | `ack_cc` | `ack_ccx` ] (default=`ack`)
 - **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
