@@ -208,6 +208,41 @@ void bm_shift_right(struct bitmap *bm, int s)
 		bm->data_arr[i] = NULL;
 }
 
+/*
+ * Extract 64 bits starting at index i from the bitmap.
+ * For SACK use:
+ *   - bits at positions < 0 (before bitmap start) are filled with 1
+ *   - bits at positions >= bm->size are filled with 0
+ */
+uint64_t bm_extract64(const struct bitmap *bm, int i)
+{
+	int word_idx, bit_idx, shift;
+	uint64_t lo, hi, fill_ones;
+
+	if (i >= bm->size)
+		return 0; /* could assert() here */
+
+	if (i + 64 <= 0)
+		return ~(uint64_t)0;
+
+	if (i < 0) {
+		shift = -i;
+		fill_ones = (1ULL << shift) - 1;
+		return ((bm_extract64(bm, 0) << shift) | fill_ones);
+	}
+
+	word_idx = i / 64;
+	bit_idx = i % 64;
+
+	lo = bm->bit_arr[word_idx] >> bit_idx;
+	if (bit_idx != 0 && (word_idx + 1) < bm->bit_arr_len) {
+		hi = bm->bit_arr[word_idx + 1] << (64 - bit_idx);
+		lo |= hi;
+	}
+
+	return lo;
+}
+
 bool bm_next_set_bit_iter(const struct bitmap *bm, int *i)
 {
 	uint64_t idx_val;

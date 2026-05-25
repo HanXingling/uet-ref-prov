@@ -151,6 +151,7 @@ struct uet_pdc {
 	uint32_t            prev_ar_psn; /* highest PSN received with ar flag */
 	uint32_t            max_rcvd_psn; /* highest PSN received */
 	uint32_t            accepted_bytes; /* bytes received between ACKs */
+	uint32_t            sack_base_track; /* track SACK bitmap base PSN */
 
 	/* security fields, for Tx */
 	bool                sec_enabled;
@@ -774,6 +775,7 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc->max_clear_psn  = UET_DEFAULT_START_PSN - 1;
 	pdc->prev_ar_psn    = UET_DEFAULT_START_PSN - 1;
 	pdc->max_rcvd_psn   = UET_DEFAULT_START_PSN - 1;
+	pdc->sack_base_track = pdc->cack_psn;
 	pdc->accepted_bytes = 0;
 	memcpy(&pdc->tgt_hkey, &pdc_key, sizeof(pdc_key));
 	HASH_ADD(pdc_tgt_hh, pds_state.pdc_tgt_ht, tgt_hkey,
@@ -1810,12 +1812,73 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 	return 0;
 }
 
+static void uet_pds_update_sack_base(struct uet_pdc *pdc,
+				     struct uet_pdc_pkt *pdc_pkt,
+				     bool is_sack_trigger)
+{
+	if (is_sack_trigger) {
+		if (UET_PDS_PSN_AFTER(pdc->max_rcvd_psn,
+				      pdc->sack_base_track + 63)) {
+			pdc->sack_base_track += 64;
+		}
+		return;
+	}
+
+	if (UET_PDS_PSN_AFTER(pdc->cack_psn, pdc->sack_base_track))
+		pdc->sack_base_track = pdc->cack_psn;
+	else if (UET_PDS_PSN_AFTER(pdc_pkt->pkt_pp.pds_psn, pdc->cack_psn) &&
+		 UET_PDS_PSN_AFTER(pdc->sack_base_track,
+				   pdc_pkt->pkt_pp.pds_psn)) {
+		pdc->sack_base_track = pdc_pkt->pkt_pp.pds_psn;
+	}
+}
+
+static void uet_pds_build_ack_cc_ext(struct uet_instance *uet,
+				     struct uet_pdc *pdc,
+				     struct uet_pdc_pkt *pdc_pkt,
+				     struct uet_pds_ack *ack_pds,
+				     uet_pds_pkt_type_t ack_type)
+{
+	struct uet_pds_ack_cc *ack_cc;
+	struct uet_pds_ack_ccx *ack_ccx;
+	uint32_t sack_base_psn;
+	int bm_start_idx;
+
+	/*
+	 * Selection of sack_base_psn:
+	 *   - Per-packet ACKs, the SACK bitmap base PSN is the PSN that
+	 *     triggered this ACK
+	 *   - Coalesced ACKs, the SACK bitmap base PSN is the sack_base_track
+	 */
+	if (uet->pds.per_pkt_ack_enabled)
+		sack_base_psn = pdc_pkt->pkt_pp.pds_psn;
+	else {
+		sack_base_psn = pdc->sack_base_track;
+		uet_pds_update_sack_base(pdc, pdc_pkt, true);
+	}
+
+	bm_start_idx = UET_PDS_PSN_OFFSET(sack_base_psn, pdc->rx_bm_base_psn);
+	ack_cc = (struct uet_pds_ack_cc *)ack_pds;
+	ack_cc->cc_type_flags = 0;
+	ack_cc->mpr = UET_DEFAULT_MPR;
+	ack_cc->sack_psn_offset =
+		htons(psn_2c_offset(pdc->cack_psn, sack_base_psn));
+	ack_cc->sack_bitmap = htonll(bm_extract64(pdc->rx_bm, bm_start_idx));
+	ack_cc->ack_cc_state = 0;
+
+	if (ack_type == UET_PDS_TYPE_ACK_CCX) {
+		ack_ccx = (struct uet_pds_ack_ccx *)ack_pds;
+		ack_ccx->ack_ccx_state = 0;
+	}
+}
+
 static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 				  struct uet_pdc *pdc,
 				  struct uet_pdc_pkt *pdc_pkt,
 				  uet_pds_next_hdr_t next_hdr,
 				  void *ses_hdr,
-				  size_t ses_hdr_len)
+				  size_t ses_hdr_len,
+				  size_t pds_ack_hdr_len)
 {
 	uint8_t flags;
 	struct uet_entropy *entropy_hdr;
@@ -1863,7 +1926,6 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
-	/* TODO: support ACK_CC and ACK_CCX */
 	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR_CLS
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
@@ -1880,9 +1942,15 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	ack_pds->spdcid = htons(pdc->pdc_id);
 	ack_pds->dpdcid = htons(pdc->dpdcid);
 
+	if ((uet->pds.ack_type == UET_PDS_TYPE_ACK_CC) ||
+	    (uet->pds.ack_type == UET_PDS_TYPE_ACK_CCX)) {
+		uet_pds_build_ack_cc_ext(uet, pdc, pdc_pkt, ack_pds,
+					 uet->pds.ack_type);
+	}
+
 	/* only copy SES header if needed */
 	if (ses_hdr && ses_hdr_len > 0) {
-		ack_ses = (uint8_t *)(ack_pds + 1);
+		ack_ses = (uint8_t *)(ack_pds) + pds_ack_hdr_len;
 		memcpy(ack_ses, ses_hdr, ses_hdr_len);
 	}
 }
@@ -1909,6 +1977,19 @@ static void uet_pds_update_cack(struct uet_pdc *pdc,
 	pdc->cack_psn = pdc->rx_bm_base_psn + i - 1;
 }
 
+static size_t uet_pds_ack_hdr_len(struct uet_instance *uet)
+{
+	switch (uet->pds.ack_type) {
+	case UET_PDS_TYPE_ACK_CC:
+		return sizeof(struct uet_pds_ack_cc);
+	case UET_PDS_TYPE_ACK_CCX:
+		return sizeof(struct uet_pds_ack_ccx);
+	case UET_PDS_TYPE_ACK:
+	default:
+		return sizeof(struct uet_pds_ack);
+	}
+}
+
 static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 			      struct uet_pdc *pdc,
 			      struct uet_pdc_pkt *pdc_pkt,
@@ -1917,29 +1998,31 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 			      void *ses_hdr,
 			      bool gtd_del)
 {
-	uint16_t ack_pkt_len;
 	uint16_t ack_data_len;
+	size_t pds_ack_hdr_len;
 	int rc;
 	size_t ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
 					      sizeof(struct iphdr);
+
+	pds_ack_hdr_len = uet_pds_ack_hdr_len(uet);
 
 	if (next_hdr == UET_HDR_NONE) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
-				    sizeof(struct uet_pds_ack));
+				    pds_ack_hdr_len);
 	} else if (next_hdr == UET_HDR_RSP) {
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
-				    sizeof(struct uet_pds_ack) +
+				    pds_ack_hdr_len +
 				    sizeof(struct uet_ses_rsp));
 	} else { /* response w/ data */
 		ack_data_len = (ses_hdr_len - sizeof(struct uet_ses_rsp_d));
 		pdc_pkt->ack_len = (sizeof(struct ethhdr) +
 				    ip_hdr_size +
 				    sizeof(struct uet_entropy) +
-				    sizeof(struct uet_pds_ack) +
+				    pds_ack_hdr_len +
 				    sizeof(struct uet_ses_rsp_d) +
 				    ack_data_len);
 	}
@@ -1962,8 +2045,8 @@ static int uet_pds_tx_ack_pkt(struct uet_instance *uet,
 			: pdc_pkt->ack_buf;
 
 	/* build the ACK packet */
-	uet_pds_build_ack_pkt(uet, pdc, pdc_pkt, next_hdr,
-			      ses_hdr, ses_hdr_len);
+	uet_pds_build_ack_pkt(uet, pdc, pdc_pkt, next_hdr, ses_hdr,
+			      ses_hdr_len, pds_ack_hdr_len);
 
 	/* send the ACK packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, false, false);
@@ -1991,14 +2074,16 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	struct uet_entropy *entropy_hdr;
 	struct uet_pds_ack *ack_pds;
 	struct uet_pds_def_rsp *ack_ses;
+	size_t pds_ack_hdr_len;
 	int rc;
 	size_t ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
 					      sizeof(struct iphdr);
 
+	pds_ack_hdr_len = uet_pds_ack_hdr_len(uet);
 	def_rsp_len = (sizeof(struct ethhdr) +
 		       ip_hdr_size +
 		       sizeof(struct uet_entropy) +
-		       sizeof(struct uet_pds_ack) +
+		       pds_ack_hdr_len +
 		       sizeof(struct uet_pds_def_rsp));
 
 	/* allocate buffer for ack packet */
@@ -2032,7 +2117,6 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 					 sizeof(struct ethhdr) +
 					 ip_hdr_size +
 					 sizeof(struct uet_entropy));
-	ack_ses = (struct uet_pds_def_rsp *)(ack_pds + 1);
 
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
@@ -2080,6 +2164,14 @@ static int uet_pds_tx_def_rsp_ack_pkt(struct uet_instance *uet,
 	ack_pds->spdcid = htons(pdc->pdc_id);
 	ack_pds->dpdcid = htons(pdc->dpdcid);
 
+	if ((uet->pds.ack_type == UET_PDS_TYPE_ACK_CC) ||
+	    (uet->pds.ack_type == UET_PDS_TYPE_ACK_CCX)) {
+		uet_pds_build_ack_cc_ext(uet, pdc, pdc_pkt, ack_pds,
+					 uet->pds.ack_type);
+	}
+
+	ack_ses = (struct uet_pds_def_rsp *)((uint8_t *)ack_pds +
+					     pds_ack_hdr_len);
 	ack_ses->list_opcode =
 		(UET_DEFAULT_RESPONSE << UET_PDS_SES_DEF_RSP_OPCODE_SHIFT);
 	ack_ses->ver_return_code =
@@ -2225,10 +2317,12 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				uet_max(pdc_pkt->pkt_pp.pkt_payload_len,
 					uet->pds.ack_gen_min_pkt_add);
 			uet_pds_update_cack(pdc, pdc_pkt);
+			uet_pds_update_sack_base(pdc, pdc_pkt, false);
 			/* transmit ACK */
 			if (uet_pds_should_sack(uet, pdc, pdc_pkt)) {
 				rc = uet_pds_tx_ack_pkt(uet, pdc, pdc_pkt,
-							rsp_next_hdr, rsp_ses_hdr_len,
+							rsp_next_hdr,
+							rsp_ses_hdr_len,
 							rsp_ses_hdr, gtd_del);
 				pdc->accepted_bytes = 0;
 			}
@@ -2325,6 +2419,40 @@ static int uet_pds_shift_tx_window(struct uet_instance *uet,
 	return 0;
 }
 
+static void uet_pds_process_sack_bitmap(struct uet_instance *uet,
+					struct uet_pdc *pdc,
+					struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	uint32_t psn;
+	int i, idx;
+
+	for (i = 0; i < 64; i++) {
+		psn = pp->pds_sack_base_psn + i;
+		if (UET_PDS_PSN_AFTER_EQ(pdc->max_cack_psn, psn))
+			continue;
+
+		if (!(pp->pds_sack_bitmap & (1ULL << i)))
+			continue;
+
+		idx = UET_PDS_PSN_OFFSET(psn, pdc->tx_bm_base_psn);
+		if (idx < 0)
+			continue;
+
+		if (!bm_get(pdc->tx_bm, idx, (void **)&pdc_pkt))
+			continue;
+
+		/*
+		 * TODO How the initiator side process the sack bitmap?
+		 * When the initiator side does not konw whether the PDC ACK
+		 * packet corresponding to bit 1 requires guaranteed
+		 * transmission, it cannot directly notify the SES layer that
+		 * the PDC REQ packet corresponding to bit 1 has been delivered
+		 * to the peer.
+		 */
+	}
+}
+
 static void uet_pds_process_cack(struct uet_instance *uet,
 				 struct uet_pdc *pdc,
 				 struct uet_parsed_pkt *pp)
@@ -2417,6 +2545,10 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	pdc_pkt->tx_pkt_acked = true;
 	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
 	uet_pds_process_cack(uet, pdc, pp);
+	if (pp->pds_type == UET_PDS_TYPE_ACK_CC ||
+	    pp->pds_type == UET_PDS_TYPE_ACK_CCX) {
+		uet_pds_process_sack_bitmap(uet, pdc, pp);
+	}
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
