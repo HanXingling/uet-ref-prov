@@ -77,6 +77,7 @@ struct uet_pdc_pkt {
 	int                   tx_retry_cnt;  /* number of retransmissions */
 	uet_pkt_handle_t      tx_pkt_handle;
 	bool                  tx_pkt_acked; /* this packet has been acked */
+	bool                  dst_recvd; /* this packet has arrived at dst */
 	uet_pds_tx_flags_t    flags;
 
 	bool                  needs_clear;
@@ -1612,14 +1613,135 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	return 0;
 }
 
+static int uet_pds_send_ack_req_cp(struct uet_instance *uet,
+				   struct uet_pdc *pdc,
+				   struct uet_pdc_pkt *orig_pdc_pkt)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pds_ctrl *ctrl_hdr;
+	struct uet_entropy *entropy_hdr;
+	size_t ip_hdr_size;
+	uint16_t ctrl_flags;
+	int rc;
+
+	/* allocate the packet descriptor */
+	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
+	if (pdc_pkt == NULL) {
+		UET_PDS_ERR("failed to alloc PDC packet for ack req cp");
+		return -ENOMEM;
+	}
+
+	/* allocate the packet buffer */
+	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
+				((pdc->sec_enabled) ? 2 : 1));
+	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
+	if (pdc_pkt->pkt_buf == NULL) {
+		UET_PDS_ERR("failed to alloc packet buffer for ack req cp");
+		free(pdc_pkt);
+		return -ENOMEM;
+	}
+
+	/* reserve head space for security header if needed */
+	pdc_pkt->pkt = (pdc->sec_enabled)
+			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
+			: pdc_pkt->pkt_buf;
+
+	ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+				       sizeof(struct iphdr);
+
+	/* build Ethernet header */
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
+			  pdc->dst_mac_addr, pdc->src_mac_addr,
+			  pdc->is_ipv6);
+
+	/* set up pointers to headers */
+	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
+					     sizeof(struct ethhdr) +
+					     ip_hdr_size);
+	ctrl_hdr = (struct uet_pds_ctrl *)(pdc_pkt->pkt +
+					   sizeof(struct ethhdr) +
+					   ip_hdr_size +
+					   sizeof(struct uet_entropy));
+
+	pdc_pkt->pkt_len = (sizeof(struct ethhdr) +
+			    ip_hdr_size +
+			    sizeof(struct uet_entropy) +
+			    sizeof(struct uet_pds_ctrl));
+
+	/* fill in the entropy header */
+	entropy_hdr->entropy = htons(UET_DEFAULT_ENTROPY);
+
+	/* fill in the control packet header */
+	ctrl_flags = ((UET_PDS_TYPE_CTRL << UET_PDS_TYPE_SHIFT) |
+		      (UET_PDS_CTRL_TYPE_ACK_REQ << UET_PDS_CTRL_TYPE_SHIFT));
+
+	ctrl_hdr->prlg.type_ctrl_flags = htons(ctrl_flags);
+	ctrl_hdr->rsvd = 0;
+	ctrl_hdr->psn = htonl(orig_pdc_pkt->psn);
+	ctrl_hdr->spdcid = htons(pdc->pdc_id);
+	ctrl_hdr->dpdcid = htons(pdc->dpdcid);
+
+	/* payload is msg_id for ack request cp */
+	ctrl_hdr->payload = htonl((uint32_t)orig_pdc_pkt->msg_id);
+
+	/* build the IP header */
+	if (pdc->is_ipv6) {
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(pdc_pkt->pkt +
+						      sizeof(struct ethhdr)),
+				   pdc->dst_addr.v6,
+				   pdc->src_addr.v6,
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(pdc_pkt->pkt +
+						    sizeof(struct ethhdr)),
+				   htonl(pdc->dst_addr.v4),
+				   htonl(pdc->src_addr.v4),
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	}
+
+	/* send the packet */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
+	if (rc != 0) {
+		UET_PDS_ERR("failed to send ack req cp for PDC %u",
+			    pdc->pdc_id);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return rc;
+	}
+
+	/* the packet was sent successfully */
+	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "ACK REQ CP");
+
+	free(pdc_pkt->pkt_buf);
+	free(pdc_pkt);
+
+	return 0;
+}
+
 static int uet_pds_rtx_pkt(struct uet_instance *uet,
 			   struct uet_pdc *pdc,
 			   struct uet_pdc_pkt *pdc_pkt)
 {
 	struct uet_pds_req *pds_hdr;
-	uint8_t *new_pkt;
-	int new_pkt_len;
 	int rc;
+
+	if (pdc_pkt->dst_recvd &&
+	    pdc_pkt->tx_retry_cnt < uet->pds.max_tx_retries) {
+		rc = uet_pds_send_ack_req_cp(uet, pdc, pdc_pkt);
+		if (rc != 0)
+			return rc;
+
+		pdc_pkt->tx_retry_cnt++;
+		uet_gettime(&pdc_pkt->tx_time);
+		return 0;
+	}
 
 	/* set the retransmit flag in the PDS header */
 	pds_hdr = (struct uet_pds_req *)pdc_pkt->pkt_pp.pds;
@@ -2442,14 +2564,8 @@ static void uet_pds_process_sack_bitmap(struct uet_instance *uet,
 		if (!bm_get(pdc->tx_bm, idx, (void **)&pdc_pkt))
 			continue;
 
-		/*
-		 * TODO How the initiator side process the sack bitmap?
-		 * When the initiator side does not konw whether the PDC ACK
-		 * packet corresponding to bit 1 requires guaranteed
-		 * transmission, it cannot directly notify the SES layer that
-		 * the PDC REQ packet corresponding to bit 1 has been delivered
-		 * to the peer.
-		 */
+		/* The packet has arrived at the target side */
+		pdc_pkt->dst_recvd = true;
 	}
 }
 
@@ -2730,6 +2846,56 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	return uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
 }
 
+static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
+				      struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc *pdc;
+	struct uet_pdc_pkt *orig_pdc_pkt = NULL;
+	int rc;
+
+	UET_PDS_DBG("Received ACK_REQ cp (spdcid=%u dpdcid=%u)",
+		     pp->pds_spdcid, pp->pds_dpdcid);
+
+	/* find the target PDC */
+	pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
+	if (!pdc) {
+		UET_PDS_WARN("ACK REQ cp for unknown PDC %u", pp->pds_dpdcid);
+		return -EINVAL;
+	}
+
+	/* check the psn is within MPR, if not, drop the packet */
+	if (!PSN_IN_MPR(pp->pds_psn, pdc->rx_bm_base_psn)) {
+		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u outside MPR",
+			     pp->pds_dpdcid, pp->pds_psn);
+		return 0;
+	}
+
+	if (!bm_get(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn),
+		    (void **)&orig_pdc_pkt)) {
+		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u original pkt not found",
+			     pp->pds_dpdcid, pp->pds_psn);
+		return 0;
+	}
+
+	/* find previous ACK/response */
+	if (orig_pdc_pkt->ack == NULL) {
+		/* TODO: reply with NACK packet */
+		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u original ack not found",
+			     pp->pds_dpdcid, pp->pds_psn);
+		return 0;
+	}
+
+	/* resend previous ACK/response */
+	rc = uet_pds_sec_tx_pkt(uet, pdc, orig_pdc_pkt, false, true);
+	if (rc != 0)
+		return rc;
+
+	uet_pds_pkt_dbg(uet, &orig_pdc_pkt->ack_pp, true,
+			"TX ACK PACKET (duplicate)");
+
+	return 0;
+}
+
 static int uet_pds_process_control(struct uet_instance *uet,
 				   struct uet_parsed_pkt *pp,
 				   uint8_t *pkt,
@@ -2744,6 +2910,9 @@ static int uet_pds_process_control(struct uet_instance *uet,
 		send_ack = true;
 
 	switch (pp->pds_ctrl_type) {
+	case UET_PDS_CTRL_TYPE_ACK_REQ:
+		return uet_pds_process_ack_req_cp(uet, pp);
+
 	case UET_PDS_CTRL_TYPE_CLOSE:
 		UET_PDS_DBG("Received CLOSE command (spdcid=%u dpdcid=%u)",
 			    pp->pds_spdcid, pp->pds_dpdcid);
@@ -3113,4 +3282,3 @@ void uet_pds_ep_close_wait(struct uet_ep *uet_ep)
 		uet->pds.downcall.progress_rx(uet);
 	}
 }
-
