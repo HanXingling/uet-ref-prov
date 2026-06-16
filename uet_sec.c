@@ -290,6 +290,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	uint32_t ssi;
 	uint16_t epoch;
 	uint64_t tsc;
+	uint64_t counter; // 48b
 	uint32_t tfs;
 	uint32_t rekey;
 	uint32_t tmp_val;
@@ -342,7 +343,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	tsc = (sd->use_ssi) ? ntohll(sec_ssi->epoch_tsc)
 		            : ntohll(sec->epoch_tsc);
 	epoch = htons((uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT));
-	tsc = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
+	counter = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
 
 	/* crypto output is going in the upper half of the pkt_buf */
 	enc_out = (pkt_buf + (pkt_buf_len / 2));
@@ -360,7 +361,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	rekey = 0;
 	if (sd->rekey) {
-		rekey = (uint32_t)((tsc & sd->rekey_mask) >> sd->rekey_shift);
+		rekey = (uint32_t)((counter & sd->rekey_mask) >> sd->rekey_shift);
 		rekey = htonl(rekey);
 	}
 
@@ -518,6 +519,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	uint64_t tmp_lval;
 	uint16_t epoch;
 	uint64_t tsc;
+	uint64_t counter; // 48b
 	uint8_t an;
 	uint32_t sdi;
 	uint32_t tfs;
@@ -585,7 +587,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	tsc = (sd->use_ssi) ? ntohll(sec_ssi->epoch_tsc)
 		            : ntohll(sec->epoch_tsc);
 	epoch = htons((uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT));
-	tsc = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
+	counter = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
 
 	/* generate the key needed for decrypting the packet */
 
@@ -593,7 +595,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	rekey = 0;
 	if (sd->rekey) {
-		rekey = (uint32_t)((tsc & sd->rekey_mask) >> sd->rekey_shift);
+		rekey = (uint32_t)((counter & sd->rekey_mask) >> sd->rekey_shift);
 		rekey = htonl(rekey);
 	}
 
