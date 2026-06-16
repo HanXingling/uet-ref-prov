@@ -341,7 +341,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	/* get the epoch/tsc */
 	tsc = (sd->use_ssi) ? ntohll(sec_ssi->epoch_tsc)
 		            : ntohll(sec->epoch_tsc);
-	epoch = (uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT);
+	epoch = htons((uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT));
 	tsc = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
 
 	/* crypto output is going in the upper half of the pkt_buf */
@@ -584,7 +584,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	/* get the epoch/tsc */
 	tsc = (sd->use_ssi) ? ntohll(sec_ssi->epoch_tsc)
 		            : ntohll(sec->epoch_tsc);
-	epoch = (uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT);
+	epoch = htons((uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT));
 	tsc = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
 
 	/* generate the key needed for decrypting the packet */
