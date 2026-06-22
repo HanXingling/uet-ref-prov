@@ -310,6 +310,7 @@ struct uet_pds {
 	bool per_pkt_ack_enabled;       /* true=> enable per packet ack mode */
 	uint32_t ack_gen_trigger; /* rx bytes threshold for ack triggering */
 	uint32_t ack_gen_min_pkt_add; /* min bytes per pkt add to accept_bytes */
+	uet_pds_pkt_type_t ack_type; /* UET_PDS_TYPE_ACK / ACK_CC / ACK_CCX */
 };
 
 /* initialize the PDS and set the proper downcall function pointers */

@@ -65,13 +65,10 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 		UET_PDS_WARN("UUD_REQ packets not supported");
 		return false;
 	case UET_PDS_TYPE_ACK:
-		pds_req = false;
-		break;
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:
-		/* TODO: unsupported */
-		UET_PDS_WARN("ACK_CC packets not supported");
-		return false;
+		pds_req = false;
+		break;
 	case UET_PDS_TYPE_NACK:
 		/* TODO: unsupported */
 		UET_PDS_WARN("NACK packets not supported");

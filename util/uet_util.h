@@ -90,6 +90,13 @@ struct uet_parsed_pkt {
 	uint32_t pds_psn;
 	uint16_t pds_spdcid;
 	uint16_t pds_dpdcid;
+	uint8_t pds_cc_type;
+	uint8_t pds_cc_flags;
+	uint8_t pds_mpr;
+	uint32_t pds_sack_base_psn;
+	uint64_t pds_sack_bitmap;
+	uint64_t pds_cc_state;
+	uint64_t pds_ccx_state;
 	uint8_t pds_syn_off;
 	uint32_t pds_clear_psn;
 	uint8_t pds_nack_code;

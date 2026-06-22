@@ -1011,6 +1011,8 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	struct uet_pds_prlg *pds_prlg;
 	struct uet_pds_req *pds_req;
 	struct uet_pds_ack *pds_ack;
+	struct uet_pds_ack_cc *pds_ack_cc;
+	struct uet_pds_ack_ccx *pds_ack_ccx;
 	struct uet_pds_nack *pds_nack;
 	struct uet_pds_ctrl *pds_ctrl;
 	struct uet_ses_req_std *ses_req;
@@ -1205,8 +1207,31 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			       pp->pds_cack_psn);
 		pp->pds_spdcid = ntohs(pds_ack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_ack->dpdcid);
+
+		if (pp->pds_type == UET_PDS_TYPE_ACK_CC ||
+		    pp->pds_type == UET_PDS_TYPE_ACK_CCX) {
+			pds_ack_cc = (struct uet_pds_ack_cc *)pp->pds;
+			pp->pds_len = sizeof(struct uet_pds_ack_cc);
+			pp->pds_cc_type = (pds_ack_cc->cc_type_flags &
+					   UET_PDS_ACK_CC_TYPE_MASK) >>
+					  UET_PDS_ACK_CC_TYPE_SHIFT;
+			pp->pds_cc_flags = (pds_ack_cc->cc_type_flags &
+					    UET_PDS_ACK_CC_FLAGS_MASK) >>
+					   UET_PDS_ACK_CC_FLAGS_SHIFT;
+			pp->pds_mpr = pds_ack_cc->mpr;
+			pp->pds_sack_base_psn =
+				((int16_t)ntohs(pds_ack_cc->sack_psn_offset) +
+				 pp->pds_cack_psn);
+			pp->pds_sack_bitmap = ntohll(pds_ack_cc->sack_bitmap);
+			pp->pds_cc_state = ntohll(pds_ack_cc->ack_cc_state);
+		}
+
+		if (pp->pds_type == UET_PDS_TYPE_ACK_CCX) {
+			pds_ack_ccx = (struct uet_pds_ack_ccx *)pp->pds;
+			pp->pds_len = sizeof(struct uet_pds_ack_ccx);
+			pp->pds_ccx_state = ntohll(pds_ack_ccx->ack_ccx_state);
+		}
 		break;
-	/* TODO: support for parsing the two extended ACK headers */
 	case UET_PDS_TYPE_NACK:
 		pds_nack = (struct uet_pds_nack *)pp->pds;
 		pp->pds_len = sizeof(struct uet_pds_nack);

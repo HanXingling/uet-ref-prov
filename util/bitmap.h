@@ -27,6 +27,7 @@ int bm_min(const struct bitmap *bm); /* -1 if empty */
 int bm_max(const struct bitmap *bm); /* -1 if empty */
 void bm_shift_left(struct bitmap *bm, int s);
 void bm_shift_right(struct bitmap *bm, int s);
+uint64_t bm_extract64(const struct bitmap *bm, int start_idx);
 
 /*
  * Iterate over all the set bits:
