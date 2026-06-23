@@ -19,8 +19,8 @@
 
 #define UET_PDS "UET_PDS"
 
-#define UET_DEFAULT_TX_TIMEOUT       100	/* in millisecs */
-#define UET_DEFAULT_MAX_TX_RETRIES   4
+#define UET_DEFAULT_TX_TIMEOUT       5		/* in millisecs */
+#define UET_DEFAULT_MAX_TX_RETRIES   5
 #define UET_DEFAULT_MSL              2000	/* max seg lifetime in msecs */
 #define UET_DEFAULT_PDS_MAX_ACK_DATA 16		/* in bytes */
 #define UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED 0
