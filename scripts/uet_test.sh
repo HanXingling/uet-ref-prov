@@ -28,6 +28,13 @@ test_names=(all rma sync_rma atomic sync_atomic tag tag_any_src unexp_untag unex
 pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
 shim_names=(rawsock xdp)
 
+# (not for sng) default ACK type: ack, ack_cc, ack_ccx
+ACK_TYPE=ack_cc
+
+# (not for sng) default Tx timeout (in millisecs) and max Tx retries
+TX_TIMEOUT=5
+MAX_TX_RETRIES=5
+
 function usage()
 {
     echo "Usage: $0 <client|server> <ifname> <peer_ip> <test> <pds> [ <shim> ]"
@@ -150,7 +157,7 @@ if [ -n "$UET_IMPAIRMENT_SHIM" ]; then
     IMP_SHIM="UET_IMPAIRMENT_SHIM=${UET_IMPAIRMENT_SHIM}"
 fi
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} ${IMP_SHIM} ./${app_name}"
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_TX_TIMEOUT=${TX_TIMEOUT} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${IMP_SHIM} ./${app_name}"
 
 function run_test()
 {

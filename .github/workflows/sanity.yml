@@ -7,7 +7,7 @@ on:
 jobs:
   run_sanity:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - name: Check out the code
         uses: actions/checkout@v3
@@ -34,6 +34,13 @@ jobs:
           sudo ip link set vm1 master brm
           sudo ip addr add 10.1.0.1/24 dev brm
           sudo ip addr add 10.1.0.2/24 dev vm2
+          # IPv6: ensure it is enabled, then assign ULA addresses. 'nodad'
+          # skips Duplicate Address Detection so the addresses are usable
+          # immediately instead of sitting "tentative" for ~1s.
+          sudo sysctl -w net.ipv6.conf.brm.disable_ipv6=0
+          sudo sysctl -w net.ipv6.conf.vm2.disable_ipv6=0
+          sudo ip -6 addr add fd00:1::1/64 dev brm nodad
+          sudo ip -6 addr add fd00:1::2/64 dev vm2 nodad
           sudo ip link set brm up
           sudo ip link set vm2 up
 
@@ -56,12 +63,16 @@ jobs:
         run: |
           ping -c1 10.1.0.2
           ping -I 10.1.0.1 -c1 10.1.0.2
+          ping -6 -c1 fd00:1::2
+          ping -6 -I fd00:1::1 -c1 fd00:1::2
           arp -a
 
       - name: Check network vm to brm
         run: |
           ping -c1 10.1.0.1
           ping -I 10.1.0.2 -c1 10.1.0.1
+          ping -6 -c1 fd00:1::1
+          ping -6 -I fd00:1::2 -c1 fd00:1::1
           arp -a
 
       - name: Add ip addresses to arp table
@@ -76,7 +87,12 @@ jobs:
           sudo arp -i vm2 -s 10.1.0.1 $MAC2
           sudo arp -i brm -s 10.1.0.2 $MAC1
 
-      - name: run all tests in SNG mode
+          # IPv6 equivalent of the static ARP entries above: install
+          # permanent neighbor (NDP) cache entries in both directions.
+          sudo ip -6 neigh add fd00:1::1 lladdr $MAC2 dev vm2 nud permanent
+          sudo ip -6 neigh add fd00:1::2 lladdr $MAC1 dev brm nud permanent
+
+      - name: run all tests in SNG mode (IPv4)
         run: |
           arp -a
           sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all 10.1.0.2 &
@@ -86,7 +102,7 @@ jobs:
           sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all 10.1.0.1
           echo "Client finished."
 
-      - name: run all tests in PDS mode
+      - name: run all tests in PDS mode (IPv4)
         run: |
           arp -a
           sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
@@ -94,5 +110,25 @@ jobs:
           sleep 2
           echo "Client started."
           sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
+          echo "Client finished."
+
+      - name: run all tests in SNG mode (IPv6)
+        run: |
+          ip -6 neigh
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all fd00:1::2 &
+          echo "Server started in background."
+          sleep 2
+          echo "Client started."
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all fd00:1::1
+          echo "Client finished."
+
+      - name: run all tests in PDS mode (IPv6)
+        run: |
+          ip -6 neigh
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all fd00:1::2 &
+          echo "Server started in background."
+          sleep 2
+          echo "Client started."
+          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all fd00:1::1
           echo "Client finished."
 

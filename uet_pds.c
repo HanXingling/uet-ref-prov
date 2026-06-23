@@ -1150,6 +1150,19 @@ int uet_pds_initialize(struct uet_instance *uet)
 	uet->pds.tx_timeout     = UET_DEFAULT_TX_TIMEOUT;
 	uet->pds.max_tx_retries = UET_DEFAULT_MAX_TX_RETRIES;
 	uet->pds.msl            = UET_DEFAULT_MSL;
+
+	/* configure the tx timeout (in millisecs) */
+	if (getenv("UET_PDS_TX_TIMEOUT")) {
+		uet->pds.tx_timeout =
+			strtoul(getenv("UET_PDS_TX_TIMEOUT"), NULL, 10);
+	}
+
+	/* configure the max tx retries */
+	if (getenv("UET_PDS_MAX_TX_RETRIES")) {
+		uet->pds.max_tx_retries =
+			strtoul(getenv("UET_PDS_MAX_TX_RETRIES"), NULL, 10);
+	}
+
 	uet->pds.ack_ip_tos     = uet_dscp_to_tos(UET_IP_DEFAULT_ACK_DSCP);
 	uet->pds.max_ack_data	= UET_DEFAULT_PDS_MAX_ACK_DATA;
 	uet->pds.per_pkt_ack_enabled = UET_DEFAULT_PDS_PER_PKT_ACK_ENABLED;

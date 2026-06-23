@@ -44,9 +44,14 @@ Creates a bridge named `brm`.
 #### Bring the Bridge Up
 
 - Connects the `tapm` and `vm1` interfaces to the `brm` bridge.
-- Assigns IP addresses:
+- Assigns IPv4 addresses:
     - `brm`: `10.1.0.1`
     - `vm2`: `10.1.0.2`
+- Assigns IPv6 (ULA) addresses, after ensuring IPv6 is enabled on the
+  interfaces. The `nodad` flag skips Duplicate Address Detection so the
+  addresses are usable immediately rather than sitting "tentative":
+    - `brm`: `fd00:1::1`
+    - `vm2`: `fd00:1::2`
 - Brings up `brm` and `vm2`.
 
 #### Bring the libfabric Up
@@ -59,19 +64,24 @@ Compiles the `uet-ref-prov`.
 
 #### Check Network Connectivity (brm to vm2)
 
-Verifies network communication from the `brm` to `vm2`.
+Verifies network communication from the `brm` to `vm2`, over both IPv4 and IPv6.
 
 #### Check Network Connectivity (vm2 to brm)
 
-Verifies network communication from the `vm2` to `brm`.
+Verifies network communication from the `vm2` to `brm`, over both IPv4 and IPv6.
 
 #### Add IP Addresses to the ARP Table
 
 Fetches the MAC addresses of `brm` and `vm2`, then adds static entries to the ARP tables 
-to bind IPs with their respective MAC addresses.
+to bind IPs with their respective MAC addresses. The IPv6 equivalent (permanent NDP 
+neighbor entries) is installed in both directions for the ULA addresses.
 
 #### Start Server and Client
 
 Runs sanity tests on uet-ref-prov to validate updates. Multithreading is unnecessary 
 as the server runs in the background, and the client starts two seconds later.
+
+The tests run four times total: SNG and PDS modes over IPv4, then SNG and PDS 
+modes over IPv6. The UET application auto-detects the address family from the peer 
+IP string, so no application flags differ between the IPv4 and IPv6 passes.
 
