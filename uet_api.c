@@ -1498,7 +1498,7 @@ static void uet_tx_desc_set_err(struct uet_tx_desc *tx_desc, int err_code,
 static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 {
 	uint32_t max_retx;
-	time_t backoff;
+	time_t backoff_range, backoff_delta;
 	struct uet_av_entry *av_entry;
 
 	/* check for max retransmits */
@@ -1520,9 +1520,16 @@ static int uet_retx_msg(struct uet_tx_desc *tx_desc, bool delay_retx)
 	/* set earliest retransmit time */
 	uet_gettime(&tx_desc->tx_time);
 	if (delay_retx) {
-		/* exponential backoff */
-		backoff = ((time_t) lrand48()) % (tx_desc->backoff_max + 1);
-		tx_desc->tx_time += backoff;
+		if ((max_retx == UET_MSG_RETRANSMIT_MAX_INFINITY) ||
+		    (tx_desc->retransmit_cnt == 1)) {
+			backoff_range = (tx_desc->backoff_max -
+					 tx_desc->backoff_min) + 1;
+			backoff_delta = ((time_t) lrand48()) % backoff_range;
+			tx_desc->backoff = tx_desc->backoff_min + backoff_delta;
+		} else
+			/* exponential backoff */
+			tx_desc->backoff *= 2;
+		tx_desc->tx_time += tx_desc->backoff;
 	}
 
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD) {
@@ -2339,6 +2346,7 @@ static uet_ses_rc_t uet_get_rd_tx_desc(
 	tx_desc->job_id = uet_get_std_req_job_id(ses);
 	tx_desc->msg_id = ntohs(ses->cmn.msg_id);
 	tx_desc->uet_ep = uet_ep;
+	tx_desc->backoff_min = UET_INITIAL_BACKOFF_MIN;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
 	tx_desc->pds_mode = uet_get_pds_mode(uet_ep, true);
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
@@ -2897,6 +2905,7 @@ static uet_ses_rc_t uet_rx_dsend(struct uet_ep *uet_ep,
 	tx_desc->job_id = uet_ep->job_id;
 	tx_desc->msg_id = msg_id;
 	tx_desc->uet_ep = uet_ep;
+	tx_desc->backoff_min = UET_INITIAL_BACKOFF_MIN;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
 	tx_desc->pds_mode = UET_PDS_MODE_RUD;
 	uet_gettime(&now);
@@ -5166,6 +5175,7 @@ static ssize_t uet_send_req_api_common(
 #endif
 	tx_desc->msg_id = msg_id;
 	tx_desc->uet_ep = uet_ep;
+	tx_desc->backoff_min = UET_INITIAL_BACKOFF_MIN;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
 	tx_desc->pds_mode = uet_get_pds_mode(uet_ep, rma_op);
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)

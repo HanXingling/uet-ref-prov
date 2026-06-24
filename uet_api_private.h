@@ -69,12 +69,12 @@
 	/* protects against abandoned sync groups that have gone idle */
 #define UET_RX_SYNC_GRP_MAX_LIFETIME	60000	/* in msecs */
 
-	/* initial max backoff time for msg retransmissions, */
-	/* used by exponential backoff algorithm             */
-#define UET_INITIAL_BACKOFF_MAX 1	/* in msecs */
+	/* initial min/max backoff times for msg retransmissions */
+#define UET_INITIAL_BACKOFF_MIN 50      /* in msecs */
+#define UET_INITIAL_BACKOFF_MAX 100     /* in msecs */
 
 	/* max number of times a message can be retransmitted */
-#define UET_MSG_RETRANSMIT_MAX		10
+#define UET_MSG_RETRANSMIT_MAX		5
 #define UET_MSG_RETRANSMIT_MAX_INFINITY	0
 
 	/* thresholds for rendezvous sends */
@@ -366,7 +366,9 @@ struct uet_tx_desc {
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	uint64_t seq_num;	   /* local sequence number used for ordering */
 	uint32_t retransmit_cnt; /* number of time msg has been retransmitted */
-	time_t backoff_max;      /* max backoff time in msecs for retransmits */
+	time_t backoff_min;           /* min backoff in msecs for retransmits */
+	time_t backoff_max;      /* init max backoff for retransmits in msecs */
+	time_t backoff;          /* previous retransmit backoff time in msecs */
 	time_t tx_time;		      /* earliest time msg can be transmitted */
 	bool delay_retx;          /* parm for deferred message retransmission */
 	int err_code;                                           /* error info */
