@@ -4620,6 +4620,7 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 	int rc;
 	size_t i;
 	time_t now;
+	uet_tx_desc_state_t prev_state;
 	struct uet_ring *ring;
 	struct uet_tx_desc *tx_desc, *start_tx_desc;
 	struct uet_av_entry *av_entry;
@@ -4659,10 +4660,13 @@ static void uet_tx_msg_try(struct uet_ep *uet_ep)
 			goto rotate_and_continue;
 		}
 
+		prev_state = tx_desc->state;
 		uet_tx_desc_state_transition(tx_desc);
 
 		switch (tx_desc->state) {
 		case UET_TX_DESC_STATE_ACTIVE:
+			if (prev_state != UET_TX_DESC_STATE_ACTIVE)
+				goto rotate_and_continue;
 			rc = uet_tx_msg(tx_desc);
 			if (rc == -FI_EAGAIN) {
 				uet_tx_desc_ring_rotate(tx_desc);
