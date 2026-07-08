@@ -807,6 +807,11 @@ static struct uet_pdc *uet_pdsm_get_pdc(uint16_t pdc_id,
 {
 	struct uet_pdc *pdc;
 
+	if (pdc_id == 0) {
+		UET_PDS_ERR("invalid PDC %u (reserved)", pdc_id);
+		return NULL;
+	}
+
 	if (pdc_id >= UET_PDC_MAX) {
 		UET_PDS_ERR("invalid PDC %u (range)", pdc_id);
 		return NULL;
@@ -1211,7 +1216,12 @@ int uet_pds_initialize(struct uet_instance *uet)
 	pds_state.pdc_tgt_ht = NULL;
 	pds_state.pdc_msgid_ht = NULL;
 
-	for (i = 0; i < UET_PDC_MAX; i++) {
+	/*
+	 * Reserve PDCID=0 according to UET spec 3.5.8.2.
+	 * Only PDCID [1, UET_PDC_MAX-1] are initialized and inserted into the
+	 * allocatable pools.
+	 */
+	for (i = 1; i < UET_PDC_MAX; i++) {
 		pdc = &pds_state.pdc[i];
 		pdc->state = PDC_STATE_UNALLOC;
 		pdc->pdc_id = i;
