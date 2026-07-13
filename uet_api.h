@@ -244,8 +244,8 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
  *     - fi_mr_reg
  */
 int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
-	       size_t iov_count, uint64_t access, uint64_t requested_key,
-		   uint64_t flags, void *context, uet_mr_handle_t *mr_handle);
+		size_t iov_count, uint64_t access, uint64_t requested_key,
+		uint64_t flags, void *context, uet_mr_handle_t *mr_handle);
 
 /*
  * flexible api to register a memory region with a domain
@@ -275,6 +275,30 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 int uet_mr_regattr(uet_domain_handle_t domain_handle, uint32_t job_id,
 		   const struct fi_mr_attr *attr, uint64_t flags,
 		   uet_mr_handle_t *mr_handle);
+
+/*
+ * register a derived memory region contained within an existing region
+ *
+ * parms:
+ *   domain_handle     - handle identifying uet domain instance
+ *   parent_mr_handle  - handle of the existing (parent) memory region
+ *   buf               - start of the derived region (within the parent)
+ *   len               - length of the derived region
+ *   access            - operations supported for the derived region
+ *   requested_key     - requested key (UET_MR_KEY_NONE for provider key)
+ *   context           - user specified context associated with the region
+ *   mr_handle         - ptr to location where the derived region handle
+ *                       is returned
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+int uet_mr_derive(uet_domain_handle_t domain_handle,
+		  uet_mr_handle_t parent_mr_handle,
+		  const void *buf, size_t len, uint64_t access,
+		  uint64_t requested_key, void *context,
+		  uet_mr_handle_t *mr_handle);
 
 /*
  * get memory region protection key
