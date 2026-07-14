@@ -6464,8 +6464,8 @@ int uet_mr_reg(uet_domain_handle_t domain_handle, const void *buf, size_t len,
 }
 
 int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
-	       size_t iov_count, uint64_t access, uint64_t requested_key,
-		   uint64_t flags, void *context, uet_mr_handle_t *mr_handle)
+		size_t iov_count, uint64_t access, uint64_t requested_key,
+		uint64_t flags, void *context, uet_mr_handle_t *mr_handle)
 {
 	int rc;
 	uint64_t key, rkey;
@@ -6559,6 +6559,42 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 	*mr_handle = mr_desc;
 
 	return FI_SUCCESS;
+}
+
+/*
+ * Register a derived memory region that is wholly contained within an
+ * existing (parent) region. A derived region shares the parent's domain
+ * and may carry different access rights. This reference implementation
+ * registers the sub-range as an independent region. A vendor may instead
+ * share the parent's page mappings (derived regions are an optional
+ * optimization).
+ */
+int uet_mr_derive(uet_domain_handle_t domain_handle,
+		  uet_mr_handle_t parent_mr_handle,
+		  const void *buf, size_t len, uint64_t access,
+		  uint64_t requested_key, void *context,
+		  uet_mr_handle_t *mr_handle)
+{
+	struct uet_mr_desc *parent = (struct uet_mr_desc *) parent_mr_handle;
+	const uint8_t *pbase, *cbase;
+
+	if ((parent == NULL) ||
+	    (parent->buf_desc.type != UET_MR_BUF_TYPE_CONTIG)) {
+		UET_API_ERR("derived MR parent must be a contiguous region");
+		return -FI_EINVAL;
+	}
+
+	pbase = parent->buf_desc.buf;
+	cbase = buf;
+
+	if ((cbase < pbase) ||
+	    ((cbase + len) > (pbase + parent->buf_desc.len))) {
+		UET_API_ERR("derived MR must be contained in the parent region");
+		return -FI_EINVAL;
+	}
+
+	return uet_mr_reg(domain_handle, buf, len, access, requested_key,
+			  UET_FLAGS_NONE, context, mr_handle);
 }
 
 uint64_t uet_mr_key(uet_mr_handle_t mr_handle)
