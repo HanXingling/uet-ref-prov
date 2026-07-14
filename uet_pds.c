@@ -2754,7 +2754,18 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		if (rc != 0)
 			return rc;
 
-		/* FIXME, make sure there are no more pending packets */
+		/*
+		 * Do not free the PDC while packets are still pending in
+		 * bitmaps/queues. Keep it in CLOSING and wait for drain.
+		 */
+		if ((bm_count(pdc->tx_bm) > 0) ||
+		    !dlist_empty(&pdc->tx_pkt_list_head)) {
+			UET_PDS_WARN("PDC %u close ACK received but pending "
+				     "packets remain (tx_bm=%d)",
+				     pdc->pdc_id,
+				     bm_count(pdc->tx_bm));
+			return 0;
+		}
 
 		/* free the PDC */
 		uet_pdsm_free_pdc(pdc);
@@ -2899,8 +2910,14 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	/* TODO: if error, free PDC if allocated with this SYN */
 	if (rc != 0)
 		return rc;
-	else if (rtx)
-		return 0;
+	else if (rtx) {
+		/*
+		 * This packet was already consumed by duplicate/retransmit
+		 * handling. However, it is not inserted into rx_bm, so it
+		 * needs to be freed by the caller.
+		 */
+		return -EEXIST;
+	}
 
 	UET_PDS_DBG("PDC %u rx_bm: base=%u psn=%u SET bit=%u",
 		    pdc->pdc_id, pdc->rx_bm_base_psn, pp->pds_psn,
@@ -2914,7 +2931,13 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
-	return uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	rc = uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		bm_unset(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn));
+		return rc;
+	}
+
+	return 0;
 }
 
 static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
@@ -3140,6 +3163,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	pdc_pkt->msg_id = pp->ses_msg_id;
 	pdc_pkt->pkt = pkt;
 	pdc_pkt->pkt_len = pkt_len;
+	pdc_pkt->pkt_buf = pkt;
+	pdc_pkt->pkt_buf_len = pkt_len;
 	memcpy(&pdc_pkt->pkt_pp, pp, sizeof(*pp));
 	pdc_pkt->pkt_parsed = true;
 
@@ -3205,8 +3230,15 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	rc = uet_pds_check_duplicate_and_rtx(uet, pdc, pdc_pkt, &rtx);
 	if (rc != 0)
 		goto exit_err;
-	else if (rtx)
-		return 0;
+	else if (rtx) {
+		/*
+		 * This packet was already consumed by duplicate/retransmit
+		 * handling. However, it is not inserted into rx_bm, so it
+		 * needs to be freed before returning.
+		 */
+		rc = -EEXIST;
+		goto exit_err;
+	}
 
 	UET_PDS_DBG("PDC %u rx_bm: base=%u clear psn=%u psn=%u SET bit=%u",
 		    pdc->pdc_id, pdc->rx_bm_base_psn,
@@ -3223,7 +3255,14 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
-	return uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	rc = uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		bm_unset(pdc->rx_bm,
+			 (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn));
+		goto exit_err;
+	}
+
+	return 0;
 
 exit_err:
 	free(pdc_pkt);
@@ -3259,14 +3298,14 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 				&pkt_is_ctrl)) {
 		UET_PDS_WARN("invalid Rx packet (len=%ld)", pkt_len);
 		rc = -EINVAL;
-		goto exit_err;
+		goto exit;
 	}
 
 	/* parse the packet */
 	rc = uet_parse_pkt(uet, pkt, pkt_len, &pp);
 	if (rc != 0) {
 		UET_PDS_ERR("malformed Rx packet");
-		goto exit_err;
+		goto exit;
 	}
 
 	if (!pp.sec) {
@@ -3288,7 +3327,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 			   CRC_LEN) != 0) {
 			UET_PDS_WARN("Rx packet CRC mismatch");
 			rc = -EINVAL;
-			goto exit_err;
+			goto exit;
 		}
 	}
 
@@ -3310,26 +3349,20 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (pkt_is_ack) {
 
 		rc = uet_pds_process_ack(uet, &pp);
-		if (rc != 0)
-			goto exit_err;
 
 	} else if (pkt_is_ctrl) {
 
 		rc = uet_pds_process_control(uet, &pp, pkt, pkt_len);
-		if (rc != 0)
-			goto exit_err;
 
 	} else { /* request packet */
 
 		rc = uet_pds_process_request(uet, &pp, pkt, pkt_len);
-		if (rc != 0)
-			goto exit_err;
+		if (rc == 0)
+			return 0;
 
 	}
 
-	return 0;
-
-exit_err:
+exit:
 	free(pkt);
 	return rc;
 }
