@@ -175,6 +175,8 @@ struct uet_mr_desc {
 	uint64_t full_key;                      /* full key for memory region */
 	uint64_t access;            /* operations supported for memory region */
 	uint64_t flags;                        /* properties of memory region */
+	uint32_t job_id;                 /* JobID the region is restricted to */
+	bool job_restricted;               /* region is restricted to a JobID */
 	void *context;                                      /* for completion */
 	struct uet_mr_key hash_key;                     /* key for hash entry */
 	UT_hash_handle mr_hh;                     /* handle for hash function */
