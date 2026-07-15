@@ -2128,6 +2128,7 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 	struct uet_domain *uet_dom;
 	struct uet_mr_desc *mr_desc;
 	struct uet_mr_key mr_key;
+	struct uet_ses_req_std *ses;
 
 	uet_dom = uet_ep->uet_domain;
 	uet_mr_key_init(&mr_key, pp);
@@ -2141,6 +2142,18 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 		}
 	} else
 		mr_desc = uet_mr_hash_lookup(uet_ep, &mr_key);
+
+	/* Enforce job-restricted access as a region bound to a JobID may only
+	 * be accessed by requests within that job.
+	 */
+	if (mr_desc && mr_desc->job_restricted) {
+		ses = (struct uet_ses_req_std *)pp->ses;
+
+		if (mr_desc->job_id != uet_get_std_req_job_id(ses)) {
+			UET_API_ERR("MR access denied: JobID mismatch");
+			mr_desc = NULL;
+		}
+	}
 
 	return mr_desc;
 }
@@ -6595,6 +6608,29 @@ int uet_mr_derive(uet_domain_handle_t domain_handle,
 
 	return uet_mr_reg(domain_handle, buf, len, access, requested_key,
 			  UET_FLAGS_NONE, context, mr_handle);
+}
+
+/*
+ * Register a memory region restricted to a specific JobID. Only incoming
+ * requests within that job are allowed to access the region.
+ */
+int uet_mr_reg_job(uet_domain_handle_t domain_handle, const void *buf,
+		   size_t len, uint64_t access, uint64_t requested_key,
+		   uint64_t flags, uint32_t job_id, void *context,
+		   uet_mr_handle_t *mr_handle)
+{
+	int rc;
+
+	rc = uet_mr_reg(domain_handle, buf, len, access, requested_key,
+			flags, context, mr_handle);
+	if (rc == FI_SUCCESS) {
+		struct uet_mr_desc *mr_desc = (struct uet_mr_desc *) *mr_handle;
+
+		mr_desc->job_id = job_id;
+		mr_desc->job_restricted = true;
+	}
+
+	return rc;
 }
 
 uint64_t uet_mr_key(uet_mr_handle_t mr_handle)
