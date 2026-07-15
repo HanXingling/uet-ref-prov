@@ -258,6 +258,7 @@ struct uet_rx_desc {
 	UT_hash_handle tag_hh;                /* handle for tag hash function */
 	struct uet_mr_desc *mr_desc;          /* ptr to mr desc if applicable */
 	uint64_t imm_data;                        /* data for write immediate */
+	uint32_t src_id;                   /* initiator (SourceID) of the msg */
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	time_t prev_pkt_time;     /* time most recent pkt of msg was received */
 	struct uet_tx_desc *tx_desc;     /* associated tx descriptor for read */
@@ -564,6 +565,7 @@ struct uet_cq_ring_entry {
 		struct uet_rx_desc *rx;
 		struct uet_tx_desc *tx;
 	} desc;
+	uint32_t src_id; /* initiator (SourceID); valid for rx entries */
 	/* err entry is largest cq entry format */
 	uint8_t cq_entry[sizeof(struct fi_cq_err_entry)];
 };
@@ -579,6 +581,7 @@ struct uet_cq {
 	enum fi_cq_format format;                  /* format of entries in cq */
 	size_t format_size;             /* size of each entry in cq, in bytes */
 	struct uet_ring ring;           /* ring implementing completion queue */
+	uint32_t last_src_id;     /* SourceID of the most recently read entry */
 };
 
 /* endpoint control block */
