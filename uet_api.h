@@ -777,6 +777,17 @@ ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf,
 		    size_t count);
 
 /*
+ * get the initiator (SourceID) of the most recently read completion
+ *
+ * parms:
+ *   cq_handle - handle identifying uet completion queue instance
+ *
+ * returns:
+ *   the SES initiator value of the last entry read via uet_cq_read
+ */
+uint32_t uet_cq_read_src_id(uet_cq_handle_t cq_handle);
+
+/*
  * non-blocking read of completion queue error
  *
  * parms:

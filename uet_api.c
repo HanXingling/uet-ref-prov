@@ -1708,6 +1708,9 @@ static void uet_rx_cq_read_entry(void *buf, struct uet_ring *ring)
 
 	memcpy(buf, ring_entry->cq_entry, uet_ep->recv_cq.format_size);
 
+	/* stash the SourceID so it can be read alongside the completion */
+	uet_ep->recv_cq.last_src_id = ring_entry->src_id;
+
 	uet_rx_desc_list_insert(ring_entry->desc.rx);
 
 	uet_ring_tail_advance(ring);
@@ -1778,6 +1781,7 @@ static void uet_rx_cq_post_entry(struct uet_rx_desc *rx_desc)
 	ring_entry = &(((struct uet_cq_ring_entry *) (ring->base))[ring->head]);
 	memset(ring_entry, 0, ring->entry_size);
 	ring_entry->desc.rx = rx_desc;
+	ring_entry->src_id = rx_desc->src_id;
 
 	cq_entry = (struct fi_cq_tagged_entry *) ring_entry->cq_entry;
 	cq_entry->op_context = rx_desc->context;
@@ -3259,6 +3263,9 @@ static uet_ses_rc_t uet_rx_req_pkt(
 				     buf_off);
 		memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
 	}
+
+	/* capture the initiator (SourceID) to report on the completion */
+	rx_desc->src_id = ntohl(ses->initiator);
 
 	/* check for message completion */
 	rx_desc->remaining_bytes -= pp->ses_payload_len;
@@ -6099,6 +6106,13 @@ int uet_ep_close(uet_ep_handle_t ep_handle)
 	uet_ep_free(uet_ep);
 
 	return FI_SUCCESS;
+}
+
+uint32_t uet_cq_read_src_id(uet_cq_handle_t cq_handle)
+{
+	struct uet_cq *cq = (struct uet_cq *) cq_handle;
+
+	return cq->last_src_id;
 }
 
 ssize_t uet_cq_read(uet_cq_handle_t cq_handle, void *buf, size_t count)
