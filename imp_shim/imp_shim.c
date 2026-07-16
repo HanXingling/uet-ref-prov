@@ -12,16 +12,47 @@
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
+#include <arpa/inet.h>
+#include <linux/ipv6.h>
+#include <linux/udp.h>
 
 #include <ofi_list.h>
 
 #include "uet_log.h"
 #include "uet_nic.h"
+#include "uet_pkt_hdr.h"
+#include "crc32c.h"
 #include "tomlc17.h"
 #include "imp_shim.h"
 
 /* initial number of packet buffers to pre-allocate per plane */
 #define IMP_POOL_INIT_PER_PLANE 32
+
+/*
+ * Packet mangling (test hook).
+ *
+ * A packet matching the configured pkt_type/flags filter is either mutated
+ * (a PDS header field is corrupted so the peer replies with a NACK) or
+ * dropped (only the transmit copy, so the initiator RTO-retransmits). This
+ * exercises the initiator's NACK/retransmit processing, otherwise unreachable
+ * on the normal data path. See imp_shim_mangle_pkt() for details.
+ */
+typedef enum {
+	IMP_MANGLE_ACTION_MANGLE = 0, /* corrupt a header field (default) */
+	IMP_MANGLE_ACTION_DROP,       /* drop the matched packet */
+} imp_mangle_action_t;
+
+typedef enum {
+	IMP_MANGLE_FIELD_NONE = 0,
+	IMP_MANGLE_FIELD_PSN,     /* -> peer PSN_OOR_WINDOW NACK (RETX) */
+	IMP_MANGLE_FIELD_SPDCID,  /* -> peer PDC mismatch NACK (CLOSE) */
+	IMP_MANGLE_FIELD_DPDCID,  /* -> peer PDC mismatch NACK (CLOSE) */
+	IMP_MANGLE_FIELD_SYN,     /* -> peer INVALID_SYN NACK (CLOSE) */
+} imp_mangle_field_t;
+
+/* mangle.pkt_type sentinels: any request type (default) or invalid config */
+#define IMP_MANGLE_PKT_TYPE_ANY     (-1)
+#define IMP_MANGLE_PKT_TYPE_INVALID (-2)
 
 /* packet entry */
 struct imp_pkt {
@@ -61,12 +92,122 @@ struct imp_shim_state {
 	int               drop_rate;  /* hundredths of a percent */
 	uint64_t          delay_max;  /* nanoseconds (random 0..delay_max) */
 
+	/* packet mangling test hook (disabled unless configured) */
+	bool                mangle_enable;
+	int                 mangle_rate;   /* hundredths of a percent */
+	imp_mangle_action_t mangle_action; /* mangle field or drop */
+	imp_mangle_field_t  mangle_field;
+	int                 mangle_pkt_type; /* PDS type to target, or ANY */
+	uint8_t             mangle_flags;    /* these prlg flags must be set */
+	bool                mangle_skip_syn; /* never touch SYN (setup) packets */
+	uint32_t            mangle_value;
+
 	struct imp_plane *planes;     /* Tx queues */
 	uint32_t          enq_idx;    /* round-robin enqueue index */
 	struct imp_pool   pool;       /* packet buffer free pool */
 };
 
 static struct imp_shim_state imp_state;
+
+static imp_mangle_action_t imp_mangle_action_from_str(const char *s)
+{
+	if (s != NULL && strcmp(s, "drop") == 0)
+		return IMP_MANGLE_ACTION_DROP;
+	return IMP_MANGLE_ACTION_MANGLE; /* default */
+}
+
+static const char *imp_mangle_action_str(imp_mangle_action_t action)
+{
+	return (action == IMP_MANGLE_ACTION_DROP) ? "drop" : "mangle";
+}
+
+static const char *imp_mangle_field_str(imp_mangle_field_t field)
+{
+	switch (field) {
+	case IMP_MANGLE_FIELD_PSN:    return "psn";
+	case IMP_MANGLE_FIELD_SPDCID: return "spdcid";
+	case IMP_MANGLE_FIELD_DPDCID: return "dpdcid";
+	case IMP_MANGLE_FIELD_SYN:    return "syn";
+	default:                      return "none";
+	}
+}
+
+static imp_mangle_field_t imp_mangle_field_from_str(const char *s)
+{
+	if (s == NULL)
+		return IMP_MANGLE_FIELD_NONE;
+	if (strcmp(s, "psn") == 0)
+		return IMP_MANGLE_FIELD_PSN;
+	if (strcmp(s, "spdcid") == 0)
+		return IMP_MANGLE_FIELD_SPDCID;
+	if (strcmp(s, "dpdcid") == 0)
+		return IMP_MANGLE_FIELD_DPDCID;
+	if (strcmp(s, "syn") == 0)
+		return IMP_MANGLE_FIELD_SYN;
+	return IMP_MANGLE_FIELD_NONE;
+}
+
+/*
+ * Name <-> value table for the full uet_pds_pkt_type_t enum. Lets the config
+ * target any PDS packet type by name for fault injection.
+ */
+static const struct {
+	const char        *name;
+	uet_pds_pkt_type_t type;
+} imp_mangle_pkt_type_map[] = {
+	{ "reserved",   UET_PDS_TYPE_RESERVED   },
+	{ "security",   UET_PDS_TYPE_SECURITY   },
+	{ "rud_req",    UET_PDS_TYPE_RUD_REQ    },
+	{ "rod_req",    UET_PDS_TYPE_ROD_REQ    },
+	{ "rudi_req",   UET_PDS_TYPE_RUDI_REQ   },
+	{ "rudi_resp",  UET_PDS_TYPE_RUDI_RESP  },
+	{ "uud_req",    UET_PDS_TYPE_UUD_REQ    },
+	{ "ack",        UET_PDS_TYPE_ACK        },
+	{ "ack_cc",     UET_PDS_TYPE_ACK_CC     },
+	{ "ack_ccx",    UET_PDS_TYPE_ACK_CCX    },
+	{ "nack",       UET_PDS_TYPE_NACK       },
+	{ "ctrl",       UET_PDS_TYPE_CTRL       },
+	{ "nack_ccx",   UET_PDS_TYPE_NACK_CCX   },
+	{ "rud_cc_req", UET_PDS_TYPE_RUD_CC_REQ },
+	{ "rod_cc_req", UET_PDS_TYPE_ROD_CC_REQ },
+};
+
+/*
+ * Parse mangle.pkt_type into a PDS type value. Absent or "any" targets every
+ * packet type (default); an unrecognized value returns
+ * IMP_MANGLE_PKT_TYPE_INVALID.
+ */
+static int imp_mangle_pkt_type_from_str(const char *s)
+{
+	size_t i;
+
+	if (s == NULL || strcmp(s, "any") == 0)
+		return IMP_MANGLE_PKT_TYPE_ANY;
+
+	for (i = 0; i < (sizeof(imp_mangle_pkt_type_map) /
+			 sizeof(imp_mangle_pkt_type_map[0])); i++) {
+		if (strcmp(s, imp_mangle_pkt_type_map[i].name) == 0)
+			return (int)imp_mangle_pkt_type_map[i].type;
+	}
+
+	return IMP_MANGLE_PKT_TYPE_INVALID;
+}
+
+static const char *imp_mangle_pkt_type_str(int type)
+{
+	size_t i;
+
+	if (type == IMP_MANGLE_PKT_TYPE_ANY)
+		return "any";
+
+	for (i = 0; i < (sizeof(imp_mangle_pkt_type_map) /
+			 sizeof(imp_mangle_pkt_type_map[0])); i++) {
+		if ((int)imp_mangle_pkt_type_map[i].type == type)
+			return imp_mangle_pkt_type_map[i].name;
+	}
+
+	return "unknown";
+}
 
 /*
  * Allocate a single pool entry. Called during init to seed the pool and at
@@ -312,6 +453,63 @@ static int imp_read_config(const char *config_path)
 	}
 	imp_state.delay_max = (uint64_t)val.u.int64;
 
+	/*
+	 * [mangle] (optional test hook). Absent or enable=false leaves the
+	 * hook disabled and the normal Tx path untouched.
+	 */
+	val = toml_seek(result.toptab, "mangle.enable");
+	imp_state.mangle_enable = (val.type == TOML_BOOLEAN) ? val.u.boolean
+							     : false;
+	if (imp_state.mangle_enable) {
+		val = toml_seek(result.toptab, "mangle.rate");
+		imp_state.mangle_rate = (val.type == TOML_INT64) ?
+					(int)val.u.int64 : 0;
+
+		val = toml_seek(result.toptab, "mangle.action");
+		imp_state.mangle_action = imp_mangle_action_from_str(
+			(val.type == TOML_STRING) ? val.u.s : NULL);
+
+		val = toml_seek(result.toptab, "mangle.field");
+		imp_state.mangle_field = imp_mangle_field_from_str(
+			(val.type == TOML_STRING) ? val.u.s : NULL);
+
+		val = toml_seek(result.toptab, "mangle.flags");
+		imp_state.mangle_flags = (val.type == TOML_INT64) ?
+			((uint8_t)val.u.int64 & UET_PDS_FLAGS_MASK) : 0;
+
+		/*
+		 * skip_syn (default true): never mangle/drop connection-setup
+		 * packets. Corrupting a SYN yields a fatal INVALID_SYN NACK
+		 * that tears down the PDC, which defeats recoverable
+		 * fault-injection tests.
+		 */
+		val = toml_seek(result.toptab, "mangle.skip_syn");
+		imp_state.mangle_skip_syn = (val.type == TOML_BOOLEAN) ?
+					    val.u.boolean : true;
+
+		val = toml_seek(result.toptab, "mangle.pkt_type");
+		imp_state.mangle_pkt_type = imp_mangle_pkt_type_from_str(
+			(val.type == TOML_STRING) ? val.u.s : NULL);
+
+		val = toml_seek(result.toptab, "mangle.value");
+		imp_state.mangle_value = (val.type == TOML_INT64) ?
+					 (uint32_t)val.u.int64 : 0;
+
+		/* field is only required for the mangle (not drop) action */
+		if ((imp_state.mangle_action == IMP_MANGLE_ACTION_MANGLE) &&
+		    (imp_state.mangle_field == IMP_MANGLE_FIELD_NONE)) {
+			UET_IMP_ERR("config: mangle.field invalid; "
+				    "disabling mangle hook");
+			imp_state.mangle_enable = false;
+		}
+
+		if (imp_state.mangle_pkt_type == IMP_MANGLE_PKT_TYPE_INVALID) {
+			UET_IMP_ERR("config: mangle.pkt_type invalid; "
+				    "disabling mangle hook");
+			imp_state.mangle_enable = false;
+		}
+	}
+
 	toml_free(result);
 
 	UET_IMP_INFO("config: num_planes=%d drop_rate=%d delay_max=%lu "
@@ -319,6 +517,17 @@ static int imp_read_config(const char *config_path)
 		     imp_state.num_planes, imp_state.drop_rate,
 		     (unsigned long)imp_state.delay_max,
 		     imp_state.random_enq ? "true" : "false");
+
+	if (imp_state.mangle_enable)
+		UET_IMP_INFO("config: mangle enabled rate=%d action=%s field=%s "
+			     "pkt_type=%s flags=0x%02x skip_syn=%d value=%u",
+			     imp_state.mangle_rate,
+			     imp_mangle_action_str(imp_state.mangle_action),
+			     imp_mangle_field_str(imp_state.mangle_field),
+			     imp_mangle_pkt_type_str(imp_state.mangle_pkt_type),
+			     imp_state.mangle_flags,
+			     imp_state.mangle_skip_syn,
+			     imp_state.mangle_value);
 
 	return 0;
 }
@@ -425,6 +634,256 @@ void imp_shim_finalize(void)
 	UET_IMP_INFO("finalized");
 }
 
+/*
+ * Field mutation for a request packet (uet_pds_req layout). The selected
+ * field is replaced outright with the configured value. Returns true if a
+ * field was mutated (and the CRC must be recomputed).
+ */
+static bool imp_mangle_field_req(struct uet_pds_prlg *prlg, uint8_t *pds)
+{
+	struct uet_pds_req *req = (struct uet_pds_req *)pds;
+	uint16_t spdcid = ntohs(req->spdcid);
+	uint16_t tnf;
+	uint8_t flags, old_flags;
+
+	switch (imp_state.mangle_field) {
+	case IMP_MANGLE_FIELD_PSN:
+		UET_IMP_INFO("mangle: PDC %u req psn %u -> %u",
+			     spdcid, ntohl(req->psn), imp_state.mangle_value);
+		req->psn = htonl(imp_state.mangle_value);
+		break;
+	case IMP_MANGLE_FIELD_SPDCID:
+		UET_IMP_INFO("mangle: PDC %u req spdcid %u -> %u",
+			     spdcid, spdcid,
+			     (uint16_t)imp_state.mangle_value);
+		req->spdcid = htons((uint16_t)imp_state.mangle_value);
+		break;
+	case IMP_MANGLE_FIELD_DPDCID:
+		UET_IMP_INFO("mangle: PDC %u req dpdcid %u -> %u",
+			     spdcid, ntohs(req->dpdcid),
+			     (uint16_t)imp_state.mangle_value);
+		req->dpdcid = htons((uint16_t)imp_state.mangle_value);
+		break;
+	case IMP_MANGLE_FIELD_SYN:
+		tnf = ntohs(prlg->type_next_flags);
+		flags = (tnf & UET_PDS_FLAGS_MASK);
+		old_flags = flags;
+		if (imp_state.mangle_value) /* non-zero sets, zero clears */
+			flags |= UET_PDS_REQ_FLAGS_SYN;
+		else
+			flags &= ~UET_PDS_REQ_FLAGS_SYN;
+		tnf = ((tnf & ~UET_PDS_FLAGS_MASK) | flags);
+		prlg->type_next_flags = htons(tnf);
+		UET_IMP_INFO("mangle: PDC %u req SYN flags 0x%02x -> 0x%02x",
+			     spdcid, old_flags, flags);
+		break;
+	default:
+		return false;
+	}
+
+	return true;
+}
+
+/*
+ * TODO: reserved for future ACK field mutation (uet_pds_ack layout, e.g.
+ * cack_psn / spdcid / dpdcid). Drop (action="drop") already works for ACK.
+ */
+static bool imp_mangle_field_ack(struct uet_pds_prlg *prlg, uint8_t *pds)
+{
+	(void)prlg;
+	(void)pds;
+	UET_IMP_WARN("mangle: field mutation for ack not yet implemented");
+	return false;
+}
+
+/*
+ * TODO: reserved for future NACK field mutation (uet_pds_nack layout, e.g.
+ * nack_code / nack_psn / spdcid / dpdcid). Drop already works for NACK.
+ */
+static bool imp_mangle_field_nack(struct uet_pds_prlg *prlg, uint8_t *pds)
+{
+	(void)prlg;
+	(void)pds;
+	UET_IMP_WARN("mangle: field mutation for nack not yet implemented");
+	return false;
+}
+
+/*
+ * TODO: reserved for future CTRL field mutation (uet_pds_ctrl layout, e.g.
+ * psn / spdcid / dpdcid / SYN). Drop already works for CTRL.
+ */
+static bool imp_mangle_field_ctrl(struct uet_pds_prlg *prlg, uint8_t *pds)
+{
+	(void)prlg;
+	(void)pds;
+	UET_IMP_WARN("mangle: field mutation for ctrl not yet implemented");
+	return false;
+}
+
+/*
+ * Dispatch the field mutation to the per-type handler. Only request types are
+ * implemented today; ack/nack/ctrl are reserved (see the stubs above) and the
+ * field mutation is skipped for them, while the drop action already works for
+ * any packet type.
+ */
+static bool imp_mangle_field_apply(uint8_t type, struct uet_pds_prlg *prlg,
+				   uint8_t *pds)
+{
+	switch (type) {
+	case UET_PDS_TYPE_RUD_REQ:
+	case UET_PDS_TYPE_ROD_REQ:
+	case UET_PDS_TYPE_RUDI_REQ:
+	case UET_PDS_TYPE_UUD_REQ:
+	case UET_PDS_TYPE_RUD_CC_REQ:
+	case UET_PDS_TYPE_ROD_CC_REQ:
+		return imp_mangle_field_req(prlg, pds);
+	case UET_PDS_TYPE_ACK:
+	case UET_PDS_TYPE_ACK_CC:
+	case UET_PDS_TYPE_ACK_CCX:
+		return imp_mangle_field_ack(prlg, pds);
+	case UET_PDS_TYPE_NACK:
+	case UET_PDS_TYPE_NACK_CCX:
+		return imp_mangle_field_nack(prlg, pds);
+	case UET_PDS_TYPE_CTRL:
+		return imp_mangle_field_ctrl(prlg, pds);
+	default:
+		return false;
+	}
+}
+
+/*
+ * Test hook: intercept an outgoing UET packet matching the configured
+ * pkt_type/flags filter and apply the configured action:
+ *
+ *   - "mangle": mutate a PDS header field and recompute the packet CRC so the
+ *     peer still accepts the packet, validates the corrupted field, and emits
+ *     a NACK back to this (initiator) node.
+ *   - "drop": discard the packet (the caller frees the transmit copy). Since
+ *     only the transmit copy is affected, the retained packet is left intact
+ *     and the initiator RTO-retransmits.
+ *
+ * Both exercise the initiator NACK/retransmit processing, otherwise
+ * unreachable on the normal data path.
+ *
+ * Returns true if the caller must drop the packet, false otherwise (either
+ * not eligible, or mutated in place and still to be transmitted).
+ *
+ * The target packet type is selected by mangle.pkt_type: "any" (default)
+ * targets every packet type, while a specific type targets exactly that type.
+ * For the mangle action, field mutation is only implemented for request types
+ * (ack/nack/ctrl are reserved and skipped); the drop action works for any
+ * type.
+ *
+ * Constraints:
+ *   - Only works with security DISABLED. Secured packets are encrypted with
+ *     an ICV and cannot be meaningfully modified here.
+ *   - For "mangle", the CRC MUST be recomputed, otherwise the peer silently
+ *     drops the packet on CRC mismatch and never sends a NACK.
+ *
+ * Operates on the transmit copy only, so the caller's retained packet (used
+ * for retransmission) is left intact and recovery can still succeed.
+ */
+static bool imp_shim_mangle_pkt(uint8_t *pkt, size_t iphdr_off,
+				size_t pkt_size)
+{
+	uint8_t *ip = pkt + iphdr_off;
+	uint8_t *pds, *crc_start;
+	size_t ip_hdr_len, crc_off;
+	struct uet_pds_prlg *prlg;
+	uint8_t type, ip_ver;
+	uint8_t flags;
+	uint32_t crc;
+
+	if (!imp_state.mangle_enable || imp_state.mangle_rate <= 0)
+		return false;
+
+	if ((rand() % 10000) >= imp_state.mangle_rate)
+		return false;
+
+	/* locate the IP header and determine its version / length */
+	ip_ver = (ip[0] >> 4);
+	if (ip_ver == 4)
+		ip_hdr_len = ((ip[0] & 0x0f) * 4);
+	else if (ip_ver == 6)
+		ip_hdr_len = sizeof(struct ipv6hdr);
+	else
+		return false;
+
+	/* the PDS header follows the IP and entropy headers (no UDP here) */
+	pds = ip + ip_hdr_len + sizeof(struct uet_entropy);
+	if ((size_t)((pds - pkt) + sizeof(struct uet_pds_req)) > pkt_size)
+		return false;
+
+	/* decode the PDS packet type from the prologue */
+	prlg = (struct uet_pds_prlg *)pds;
+	type = (ntohs(prlg->type_next_flags) & UET_PDS_TYPE_MASK) >>
+	       UET_PDS_TYPE_SHIFT;
+
+	/*
+	 * Decide eligibility by packet type: a specific mangle.pkt_type targets
+	 * exactly that type, while "any" (default) targets every packet type.
+	 */
+	if ((imp_state.mangle_pkt_type != IMP_MANGLE_PKT_TYPE_ANY) &&
+	    (type != (uint8_t)imp_state.mangle_pkt_type))
+		return false;
+
+	/*
+	 * Apply the prologue flags filter: the packet is eligible only if all
+	 * the configured flag bits are set. 0 means no flag constraint. Flag
+	 * bits are per packet type (see uet_pkt_hdr.h); e.g. for requests
+	 * SYN=0x04, AR=0x08, RETX=0x10.
+	 */
+	flags = (ntohs(prlg->type_next_flags) & UET_PDS_FLAGS_MASK);
+	if ((flags & imp_state.mangle_flags) != imp_state.mangle_flags)
+		return false;
+
+	/*
+	 * Never touch connection-setup packets when skip_syn is set: mangling
+	 * or dropping a SYN yields a fatal INVALID_SYN NACK at the peer and
+	 * closes the PDC, which is almost never the intent of a recoverable
+	 * fault-injection test. The SYN flag bit (0x04) is common to request
+	 * and control prologues.
+	 */
+	if (imp_state.mangle_skip_syn && (flags & UET_PDS_REQ_FLAGS_SYN)) {
+		UET_IMP_DBG("mangle: skipping SYN %s packet",
+			    imp_mangle_pkt_type_str(type));
+		return false;
+	}
+
+	/* drop action: tell the caller to discard the matched packet */
+	if (imp_state.mangle_action == IMP_MANGLE_ACTION_DROP) {
+		UET_IMP_INFO("mangle: dropped Tx %s packet (%zu bytes)",
+			     imp_mangle_pkt_type_str(type), pkt_size);
+		return true;
+	}
+
+	/*
+	 * mangle action: mutate the configured field using the per-type
+	 * handler. If nothing was mutated (unsupported type/field), leave the
+	 * packet unchanged and let it transmit as-is.
+	 */
+	if (!imp_mangle_field_apply(type, prlg, pds))
+		return false;
+
+	/*
+	 * Recompute the CRC over the same range PDS uses on transmit: from the
+	 * IP source address through the end of the packet, excluding the 4-byte
+	 * CRC trailer itself.
+	 */
+	if (pkt_size < CRC_LEN)
+		return false;
+	crc_start = (ip_ver == 6) ? (ip + 8) : (ip + 12);
+	crc_off = (pkt_size - CRC_LEN);
+	crc = crc32c(crc_start, (size_t)((pkt + crc_off) - crc_start));
+	memcpy((pkt + crc_off), &crc, CRC_LEN);
+
+	UET_IMP_INFO("mangled %s on Tx %s packet (CRC recomputed)",
+		     imp_mangle_field_str(imp_state.mangle_field),
+		     imp_mangle_pkt_type_str(type));
+
+	return false;
+}
+
 int imp_shim_tx_pkt(struct uet_nic *nic,
 		    void *pkt,
 		    void *iphdr,
@@ -452,6 +911,16 @@ int imp_shim_tx_pkt(struct uet_nic *nic,
 	memcpy(imp_pkt->pkt_data, pkt, pkt_size);
 	imp_pkt->pkt_size  = pkt_size;
 	imp_pkt->iphdr_off = (size_t)((uint8_t *)iphdr - (uint8_t *)pkt);
+
+	/*
+	 * Optionally mangle the copy to induce a peer NACK, or drop it outright
+	 * (return the buffer to the pool and skip transmit).
+	 */
+	if (imp_shim_mangle_pkt(imp_pkt->pkt_data, imp_pkt->iphdr_off,
+				pkt_size)) {
+		imp_pool_put(&imp_state.pool, imp_pkt);
+		return 0;
+	}
 
 	/* calculate random delay and transmit time */
 	clock_gettime(CLOCK_MONOTONIC, &now);

@@ -52,3 +52,98 @@ drop_rate = 1
 # Range: 0 - N (in nanoseconds)
 delay_max = 10000
 
+# ---------------------------------------------------------------------------
+# [mangle] - optional test hook to induce peer NACKs or drop packets.
+#
+# When enabled, the imp_shim intercepts outgoing packets matching the
+# pkt_type/flags filter and applies "action" to the transmit copy only:
+#   - "mangle": corrupt a PDS header field and recompute the packet CRC so the
+#     peer still accepts the packet, validates the field, and replies with a
+#     NACK. Exercises the initiator's NACK processing path.
+#   - "drop": discard the matched packet, so the initiator RTO-retransmits.
+# Both are otherwise unreachable on the normal data path.
+#
+# Constraints:
+#   - Only works with security DISABLED (secured packets are encrypted and
+#     carry an ICV, so they cannot be mutated here and are left untouched).
+#
+# Field -> typical peer NACK (and initiator action) for action="mangle":
+#   psn    (replace with a value outside the peer Rx window)
+#          -> PSN_OOR_WINDOW  => RETX  (retransmit)
+#   spdcid / dpdcid (corrupt the PDC id)
+#          -> PDC mismatch    => CLOSE (PDC set to ERROR)
+#   syn    (set/clear the SYN flag on a request)
+#          -> INVALID_SYN     => CLOSE (PDC set to ERROR)
+#
+# The section is optional; if omitted or enable=false the hook is disabled
+# and the normal Tx path is untouched.
+[mangle]
+
+# Master enable for the mangle hook.
+enable = false
+
+# Never mangle or drop connection-setup (SYN) packets. When true (default),
+# any packet carrying the SYN flag is passed through untouched so PDC setup
+# always succeeds and the test can exercise recoverable data-path faults.
+# Set false only if you specifically want to induce INVALID_SYN handling
+# (which is fatal: the peer replies INVALID_SYN and the PDC is closed).
+skip_syn = true
+
+# Rate at which a matching Tx packet is acted on, in hundredths of a percent
+# (same scale as drop_rate). Range: 0 - 10000.
+rate = 200
+
+# Action applied to a matched packet:
+#   "mangle" - corrupt the "field" below (default)
+#   "drop"   - discard the packet (the "field"/"value" settings are ignored)
+action = "mangle"
+
+# Which PDS header field to mutate (action="mangle"): "psn", "spdcid",
+# "dpdcid", or "syn". The selected field is replaced outright with "value"
+# below. For field="syn", a non-zero value sets the SYN flag and zero clears
+# it.
+field = "psn"
+
+# Prologue flags filter (applied to the low 7 bits of the prologue flags,
+# UET_PDS_FLAGS_MASK = 0x7f). A packet is eligible only if all these flag bits
+# are set. 0 means "no flag constraint". The flag bits are per packet type
+# (see uet_pkt_hdr.h); for requests:
+#   SYN  = 0x04  (connection setup)
+#   AR   = 0x08  (ACK requested)
+#   RETX = 0x10  (retransmit)
+# Example: flags = 0x04 injects only into SYN (connection setup) requests;
+# flags = 0x14 injects only into requests carrying both SYN and RETX.
+flags = 0x00
+
+# Restrict mangling to a specific PDS packet type (parsed from the packet
+# prologue). This lets a test target exactly one type for fault injection.
+# Accepts any uet_pds_pkt_type_t name:
+#   "any"        - every packet type (default)
+#   "reserved"
+#   "security"
+#   "rud_req"    - Reliable Unordered Delivery request
+#   "rod_req"    - Reliable Ordered Delivery request
+#   "rudi_req"   - Reliable Unordered Delivery Idempotent request
+#   "rudi_resp"  - RUDI response
+#   "uud_req"    - Unreliable Unordered Delivery request
+#   "ack"        - ack reponse
+#   "ack_cc"     - ack_cc response
+#   "ack_ccx"    - ack_ccx reponse
+#   "nack"       - nack response
+#   "nack_ccx"   - nack_ccx response
+#   "ctrl"       - ctrl packet
+#   "rud_cc_req" - RUD request with congestion control
+#   "rod_cc_req" - ROD request with congestion control
+#
+# NOTE: "any" targets every packet type, so with action="drop" it will also
+# discard ACK/NACK/CTRL - set pkt_type explicitly to target one type.
+# action="mangle" (field mutation) is currently implemented only for request
+# types; ack/nack/ctrl mutation is reserved (not yet implemented) and is
+# skipped with a warning.
+pkt_type = "any"
+
+# Replacement value written to the selected field. For pushing a PSN out of
+# the peer window, use a value larger than the peer's max packet range (MPR,
+# default 128), e.g. 200.
+value = 200
+
