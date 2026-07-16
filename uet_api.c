@@ -2135,13 +2135,22 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 	struct uet_ses_req_std *ses;
 
 	uet_dom = uet_ep->uet_domain;
+	ses = (struct uet_ses_req_std *)pp->ses;
 	uet_mr_key_init(&mr_key, pp);
-	if (uet_dom->info->domain_attr->mr_mode & FI_MR_PROV_KEY) {
+
+	/* Select the lookup space from the VENDOR_SPECIFIC provider-space
+	 * marker carried in the key: provider-assigned keys set it and
+	 * resolve via the index space; user-assigned keys clear it and
+	 * resolve via the hash space. The two spaces are independent, so
+	 * the same RKEY value may map to different regions in each.
+	 */
+	if (ntohll(ses->match_bits) & UET_MR_KEY_VENDOR_PROV_SPACE) {
 		if (mr_key.rkey >= uet_dom->num_mr)
 			mr_desc = NULL;
 		else {
 			mr_desc = &uet_dom->mr_desc[mr_key.rkey];
-			if (mr_desc->state != UET_MR_DESC_STATE_ENABLED)
+			if ((mr_desc->state != UET_MR_DESC_STATE_ENABLED) ||
+			    mr_desc->user_key)
 				mr_desc = NULL;
 		}
 	} else
@@ -2151,8 +2160,6 @@ struct uet_mr_desc *uet_get_mr_desc(struct uet_ep *uet_ep,
 	 * be accessed by requests within that job.
 	 */
 	if (mr_desc && mr_desc->job_restricted) {
-		ses = (struct uet_ses_req_std *)pp->ses;
-
 		if (mr_desc->job_id != uet_get_std_req_job_id(ses)) {
 			UET_API_ERR("MR access denied: JobID mismatch");
 			mr_desc = NULL;
@@ -6467,13 +6474,13 @@ uint64_t uet_mr_format_key(uint64_t rkey, bool idempotent_safe)
 		return FI_KEY_NOTAVAIL;
 
 	if (rkey > UET_MR_KEY_OPTIMIZED_MAX_RKEY)
-		formatted_key = rkey < UET_MR_KEY_RKEY_SHIFT;
+		formatted_key = (rkey << UET_MR_KEY_RKEY_SHIFT);
 	else
 		formatted_key = (UET_MR_KEY_OPTIMIZED |
-				 (rkey < UET_MR_KEY_OPTIMIZED_RKEY_SHIFT));
+				 (rkey << UET_MR_KEY_OPTIMIZED_RKEY_SHIFT));
 
 	if (idempotent_safe)
-		formatted_key |= UET_MR_KEY_OPTIMIZED;
+		formatted_key |= UET_MR_KEY_IDEMPOTENT_SAFE;
 
 	return formatted_key;
 }
@@ -6504,9 +6511,16 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 
 	uet_dom = (struct uet_domain *) domain_handle;
 
-	/* allocate descriptor for memory region */
+	/*
+	 * The provider maintains two independent memory-region lookup spaces:
+	 * - provider-assigned keys are resolved via the index space and carry
+	 *   the VENDOR_SPECIFIC provider-space marker so the receiver selects
+	 *   the index lookup
+	 * - user-assigned keys (UET_MR_FLAG_USER_KEY) are resolved via the
+	 *   hash space and MUST have VENDOR_SPECIFIC == 0
+	 */
 	key = requested_key & UET_MR_KEY_IDEMPOTENT_SAFE;
-	if (uet_dom->info->domain_attr->mr_mode & FI_MR_PROV_KEY) {
+	if (!(flags & UET_MR_FLAG_USER_KEY)) {
 		desc_allocated = false;
 		if (requested_key & UET_MR_KEY_OPTIMIZED) {
 			if (uet_alloc_opt_mr_desc(uet_dom, &mr_index) ==
@@ -6523,8 +6537,21 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 				return rc;
 			key |= (mr_index << UET_MR_KEY_RKEY_SHIFT);
 		}
+		key |= UET_MR_KEY_VENDOR_PROV_SPACE;
 		rkey = mr_index;
 	} else {
+		/*
+		 * User-assigned keys: VENDOR_SPECIFIC MUST be 0. Both the
+		 * standard and optimized formats are supported and the
+		 * requested RKEY/INDEX is preserved verbatim and resolved
+		 * via the hash space.
+		 */
+		if (requested_key & UET_MR_KEY_VENDOR) {
+			UET_API_ERR(
+			"user-assigned key must have VENDOR_SPECIFIC == 0");
+			return -FI_EINVAL;
+		}
+
 		if (requested_key & UET_MR_KEY_OPTIMIZED) {
 			rkey = (requested_key &
 				UET_MR_KEY_OPTIMIZED_RKEY_MASK) >>
@@ -6582,6 +6609,7 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 	mr_desc->context = context;
 	mr_desc->full_key = key;
 	mr_desc->hash_key.rkey = rkey;
+	mr_desc->user_key = !!(flags & UET_MR_FLAG_USER_KEY);
 
 	*mr_handle = mr_desc;
 
@@ -6698,11 +6726,15 @@ int uet_mr_enable(uet_mr_handle_t mr_handle)
 
 	mr_desc->buf_desc.contig.dma_addr = (uet_dma_addr_t) mr_desc->buf_desc.buf;
 
-	if (mr_desc->uet_ep->uet_domain->info->domain_attr->mr_mode &
-	    FI_MR_PROV_KEY)
-		uet_mr_list_insert(mr_desc);
-	else
+	/*
+	 * Insert into the lookup space that matches the key's origin: user
+	 * keys use the per-endpoint hash table, provider keys use the index
+	 * space (tracked on a list for enumeration/cleanup).
+	 */
+	if (mr_desc->user_key)
 		uet_mr_hash_insert(mr_desc->uet_ep, mr_desc);
+	else
+		uet_mr_list_insert(mr_desc);
 
 	mr_desc->state = UET_MR_DESC_STATE_ENABLED;
 

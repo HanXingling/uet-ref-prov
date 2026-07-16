@@ -36,21 +36,34 @@
 
 #define UET_DEF_MR_CNT	16	    /* default number of memory regions */
 
-	/* definitions for uet memory region key format */
+/* definitions for memory region key format (UET spec Table 2-13) */
 #define UET_MR_KEY_NONE                 ((uint64_t) 0)
-#define UET_MR_KEY_IDEMPOTENT_SAFE      0x80000000000000ULL
-#define UET_MR_KEY_OPTIMIZED            0x40000000000000ULL
-#define UET_MR_KEY_RESERVED             0x3f000000000000ULL
-#define UET_MR_KEY_VENDOR               0x00ff0000000000ULL
-#define UET_MR_KEY_RKEY_MASK            0x0000ffffffffffULL
+#define UET_MR_KEY_IDEMPOTENT_SAFE      0x8000000000000000ULL /* bit 63 */
+#define UET_MR_KEY_OPTIMIZED            0x4000000000000000ULL /* bit 62 */
+#define UET_MR_KEY_RESERVED             0x3f00000000000000ULL /* bits 56:61 */
+#define UET_MR_KEY_VENDOR               0x00ff000000000000ULL /* bits 48:55 */
+#define UET_MR_KEY_RKEY_MASK            0x0000ffffffffffffULL /* bits 0:47 */
 #define UET_MR_KEY_RKEY_SHIFT           0
 #define UET_MR_KEY_MAX_RKEY             (UET_MR_KEY_RKEY_MASK >> \
 					 UET_MR_KEY_RKEY_SHIFT)
-#define UET_MR_KEY_OPTIMIZED_RESERVED   0x0000fffffff000ULL
-#define UET_MR_KEY_OPTIMIZED_RKEY_MASK  0x00000000000fffULL
+#define UET_MR_KEY_OPTIMIZED_RESERVED   0x0000fffffffff000ULL /* bits 12:47 */
+#define UET_MR_KEY_OPTIMIZED_RKEY_MASK  0x0000000000000fffULL /* bits 0:11 */
 #define UET_MR_KEY_OPTIMIZED_RKEY_SHIFT 0
 #define UET_MR_KEY_OPTIMIZED_MAX_RKEY   (UET_MR_KEY_OPTIMIZED_RKEY_MASK >> \
 					 UET_MR_KEY_OPTIMIZED_RKEY_SHIFT)
+
+/*
+ * Vendor-specific marker selecting the lookup space for a key. Per
+ * Table 2-13 the VENDOR_SPECIFIC field MAY be used for provider-assigned
+ * keys but MUST be 0 for user-assigned keys. Provider-assigned keys set
+ * this bit and are resolved via the index space; user-assigned keys
+ * leave it clear and are resolved via the hash space. The two spaces are
+ * independent (the same RKEY value MAY exist in both simultaneously).
+ */
+#define UET_MR_KEY_VENDOR_PROV_SPACE    0x0001000000000000ULL /* bit 48 */
+
+/* flags for uet_mr_reg() / uet_mr_regv() / uet_mr_reg_job() */
+#define UET_MR_FLAG_USER_KEY            (1ULL << 0)  /* user-assigned */
 
 /* define handle types */
 typedef void *uet_handle_t;         /* handle for uet instance */
