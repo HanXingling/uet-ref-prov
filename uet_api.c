@@ -3056,20 +3056,6 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			}
 		}
 
-		/* process header data */
-		if (write && (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD)) {
-			/* check cq format */
-			if (uet_ep->recv_cq.format_size <
-			    sizeof(struct fi_cq_data_entry)) {
-				UET_API_ERR("RX: No CQ Support for Write Imm");
-				return (uet_rx_msg_err(
-						uet_ep, pp, rx_desc,
-						UET_RC_OP_VIOLATION));
-			}
-			rx_desc->imm_data = ntohll(ses->cmpl_data);
-			rx_desc->desc_flags |= (UET_RX_DESC_FLAG_WRITE_IMM |
-						UET_RX_DESC_FLAG_POST_CQ);
-		}
 		payload_len_msg_off = 0;
 		/* set buffer offset length and check payload length */
 		buf_off = start_off;
@@ -3236,6 +3222,30 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		uet_rx_desc_active_list_insert(rx_desc);
 		uet_rx_msg_key_init(&rx_desc->msg_key, pp);
 		uet_rx_msg_hash_insert(uet_ep, rx_desc);
+
+		/* header (immediate/remote CQ) data is carried on the first
+		 * packet by both write-with-immediate and send-with-immediate
+		 */
+		if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_HD) {
+			if (uet_ep->recv_cq.format_size <
+			    sizeof(struct fi_cq_data_entry)) {
+				UET_API_ERR(
+				"RX: No CQ Support for Immediate Data");
+				return (uet_rx_msg_err(
+						uet_ep, pp, rx_desc,
+						UET_RC_OP_VIOLATION));
+			}
+
+			rx_desc->imm_data = ntohll(ses->cmpl_data);
+			rx_desc->desc_flags |= UET_RX_DESC_FLAG_WRITE_IMM;
+
+			/* a write generates no completion on its own, so force
+			 * one; a send completes via its posted receive, which
+			 * already carries POST_CQ
+			 */
+			if (write)
+				rx_desc->desc_flags |= UET_RX_DESC_FLAG_POST_CQ;
+		}
 	}
 
 	/* validate pkt fits in buffer */
@@ -4014,6 +4024,11 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 		} else
 			opcode = UET_SEND;
 		ses->match_bits = UET_NO_TAG;
+		if (som &&
+		    (tx_desc->desc_flags & UET_TX_DESC_FLAG_IMM_DATA_VALID)) {
+			ses->cmn.ver_flags |= UET_SES_REQ_FLAG_HD;
+			ses->cmpl_data = htonll(tx_desc->tag_or_immdata);
+		}
 	} else if (tx_desc->cq_flags & FI_TAGGED) {
 		if (tx_desc->desc_flags & UET_TX_DESC_FLAG_DSEND) {
 			opcode = UET_DEFER_TSEND;
@@ -5223,6 +5238,10 @@ static ssize_t uet_send_req_api_common(
 
 	switch (send_req_api) {
 	case UET_SEND_API:
+		if (imm_data) {
+			tx_desc->desc_flags |= UET_TX_DESC_FLAG_IMM_DATA_VALID;
+			tx_desc->tag_or_immdata = *imm_data;
+		}
 		tx_desc->cq_flags = FI_SEND | FI_MSG;
 		break;
 	case UET_TSEND_API:
@@ -6413,6 +6432,23 @@ ssize_t uet_sendv(
 	return (uet_send_req_api_common(
 			UET_SEND_API, ep_handle, job_key, iov, count, mr_handle,
 			dst_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context, resource_index));
+}
+
+ssize_t uet_send_imm(uet_ep_handle_t ep_handle, uint32_t job_key,
+		     void *buf, size_t len, uet_mr_handle_t mr_handle,
+		     uet_addr_handle_t dst_addr_handle, uint64_t *imm_data,
+		     void *context, uint16_t resource_index)
+{
+	struct iovec iov;
+
+	iov.iov_base = (void *) buf;
+	iov.iov_len = len;
+
+	return (uet_send_req_api_common(
+			UET_SEND_API, ep_handle, job_key, &iov, 1, mr_handle,
+			dst_addr_handle, UET_NO_TAG, imm_data,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
 			NULL, context, resource_index));
 }

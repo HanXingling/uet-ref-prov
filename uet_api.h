@@ -1098,6 +1098,28 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_key,
 #endif
 
 /*
+ * transmit a message to an endpoint with immediate (remote CQ) data
+ *
+ * Behaves like uet_send() but carries a 64-bit immediate value that is
+ * delivered to the peer's receive completion as remote CQ data. The verbs
+ * layer decides how many bits of the immediate are meaningful (32 or 64),
+ * so a single 64-bit-capable entry point serves both immediate sizes.
+ *
+ * parms:
+ *   as uet_send(), plus:
+ *   imm_data        - pointer to the 64-bit immediate value to send
+ *
+ * returns:
+ *   as uet_send()
+ */
+#if ENABLE_VERBS
+ssize_t uet_send_imm(uet_ep_handle_t ep_handle, uint32_t job_key,
+		     void *buf, size_t len, uet_mr_handle_t mr_handle,
+		     uet_addr_handle_t dst_addr_handle, uint64_t *imm_data,
+		     void *context, uint16_t resource_index);
+#endif
+
+/*
  * simple vector api for transmission of a message to an endpoint
  *
  * parms:
