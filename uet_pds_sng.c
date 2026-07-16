@@ -914,7 +914,8 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 	int rc;
 	uet_ses_rc_t ses_rc;
 	size_t rx_pkt_size;
-	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, ses_nack, gtd_del;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, pkt_is_nack;
+	bool ses_nack, gtd_del;
 	uint8_t *pkt;
 	struct uet_parsed_pkt pp;
 	struct uet_ep *dst_uet_ep;
@@ -959,8 +960,14 @@ int uet_pds_sng_progress_rx(struct uet_instance *uet)
 
 	/* validate the packet */
 	if (!uet_pds_rx_pkt_chk(uet, (uint8_t *)pkt, rx_pkt_size,
-				&pkt_is_ack, &pkt_is_rd_rsp, &pkt_is_ctrl))
+				&pkt_is_ack, &pkt_is_rd_rsp, &pkt_is_ctrl,
+				&pkt_is_nack))
 		goto exit;
+
+	if (pkt_is_nack) {
+		UET_API_ERR("NACK packets not supported in pds sng mode");
+		goto exit;
+	}
 
 	/* parse the packet */
 	rc = uet_parse_pkt(uet, pkt, rx_pkt_size, &pp);

@@ -25,6 +25,7 @@
  *      pkt_is_ack    - set to true when packet is an ack packet
  *      pkt_is_rd_rsp - set to true when packet is a read response packet
  *      pkt_is_ctrl   - set to true when packet is a control packet
+ *      pkt_is_nack   - set to true when packet is a nack packet
  *
  * returns:
  *      true  => packet passed validation checks
@@ -35,5 +36,6 @@ bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
 			size_t pkt_size,
 			bool *pkt_is_ack,
 			bool *pkt_is_rd_rsp,
-			bool *pkt_is_ctrl);
+			bool *pkt_is_ctrl,
+			bool *pkt_is_nack);
 

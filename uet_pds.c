@@ -66,6 +66,12 @@ typedef enum {
 	PDC_TYPE_ROD,
 } pdc_type_t;
 
+/* action to take when a NACK is received on the initiator side */
+enum {
+	UET_NACK_ACTION_DROP = 0,   /* drop the NACK packet */
+	UET_NACK_ACTION_RETX,       /* retransmit the NACKed PSN */
+	UET_NACK_ACTION_CLOSE,      /* close PDC */
+};
 struct uet_pdc_pkt {
 	struct dlist_entry    node;
 	uint32_t              psn;
@@ -2814,6 +2820,164 @@ static void uet_pds_process_cack(struct uet_instance *uet,
 	}
 }
 
+static int uet_pds_nack_action(uet_pds_nack_code_t code)
+{
+	switch (code) {
+	case UET_NACK_TRIMMED:
+	case UET_NACK_TRIMMED_LAST_HOP:
+	case UET_NACK_TRIMMED_ACK:
+	case UET_NACK_NO_PDC_AVAIL:
+	case UET_NACK_NO_CCC_AVAIL:
+	case UET_NACK_NO_BITMAP:
+	case UET_NACK_NO_PKT_BUF:
+	case UET_NACK_NO_GTD_DEL_AVAIL:
+	case UET_NACK_NO_SES_MSG_AVAIL:
+	case UET_NACK_NO_RESOURCE:
+	case UET_NACK_PSN_OOR_WINDOW:
+	case UET_NACK_ROD_OOO:
+	case UET_NACK_PKT_NOT_RCVD:
+	case UET_NACK_ACK_WITH_DATA:
+	case UET_NACK_NEW_START_PSN:
+	case UET_NACK_RCVR_INFER_LESS:
+	case UET_NACK_EXP_NACK_NORMAL:
+	case UET_NACK_EXP_NACK_ERR:
+		return UET_NACK_ACTION_RETX;
+
+	case UET_NACK_INV_DPDCID:
+	case UET_NACK_PDC_HDR_MISMATCH:
+	case UET_NACK_CLOSING:
+	case UET_NACK_CLOSING_IN_ERR:
+	case UET_NACK_GTD_RESP_UNAVAIL:
+	case UET_NACK_INVALID_SYN:
+	case UET_NACK_PDC_MODE_MISMATCH:
+	case UET_NACK_UNEXP_EVENT:
+	case UET_NACK_EXP_NACK_FATAL:
+		return UET_NACK_ACTION_CLOSE;
+
+	/*
+	 * RCVD_SES_PROCG means the target received the packet but the SES
+	 * layer has not yet produced a response. Retransmitting/ACK-req
+	 * probing here only produces a NACK storm on the tail PSN and can
+	 * exhaust the retry budget on the wrong packet. Drop it and let the
+	 * RTO path recover any real gap.
+	 */
+	case UET_NACK_RCVD_SES_PROCG:
+		return UET_NACK_ACTION_DROP;
+
+	default:
+		return UET_NACK_ACTION_DROP;
+	}
+}
+
+/*
+ * Close a PDC in error. All outstanding Tx packets are reported to SES as
+ * unrecoverable failures, and the PDC is transitioned to the ERROR state so
+ * no further traffic is accepted on it.
+ */
+static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
+				       struct uet_pdc *pdc)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	struct dlist_entry *tmp;
+
+	UET_PDS_ERR("PDC %u closing in error", pdc->pdc_id);
+
+	pdc->state = PDC_STATE_ERROR;
+
+	/* fail and free all outstanding Tx packets, notifying SES */
+	dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
+				     struct uet_pdc_pkt, pdc_pkt,
+				     node, tmp) {
+		if (PSN_IN_MPR(pdc_pkt->psn, pdc->tx_bm_base_psn))
+			bm_unset(pdc->tx_bm,
+				 (pdc_pkt->psn - pdc->tx_bm_base_psn));
+
+		dlist_remove(&pdc_pkt->node);
+
+		if (uet->pds.upcall.pds_err && pdc_pkt->tx_pkt_handle)
+			uet->pds.upcall.pds_err(pdc_pkt->tx_pkt_handle,
+						UET_PDS_ERR_NONE);
+
+		if (pdc_pkt->ack_buf)
+			free(pdc_pkt->ack_buf);
+		if (pdc_pkt->pkt_buf)
+			free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+	}
+}
+
+static int uet_pds_process_nack(struct uet_instance *uet,
+				struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc *pdc;
+	struct uet_pdc_pkt *pdc_pkt;
+	int nack_action;
+	int rc;
+
+	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	if (rc != 0) {
+		UET_PDS_WARN("NACK for unknown/invalid PDC %u (nack_code=0x%x)",
+			     pp->pds_dpdcid, pp->pds_nack_code);
+		return rc;
+	}
+
+	UET_PDS_WARN("PDC %u received NACK (code=0x%x psn=%u spdcid=%u)",
+		     pdc->pdc_id, pp->pds_nack_code, pp->pds_psn,
+		     pp->pds_spdcid);
+
+	nack_action = uet_pds_nack_action(pp->pds_nack_code);
+	if (nack_action == UET_NACK_ACTION_DROP) {
+		UET_PDS_WARN("NACK PSN %u on PDC %u dropped",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	/*
+	 * A NACK that arrives with an out-of-range pds.nack_psn MUST NOT be
+	 * used to update PDC state.
+	 */
+	if (UET_PDS_PSN_AFTER(pdc->tx_bm_base_psn, pp->pds_psn) ||
+	    UET_PDS_PSN_AFTER(pp->pds_psn, pdc->next_psn - 1)) {
+		UET_PDS_WARN("Invalid NACK PSN %u on PDC %u",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	if (nack_action == UET_NACK_ACTION_CLOSE) {
+		uet_pds_close_pdc_in_error(uet, pdc);
+		return 0;
+	}
+
+	/* UET_NACK_ACTION_RETX: retransmit the NACKed PSN */
+	if (!bm_get(pdc->tx_bm, (pp->pds_psn - pdc->tx_bm_base_psn),
+		    (void **)&pdc_pkt)) {
+		UET_PDS_WARN("NACK PSN %u on PDC %u packet not found",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	if (pdc_pkt->tx_pkt_acked)
+		return 0;
+
+	if (pdc_pkt->tx_retry_cnt >= uet->pds.max_tx_retries) {
+		UET_PDS_ERR("PDC %u PSN %u NACK retries exhausted",
+			    pdc->pdc_id, pp->pds_psn);
+		uet_pds_close_pdc_in_error(uet, pdc);
+		return 0;
+	}
+
+	rc = uet_pds_rtx_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		UET_PDS_ERR("PDC %u PSN %u NACK-triggered retransmit failed",
+			    pdc->pdc_id, pp->pds_psn);
+		return rc;
+	}
+
+	dlist_remove(&pdc_pkt->node);
+	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+	return 0;
+}
+
 static int uet_pds_process_ack(struct uet_instance *uet,
 			       struct uet_parsed_pkt *pp)
 {
@@ -3408,7 +3572,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	uint8_t *pkt;
 	size_t pkt_len;
 	struct uet_parsed_pkt pp;
-	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, pkt_is_nack;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
 	uet_pds_next_hdr_t rsp_next_hdr;
@@ -3429,7 +3593,8 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
 				&pkt_is_ack,
 				&pkt_is_rd_rsp,
-				&pkt_is_ctrl)) {
+				&pkt_is_ctrl,
+				&pkt_is_nack)) {
 		UET_PDS_WARN("invalid Rx packet (len=%ld)", pkt_len);
 		rc = -EINVAL;
 		goto exit;
@@ -3483,6 +3648,10 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (pkt_is_ack) {
 
 		rc = uet_pds_process_ack(uet, &pp);
+
+	} else if (pkt_is_nack) {
+
+		rc = uet_pds_process_nack(uet, &pp);
 
 	} else if (pkt_is_ctrl) {
 
