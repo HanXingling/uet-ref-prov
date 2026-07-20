@@ -628,6 +628,8 @@ struct uet_ep {
 	struct dlist_entry mr_list_head;
 	void *pds;                                               /* pds state */
 	uint32_t job_id;                                /* ses job identifier */
+	bool absolute;       /* endpoint uses absolute addressing (any JobID) */
+			     /* relative endpoints demux/authorize by JobID   */
 	uint8_t untagged_gen;            /* ses generation for untagged msg's */
 	bool untagged_gen_disabled;  /* true=>gen disabled for untagged msg's */
 	uint8_t tagged_gen;                /* ses generation for tagged msg's */

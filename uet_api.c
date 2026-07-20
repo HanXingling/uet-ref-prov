@@ -3579,7 +3579,11 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 			}
 		} else
 			ses_rc = uet_rx_rtr_req_pkt(uet, pp, &uet_ep);
-		if (uet_ep->job_id != job_id) {
+		/* Absolute endpoints receive from any JobID. Authorization
+		 * is enforced per-MR (job-restricted regions). Relative
+		 * endpoints demux/authorize by the endpoint JobID.
+		 */
+		if (!uet_ep->absolute && (uet_ep->job_id != job_id)) {
 			UET_API_ERR("RX: Bad Job ID");
 			ses_rc = UET_RC_BAD_JOB_ID;
 			goto build_response;
@@ -3596,7 +3600,11 @@ static int uet_pds_to_ses_rx_req(uet_pkt_handle_t rx_pkt_handle,
 		uet_ep = rx_desc->uet_ep;
 		job_id = (ntohl(rx_ses_rsp_d->cmn.ri_gen_job_id) &
 			  UET_SES_RSP_JOB_ID_MASK) >> UET_SES_RSP_JOB_ID_SHIFT;
-		if (uet_ep->job_id != job_id) {
+		/* Absolute endpoints receive from any JobID. Authorization
+		 * is enforced per-MR (job-restricted regions). Relative
+		 * endpoints demux/authorize by the endpoint JobID.
+		 */
+		if (!uet_ep->absolute && (uet_ep->job_id != job_id)) {
 			UET_API_ERR("RX: Bad Job ID");
 			ses_rc = UET_RC_BAD_JOB_ID;
 			goto build_response;
@@ -3785,6 +3793,19 @@ uint64_t uet_build_ses_rtr_token(uint64_t local_token, uint64_t remote_token)
 }
 
 /*
+ * SES rel flag for a message's destination addressing mode: set for relative
+ * addressing, clear for absolute. The mode is taken from the destination
+ * address. Defaults to relative when no address is available.
+ */
+static uint8_t uet_ses_rel_flag(struct uet_av_entry *av)
+{
+	if (av && av->addr && (av->addr->flags & UET_ADDR_ABSOLUTE_MODE))
+		return 0;
+
+	return UET_SES_REQ_FLAG_REL;
+}
+
+/*
  * build rtr request ses header for packet to be transmitted
  *
  * parms:
@@ -3799,12 +3820,15 @@ static int uet_build_rtr_req_ses_hdr(struct uet_tx_desc *tx_desc,
 				     struct uet_ses_req_std *ses)
 {
 	uint64_t local_token, remote_token;
+	struct uet_av_entry *av =
+		(struct uet_av_entry *) tx_desc->dst_addr_handle;
 
 	memset(ses, 0, sizeof(struct uet_ses_req_std));
 	ses->cmn.rsvd_opcode = UET_DEFER_RTR << UET_SES_OPCODE_SHIFT;
-	ses->cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT) |
-		UET_SES_REQ_FLAG_REL | UET_SES_REQ_FLAG_EOM |
-		UET_SES_REQ_FLAG_SOM;
+	ses->cmn.ver_flags = ((UET_SES_VER << UET_SES_VER_SHIFT)	|
+			      uet_ses_rel_flag(av)			|
+			      UET_SES_REQ_FLAG_EOM			|
+			      UET_SES_REQ_FLAG_SOM);
 	ses->cmn.msg_id = htons(tx_desc->msg_id);
 	ses->cmn.ri_gen_job_id =
 		htonl(tx_desc->job_id << UET_SES_REQ_JOB_ID_SHIFT);
@@ -3857,11 +3881,11 @@ static int uet_build_atomic_req_ses_hdr(struct uet_tx_desc *tx_desc,
 	if (tx_desc->op_flags & FI_DELIVERY_COMPLETE)
 		dc = UET_SES_REQ_FLAG_DC;
 
-	ses->base.cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT)	|
-			           UET_SES_REQ_FLAG_SOM 		|
-			           UET_SES_REQ_FLAG_EOM			|
-			           dc					|
-			           UET_SES_REQ_FLAG_REL;
+	ses->base.cmn.ver_flags = ((UET_SES_VER << UET_SES_VER_SHIFT)	|
+				   UET_SES_REQ_FLAG_SOM 		|
+				   UET_SES_REQ_FLAG_EOM			|
+				   dc					|
+				   uet_ses_rel_flag(av));
 
 	ses->base.cmn.msg_id = htons(tx_desc->msg_id);
 
@@ -4004,8 +4028,10 @@ static int uet_build_ses_hdr(struct uet_tx_desc *tx_desc, size_t pkt_len,
 	if (tx_desc->op_flags & FI_DELIVERY_COMPLETE)
 		dc = UET_SES_REQ_FLAG_DC;
 
-	ses->cmn.ver_flags = (UET_SES_VER << UET_SES_VER_SHIFT) | dc |
-		UET_SES_REQ_FLAG_REL | som;
+	ses->cmn.ver_flags = ((UET_SES_VER << UET_SES_VER_SHIFT)	|
+			      dc					|
+			      uet_ses_rel_flag(av)			|
+			      som);
 
 	ses->cmn.ri_gen_job_id = htonl(
 		(av->untagged_gen << UET_SES_REQ_RI_GEN_SHIFT) |
@@ -5843,7 +5869,8 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
-		 uint32_t initiator_id, uint32_t job_key)
+		 uint32_t initiator_id, uint32_t job_key,
+		 bool absolute)
 #else
 int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
@@ -5879,6 +5906,9 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->uet_addr.flags |= (UET_ADDR_PID_ON_FEP_V | UET_ADDR_INDEX_V |
 				    UET_ADDR_INITIATOR_V);
 	uet_ep->job_id = uet_job_key_to_id(job_key);
+	uet_ep->absolute = absolute;
+	if (absolute)
+		uet_ep->uet_addr.flags |= UET_ADDR_ABSOLUTE_MODE;
 #else
 	rc = uet_addr_resolution(&uet_ep->uet_addr, &uet_ep->job_id);
 	if (rc != FI_SUCCESS) {

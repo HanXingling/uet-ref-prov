@@ -451,7 +451,8 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
-		 uint32_t initiator_id, uint32_t job_key);
+		 uint32_t initiator_id, uint32_t job_key,
+		 bool absolute);
 #endif
 
 /*
