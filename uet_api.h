@@ -451,7 +451,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
-		 uint32_t initiator_id, uint32_t job_key,
+		 uint32_t initiator_id, uint32_t job_id,
 		 bool absolute);
 #endif
 
@@ -1000,7 +1000,7 @@ ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t src_addr_handle, void *context);
 #else
-ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_key,
+ssize_t uet_recv(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t src_addr_handle, void *context);
 #endif
@@ -1033,7 +1033,7 @@ ssize_t uet_recvv(
 	uet_addr_handle_t src_addr_handle, void *context);
 #else
 ssize_t uet_recvv(
-	uet_ep_handle_t ep_handle, uint32_t job_key, const struct iovec *iov,
+	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t src_addr_handle, void *context);
 #endif
@@ -1092,7 +1092,7 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context);
 #else
-ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_key,
+ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_id,
 		 void *buf, size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t dst_addr_handle, void *context,
 		 uint16_t resource_index);
@@ -1114,7 +1114,7 @@ ssize_t uet_send(uet_ep_handle_t ep_handle, uint32_t job_key,
  *   as uet_send()
  */
 #if ENABLE_VERBS
-ssize_t uet_send_imm(uet_ep_handle_t ep_handle, uint32_t job_key,
+ssize_t uet_send_imm(uet_ep_handle_t ep_handle, uint32_t job_id,
 		     void *buf, size_t len, uet_mr_handle_t mr_handle,
 		     uet_addr_handle_t dst_addr_handle, uint64_t *imm_data,
 		     void *context, uint16_t resource_index);
@@ -1149,7 +1149,7 @@ ssize_t uet_sendv(
 	uet_addr_handle_t dst_addr_handle, void *context);
 #else
 ssize_t uet_sendv(
-	uet_ep_handle_t ep_handle, uint32_t job_key, const struct iovec *iov,
+	uet_ep_handle_t ep_handle, uint32_t job_id, const struct iovec *iov,
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t dst_addr_handle, void *context,
 	uint16_t resource_index);
@@ -1394,7 +1394,7 @@ ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  uint64_t remote_mem_addr, uint64_t remote_key,
 		  void *context);
 #else
-ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_key,
+ssize_t uet_write(uet_ep_handle_t ep_handle, uint32_t job_id,
 		  void *buf, size_t len, uint64_t *data,
 		  uet_mr_handle_t mr_handle,
 		  uet_addr_handle_t dst_addr_handle,
@@ -1435,7 +1435,7 @@ ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
 		       uint64_t remote_mem_addr, uint64_t remote_key,
 		       void *context);
 #else
-ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_key,
+ssize_t uet_write_sync(uet_ep_handle_t ep_handle, uint32_t job_id,
 		       void *buf, size_t len, uint64_t *data,
 		       uet_mr_handle_t mr_handle,
 		       uet_addr_handle_t dst_addr_handle,
@@ -1503,7 +1503,7 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context);
 #else
-ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_key, void *buf,
+ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 size_t len, uet_mr_handle_t mr_handle,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context,
