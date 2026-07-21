@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -261,6 +261,7 @@ struct uet_rx_desc {
 	struct uet_mr_desc *mr_desc;          /* ptr to mr desc if applicable */
 	uint64_t imm_data;                        /* data for write immediate */
 	uint32_t src_id;                   /* initiator (SourceID) of the msg */
+	uint32_t job_id;             /* posted buffer's authorized JobID (RX) */
 	struct uet_ep *uet_ep;             /* endpoint msg is associated with */
 	time_t prev_pkt_time;     /* time most recent pkt of msg was received */
 	struct uet_tx_desc *tx_desc;     /* associated tx descriptor for read */
