@@ -1173,6 +1173,18 @@ ssize_t uet_sendv(
 #endif
 
 /*
+ * scatter/gather send with an immediate (uet_sendv + immediate). The payload
+ * (iov) and the immediate are independent, so any iov_count is supported.
+ */
+#if ENABLE_VERBS
+ssize_t uet_sendv_imm(uet_ep_handle_t ep_handle, uint32_t job_id,
+		      const struct iovec *iov, size_t count,
+		      uet_mr_handle_t mr_handle,
+		      uet_addr_handle_t dst_addr_handle, uint64_t *imm_data,
+		      void *context, uint16_t resource_index);
+#endif
+
+/*
  * flexible api for transmission of a message to an endpoint
  *
  * parms:
