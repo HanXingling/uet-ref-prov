@@ -1277,6 +1277,7 @@ ssize_t uet_trecvv(
 	size_t iov_count, uet_mr_handle_t mr_handle,
 	uet_addr_handle_t src_addr_handle, uint64_t tag, uint64_t ignore,
 	void *context);
+
 /*
  * flexible api to post tagged buffer to receive queue of an endpoint
  *
@@ -1537,6 +1538,26 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 		 uet_addr_handle_t uet_addr_handle,
 		 uint64_t remote_mem_addr, uint64_t remote_key, void *context,
 		 uint16_t resource_index);
+#endif
+
+/*
+ * scatter/gather RMA write / read: uet_write / uet_read with a local iov. The
+ * local segments gather into (write) / scatter from (read) the single remote
+ * {addr, key}. For uet_writev, `data` carries the immediate for
+ * RDMA_WRITE_WITH_IMM (NULL otherwise).
+ */
+#if ENABLE_VERBS
+ssize_t uet_writev(uet_ep_handle_t ep_handle, uint32_t job_id,
+		   const struct iovec *iov, size_t count, uint64_t *data,
+		   uet_mr_handle_t mr_handle, uet_addr_handle_t dst_addr_handle,
+		   uint64_t remote_mem_addr, uint64_t remote_key,
+		   void *context, uint16_t resource_index);
+
+ssize_t uet_readv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  const struct iovec *iov, size_t count,
+		  uet_mr_handle_t mr_handle, uet_addr_handle_t uet_addr_handle,
+		  uint64_t remote_mem_addr, uint64_t remote_key,
+		  void *context, uint16_t resource_index);
 #endif
 
 /*
