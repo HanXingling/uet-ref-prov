@@ -675,6 +675,19 @@ int uet_ep_bind_mr(uet_ep_handle_t ep_handle,
 int uet_ep_enable(uet_ep_handle_t ep_handle);
 
 /*
+ * reset an endpoint back to the pre-enable (disabled) state so it can be
+ * re-enabled, e.g. to recover a verbs QP through the ERR -> RST -> RTS path
+ *
+ * parms:
+ *   ep_handle - handle identifying uet endpoint instance
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+int uet_ep_reset(uet_ep_handle_t ep_handle);
+
+/*
  * cancel a pending asynchronous data transfer
  *
  * parms:
