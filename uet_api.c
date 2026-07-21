@@ -1052,6 +1052,12 @@ static void uet_mr_hash_insert(struct uet_ep *uet_ep,
 		 sizeof(struct uet_mr_key), mr_desc);
 }
 
+/* remove a single entry from the mr hash table of its endpoint */
+static void uet_mr_hash_remove(struct uet_mr_desc *mr_desc)
+{
+	HASH_DELETE(mr_hh, mr_desc->uet_ep->mr_hash_table, mr_desc);
+}
+
 /* remove all entries from mr hash table and free associated memory */
 static void uet_mr_hash_finalize(struct uet_ep *uet_ep)
 {
@@ -1306,6 +1312,12 @@ static void uet_mr_list_insert(struct uet_mr_desc *mr_desc)
 {
 	dlist_insert_head(&mr_desc->list_entry,
 			  &mr_desc->uet_ep->mr_list_head);
+}
+
+/* remove a single entry from the memory region list of its endpoint */
+static void uet_mr_list_remove(struct uet_mr_desc *mr_desc)
+{
+	dlist_remove(&mr_desc->list_entry);
 }
 
 /* remove entry from head of memory region list */
@@ -6112,7 +6124,6 @@ int uet_ep_bind_cq(uet_ep_handle_t ep_handle, struct fi_cq_attr *attr,
 
 int uet_mr_disable(uet_mr_handle_t mr_handle)
 {
-	int rc;
 	struct uet_mr_desc *mr_desc;
 
 	mr_desc = (struct uet_mr_desc *) mr_handle;
@@ -6122,11 +6133,19 @@ int uet_mr_disable(uet_mr_handle_t mr_handle)
 		return -FI_EINVAL;
 	}
 
-	if (mr_desc->uet_ep->uet_domain->info->domain_attr->mr_mode &
-	    FI_MR_PROV_KEY)
-		uet_mr_list_finalize(mr_desc->uet_ep);
+	/* Remove just this MR from the lookup space that matches its key's
+	 * origin (mirrors uet_mr_enable's per-MR insert): user keys use the
+	 * per-endpoint hash, provider keys use the index-space list. Return
+	 * the MR to the registered state so it can be re-bound/re-enabled or
+	 * closed. A subsequent RX request no longer finds it (access revoked).
+	 */
+	if (mr_desc->user_key)
+		uet_mr_hash_remove(mr_desc);
 	else
-		uet_mr_hash_finalize(mr_desc->uet_ep);
+		uet_mr_list_remove(mr_desc);
+
+	mr_desc->state = UET_MR_DESC_STATE_DISABLED_REG;
+	mr_desc->uet_ep = NULL;
 
 	return FI_SUCCESS;
 }
