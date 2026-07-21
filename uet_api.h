@@ -299,6 +299,9 @@ int uet_mr_regattr(uet_domain_handle_t domain_handle, uint32_t job_id,
  *   len               - length of the derived region
  *   access            - operations supported for the derived region
  *   requested_key     - requested key (UET_MR_KEY_NONE for provider key)
+ *   flags             - UET_MR_FLAG_* (e.g. UET_MR_FLAG_USER_KEY)
+ *   job_id            - JobID to restrict the region to (if job_restricted)
+ *   job_restricted    - if true, restrict the derived region to job_id
  *   context           - user specified context associated with the region
  *   mr_handle         - ptr to location where the derived region handle
  *                       is returned
@@ -310,7 +313,8 @@ int uet_mr_regattr(uet_domain_handle_t domain_handle, uint32_t job_id,
 int uet_mr_derive(uet_domain_handle_t domain_handle,
 		  uet_mr_handle_t parent_mr_handle,
 		  const void *buf, size_t len, uint64_t access,
-		  uint64_t requested_key, void *context,
+		  uint64_t requested_key, uint64_t flags,
+		  uint32_t job_id, bool job_restricted, void *context,
 		  uet_mr_handle_t *mr_handle);
 
 /*
