@@ -6160,6 +6160,23 @@ int uet_ep_enable(uet_ep_handle_t ep_handle)
 	return FI_SUCCESS;
 }
 
+int uet_ep_reset(uet_ep_handle_t ep_handle)
+{
+	struct uet_ep *uet_ep;
+
+	uet_ep = (struct uet_ep *) ep_handle;
+
+	/* Teturn the endpoint to the pre-enable state and clear the transient
+	 * generation state so a subsequent uet_ep_enable() gives a clean,
+	 * usable endpoint (verbs QP error recovery: ERR -> RST -> RTS).
+	 */
+	uet_ep->ep_state = UET_EP_DISABLED;
+	uet_ep->untagged_gen_disabled = false;
+	uet_ep->tagged_gen_disabled = false;
+
+	return FI_SUCCESS;
+}
+
 int uet_ep_close(uet_ep_handle_t ep_handle)
 {
 	struct uet_ep *uet_ep;
