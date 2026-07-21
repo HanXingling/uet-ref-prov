@@ -6717,8 +6717,9 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 int uet_mr_derive(uet_domain_handle_t domain_handle,
 		  uet_mr_handle_t parent_mr_handle,
 		  const void *buf, size_t len, uint64_t access,
-		  uint64_t requested_key, void *context,
-		  uet_mr_handle_t *mr_handle)
+		  uint64_t requested_key, uint64_t flags,
+		  uint32_t job_id, bool job_restricted,
+		  void *context, uet_mr_handle_t *mr_handle)
 {
 	struct uet_mr_desc *parent = (struct uet_mr_desc *) parent_mr_handle;
 	const uint8_t *pbase, *cbase;
@@ -6738,8 +6739,17 @@ int uet_mr_derive(uet_domain_handle_t domain_handle,
 		return -FI_EINVAL;
 	}
 
+	/* A derived MR is a normal registration of a sub-range contained in
+	 * the parent. The requested key, user-key flag, and job restriction
+	 * all still apply. Route through the job-restricted path when asked.
+	 */
+	if (job_restricted)
+		return uet_mr_reg_job(domain_handle, buf, len, access,
+				      requested_key, flags, job_id, context,
+				      mr_handle);
+
 	return uet_mr_reg(domain_handle, buf, len, access, requested_key,
-			  UET_FLAGS_NONE, context, mr_handle);
+			  flags, context, mr_handle);
 }
 
 /*
