@@ -6523,6 +6523,19 @@ ssize_t uet_send_imm(uet_ep_handle_t ep_handle, uint32_t job_id,
 			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
 			NULL, context, resource_index));
 }
+
+ssize_t uet_sendv_imm(uet_ep_handle_t ep_handle, uint32_t job_id,
+		      const struct iovec *iov, size_t count,
+		      uet_mr_handle_t mr_handle,
+		      uet_addr_handle_t dst_addr_handle, uint64_t *imm_data,
+		      void *context, uint16_t resource_index)
+{
+	return (uet_send_req_api_common(
+			UET_SEND_API, ep_handle, job_id, iov, count, mr_handle,
+			dst_addr_handle, UET_NO_TAG, imm_data,
+			UET_NO_REMOTE_MEM_ADDR, UET_NO_REMOTE_KEY,
+			NULL, context, resource_index));
+}
 #endif /* ENABLE_VERBS */
 
 #if !ENABLE_VERBS
