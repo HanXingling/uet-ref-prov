@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -3208,6 +3208,20 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			}
 		}
 
+		/* Enforce the posted buffer's job authorization: a buffer
+		 * posted for a specific JobID (not UET_JOB_ID_ANY) may only
+		 * be consumed by a message from that job. Sends only. RMA
+		 * writes authorize per-MR, and relative endpoints are
+		 * already demux'd by JobID.
+		 */
+		if (!write &&
+		    (rx_desc->job_id != UET_JOB_ID_ANY) &&
+		    (rx_desc->job_id != uet_get_std_req_job_id(ses))) {
+			UET_API_ERR("RX: Buffer Job ID Mismatch");
+			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+					       UET_RC_BAD_JOB_ID));
+		}
+
 		/* insert rx desc into active list and rx msg lookup tbl */
 		rx_desc->msg_len = req_len;
 		rx_desc->remaining_bytes = req_len;
@@ -5001,6 +5015,7 @@ static ssize_t uet_recv_api_common(
 	rx_desc->context = context;
 	rx_desc->ses_rc = UET_RC_OK;
 	rx_desc->uet_ep = uet_ep;
+	rx_desc->job_id = job_id;
 
 	switch (recv_api) {
 	case UET_RECV_API:
