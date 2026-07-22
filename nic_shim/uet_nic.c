@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -350,13 +350,9 @@ extern int nic_xdp_initialize(struct uet_nic *nic);
 #endif
 
 /* init nic resources */
-int uet_nic_initialize(struct uet_nic *nic,
-		       bool is_ipv6)
+int uet_nic_initialize(struct uet_nic *nic)
 {
 	char *nic_shim;
-
-	/* set IP version before calling shim-specific initializer */
-	nic->is_ipv6 = is_ipv6;
 
 	/* get interface name from environment variable */
 	nic_shim = getenv(UET_NIC_SHIM);

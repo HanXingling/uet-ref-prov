@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -463,6 +463,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	void *context = NULL;
 	struct fi_info *hints = NULL, *info;
 	struct uet_addr *uet_addr;
+	struct uet_addr src_node;
 	uet_rc_t rc = UET_ERR_RC;
 	ssize_t remaining_size;
 
@@ -470,7 +471,7 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	if (!ctx->cfg.client)
 		setenv(UET_SEC_SERVER, "1", 1);
 
-	ret = uet_initialize(&ctx->uet_handle, ctx->cfg.is_ipv6);
+	ret = uet_initialize(&ctx->uet_handle);
 	if (ret) {
 		UET_ERR("uet_initialize: %s", fi_strerror(-ret));
 		goto exit;
@@ -491,7 +492,11 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 	else
 		hints->caps |= FI_MSG;
 
-	ret = uet_getinfo(ctx->uet_handle, NULL, hints, &ctx->info);
+	/* dual-stack: tell the library which address family this run uses */
+	memset(&src_node, 0, sizeof(src_node));
+	src_node.flags = ctx->cfg.is_ipv6 ? UET_ADDR_IPV6 : UET_ADDR_IPV4;
+
+	ret = uet_getinfo(ctx->uet_handle, &src_node, hints, &ctx->info);
 	if (ret) {
 		UET_ERR("uet_getinfo: %s", fi_strerror(-ret));
 		goto exit;

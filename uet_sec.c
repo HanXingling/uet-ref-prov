@@ -16,6 +16,9 @@
 #include "gcm.h"
 
 #define UET_SEC_MAX_SD         8
+#define UET_SEC_FAM_V4         0
+#define UET_SEC_FAM_V6         1
+#define UET_SEC_FAM(is_ipv6)   ((is_ipv6) ? UET_SEC_FAM_V6 : UET_SEC_FAM_V4)
 #define UET_SEC_KEY_SIZE       32
 #define UET_SEC_KDF_GEN_SIZE   44
 #define UET_SEC_CTR_SIZE       8
@@ -43,12 +46,12 @@ struct uet_sec_sd {
 	bool           rekey;
 	uint64_t       rekey_mask;
 	uint8_t        rekey_shift;
-	int16_t        aoff;
 	uint16_t       coff;
 	uet_sec_alg_t  alg;
 	uint16_t       epoch;
 	uint8_t        an;
-	uint8_t        key[2][UET_SEC_KDF_GEN_SIZE];
+	/* [family][an] - per-family key material (aoff derived from family) */
+	uint8_t        key[2][2][UET_SEC_KDF_GEN_SIZE];
 };
 
 static struct uet_sec_sd sdkdb[UET_SEC_MAX_SD];
@@ -86,7 +89,7 @@ static uint8_t def_key[2][UET_SEC_KDF_GEN_SIZE] = {
 #define DEF_REKEY_SHIFT 32
 #define DEF_AOFF_V4     -12 /* AAD src/dest IPv4 (8) + entropy (4) */
 #define DEF_AOFF_V6     -36 /* AAD src/dest IPv6 (32) + entropy (4) */
-#define DEF_AOFF        DEF_AOFF_V4
+#define UET_SEC_AOFF(is_ipv6) ((is_ipv6) ? DEF_AOFF_V6 : DEF_AOFF_V4)
 #define DEF_COFF        12 /* sizeof security header, +4 if using SSI */
 
 static uint8_t fep_key[2][UET_SEC_KEY_SIZE] = {
@@ -270,7 +273,8 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 		    uint8_t *pkt,
 		    int pkt_len,
 		    uint8_t **enc_pkt,
-		    int *enc_pkt_len)
+		    int *enc_pkt_len,
+		    bool is_ipv6)
 {
 	uint8_t derived_key[UET_SEC_KDF_GEN_SIZE];
 	uint8_t small_context[UET_SEC_SMALL_CTX_SIZE];
@@ -296,7 +300,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	uint32_t tmp_val;
 	uint64_t tmp_lval;
 	int i, rc, clrtxt_len;
-	bool is_ipv6 = uet->nic.is_ipv6;
+	int fam = UET_SEC_FAM(is_ipv6);
 
 	if (is_ipv6)
 		ipv6 = (struct ipv6hdr *)(pkt + sizeof(struct ethhdr));
@@ -367,7 +371,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	switch (sd->mode) {
 	case UET_SEC_MODE_DIRECT:
-		memcpy(derived_key, sd->key[an], UET_SEC_KEY_SIZE);
+		memcpy(derived_key, sd->key[fam][an], UET_SEC_KEY_SIZE);
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
@@ -377,7 +381,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			memcpy((large_context + 6), (uint8_t *)&rekey, 4);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -393,7 +397,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -409,7 +413,8 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	case UET_SEC_MODE_SERVER:
 		/* in client/server mode the client operates in direct mode */
 		if (!getenv(UET_SEC_SERVER)) {
-			memcpy(derived_key, sd->key[an], UET_SEC_KDF_GEN_SIZE);
+			memcpy(derived_key, sd->key[fam][an],
+			       UET_SEC_KDF_GEN_SIZE);
 			break;
 		}
 
@@ -418,7 +423,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
 			memcpy((large_context + 10), &ipv6->daddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -433,7 +438,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->daddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[sd->an],
+			kdf_ctr_cmac_aes(sd->key[fam][sd->an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -454,7 +459,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	/* encrypt the packet */
 
-	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
+	aad = (sec_hdr + UET_SEC_AOFF(is_ipv6)); /* likely negative, moves back */
 
 	tmp_val = (sd->use_ssi) ? sec_ssi->ssi :
 				  (is_ipv6) ? htonl(sdi) : ipv4->saddr;
@@ -524,9 +529,21 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	uint32_t sdi;
 	uint32_t tfs;
 	int i, rc, clrtxt_len;
-	bool is_ipv6 = uet->nic.is_ipv6;
+	int fam;
+	bool is_ipv6;
 
 	eth = (struct ethhdr *)pkt;
+
+	if (eth->h_proto == htons(ETH_P_IPV6)) {
+		is_ipv6 = true;
+	} else if (eth->h_proto == htons(ETH_P_IP)) {
+		is_ipv6 = false;
+	} else {
+		*tag_len = 0;
+		return 0;
+	}
+
+	fam = UET_SEC_FAM(is_ipv6);
 
 	/* do some preliminary sanity checks */
 	if (is_ipv6) {
@@ -601,7 +618,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	switch (sd->mode) {
 	case UET_SEC_MODE_DIRECT:
-		memcpy(derived_key, sd->key[an], UET_SEC_KEY_SIZE);
+		memcpy(derived_key, sd->key[fam][an], UET_SEC_KEY_SIZE);
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
@@ -611,7 +628,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			memcpy((large_context + 6), (uint8_t *)&rekey, 4);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -627,7 +644,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -643,7 +660,8 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	case UET_SEC_MODE_SERVER:
 		/* in client/server mode the client operates in direct mode */
 		if (!getenv(UET_SEC_SERVER)) {
-			memcpy(derived_key, sd->key[an], UET_SEC_KDF_GEN_SIZE);
+			memcpy(derived_key, sd->key[fam][an],
+			       UET_SEC_KDF_GEN_SIZE);
 			break;
 		}
 
@@ -652,7 +670,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[an],
+			kdf_ctr_cmac_aes(sd->key[fam][an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -667,7 +685,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[sd->an],
+			kdf_ctr_cmac_aes(sd->key[fam][sd->an],
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -688,7 +706,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	/* decrypt the packet */
 
-	aad = (sec_hdr + sd->aoff); /* likely negative and moves backwards */
+	aad = (sec_hdr + UET_SEC_AOFF(is_ipv6)); /* likely negative, moves back */
 
 	tmp_val = (sd->use_ssi) ? sec_ssi->ssi :
 				  (is_ipv6) ? htonl(sdi) : ipv4->saddr;
@@ -726,19 +744,71 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	return 0;
 }
 
-static int uet_sec_init_sd(uint32_t sdi,
-			   uet_sec_mode_t mode,
-			   bool use_ssi,
-			   bool rekey,
-			   struct uet_fa *local_ip,
-			   bool is_ipv6)
+/*
+ * Derive the client-side server-mode keys for one address family. Each
+ * family's keys are derived from that family's local address (IPv4) or the
+ * SSI, so a dual-stack SD derives both families' key material independently
+ * into sd->key[fam][an].
+ */
+static void uet_sec_derive_family_keys(struct uet_sec_sd *sd,
+				       int fam,
+				       const struct uet_fa *local_ip)
 {
 	uint8_t derived_key[UET_SEC_KDF_GEN_SIZE];
 	uint8_t small_context[UET_SEC_SMALL_CTX_SIZE];
 	uint8_t large_context[UET_SEC_LARGE_CTX_SIZE];
-	struct uet_sec_sd *sd;
 	char *client_ssi;
 	uint32_t tmp_val;
+	int an;
+	uint16_t epoch = htons(sd->epoch);
+
+	for (an = 0; an < 2; an++) {
+		if (fam == UET_SEC_FAM_V6) {
+			memset(large_context, 0, sizeof(large_context));
+			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
+			memcpy((large_context + 10), local_ip->v6, 16);
+
+			kdf_ctr_cmac_aes(sd->key[fam][an],
+					 (UET_SEC_KEY_SIZE * 8),
+					 UET_SEC_CTR_SIZE,
+					 (uint8_t *)uet_sec_label2,
+					 strlen(uet_sec_label2), /* ignore delimiter */
+					 large_context,
+					 UET_SEC_LARGE_CTX_SIZE,
+					 derived_key,
+					 (UET_SEC_KDF_GEN_SIZE * 8));
+		} else {
+			memset(small_context, 0, sizeof(small_context));
+			memcpy(small_context, (uint8_t *)&epoch, 2);
+			/* use SSI if available, otherwise use IPv4 */
+			client_ssi = getenv(UET_SEC_SSI);
+			tmp_val = (client_ssi)
+				? htonl(strtoul(client_ssi, NULL, 10))
+				: htonl(local_ip->v4);
+			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
+
+			kdf_ctr_cmac_aes(sd->key[fam][an],
+					 (UET_SEC_KEY_SIZE * 8),
+					 UET_SEC_CTR_SIZE,
+					 (uint8_t *)uet_sec_label2,
+					 strlen(uet_sec_label2), /* ignore delimiter */
+					 small_context,
+					 UET_SEC_SMALL_CTX_SIZE,
+					 derived_key,
+					 (UET_SEC_KDF_GEN_SIZE * 8));
+		}
+
+		memcpy(sd->key[fam][an], derived_key, UET_SEC_KDF_GEN_SIZE);
+	}
+}
+
+static int uet_sec_init_sd(uint32_t sdi,
+			   uet_sec_mode_t mode,
+			   bool use_ssi,
+			   bool rekey,
+			   struct uet_nic *nic)
+{
+	struct uet_sec_sd *sd;
 
 	if (sdi >= UET_SEC_MAX_SD) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
@@ -753,23 +823,26 @@ static int uet_sec_init_sd(uint32_t sdi,
 	sd->mode        = mode;
 	sd->use_ssi     = use_ssi;
 	sd->rekey       = rekey;
-
-	/* IPv6 with direct or client/server mode requires the SSI */
-	if (is_ipv6 && !use_ssi && ((mode == UET_SEC_MODE_DIRECT) ||
-				    (mode == UET_SEC_MODE_SERVER))) {
-		UET_TSS_ERR("IPv6 MODE_DIRECT requires SSI\n");
-		memset(sd, 0, sizeof(*sd));
-		return -EINVAL;
-	}
-
 	sd->rekey_mask  = DEF_REKEY_MASK;
 	sd->rekey_shift = DEF_REKEY_SHIFT;
-	sd->aoff        = is_ipv6 ? DEF_AOFF_V6 : DEF_AOFF_V4;
 	sd->coff        = (use_ssi) ? (DEF_COFF + 4) : DEF_COFF;
 	sd->alg         = UET_SEC_ALG_AES_GCM_256;
 	sd->epoch       = 1; /* FIXME: init/roll epoch */
 	sd->an          = 0;
-	memcpy(sd->key, def_key, sizeof(def_key));
+
+	/* seed both families with the default key */
+	memcpy(sd->key[UET_SEC_FAM_V4], def_key, sizeof(def_key));
+	memcpy(sd->key[UET_SEC_FAM_V6], def_key, sizeof(def_key));
+
+	/*
+	 * IPv6 with direct or client/server mode requires the SSI. Under
+	 * dual-stack this is a per-family limitation, not a fatal error: warn
+	 * and leave IPv6 security unavailable so IPv4 is unaffected.
+	 */
+	if (nic->has_ipv6 && !use_ssi &&
+	    ((mode == UET_SEC_MODE_DIRECT) || (mode == UET_SEC_MODE_SERVER)))
+		UET_TSS_WARN("IPv6 secure mode requires SSI; IPv6 security "
+			     "unavailable (IPv4 unaffected)\n");
 
 	/*
 	 * For the client side of server mode, do the KDFs now (no exchange).
@@ -777,78 +850,32 @@ static int uet_sec_init_sd(uint32_t sdi,
 	 * server and there is an exchange where the server gives each client
 	 * a key to use in direct mode which is a derivation from the server
 	 * key using the client's SSI.
+	 *
+	 * Dual-stack: derive each available family's keys independently from
+	 * that family's local address. IPv6 requires the SSI.
 	 */
 	if ((mode == UET_SEC_MODE_SERVER) && !getenv(UET_SEC_SERVER)) {
-		if (is_ipv6) {
-			memset(large_context, 0, sizeof(large_context));
-			memcpy((large_context + 4), (uint8_t *)&sd->epoch, 2);
-			memcpy((large_context + 10), local_ip->v6, 16);
+		if (nic->has_ipv4) {
+			struct uet_fa fa;
+			memset(&fa, 0, sizeof(fa));
+			fa.v4 = nic->ipv4_addr;
+			uet_sec_derive_family_keys(sd, UET_SEC_FAM_V4, &fa);
+		}
 
-			kdf_ctr_cmac_aes(sd->key[0],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 large_context,
-					 UET_SEC_LARGE_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-
-			memcpy(sd->key[0], derived_key, UET_SEC_KDF_GEN_SIZE);
-
-			kdf_ctr_cmac_aes(sd->key[1],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 large_context,
-					 UET_SEC_LARGE_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-
-			memcpy(sd->key[1], derived_key, UET_SEC_KDF_GEN_SIZE);
-		} else {
-			memset(small_context, 0, sizeof(small_context));
-			memcpy(small_context, (uint8_t *)&sd->epoch, 2);
-			/* use SSI if available, otherwise use IPv4 */
-			client_ssi = getenv(UET_SEC_SSI);
-			tmp_val = (client_ssi)
-				? htonl(strtoul(client_ssi, NULL, 10))
-				: htonl(local_ip->v4);
-			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
-
-			kdf_ctr_cmac_aes(sd->key[0],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 small_context,
-					 UET_SEC_SMALL_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-
-			memcpy(sd->key[0], derived_key, UET_SEC_KDF_GEN_SIZE);
-
-			kdf_ctr_cmac_aes(sd->key[1],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 small_context,
-					 UET_SEC_SMALL_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-
-			memcpy(sd->key[1], derived_key, UET_SEC_KDF_GEN_SIZE);
+		if (nic->has_ipv6 && use_ssi) {
+			struct uet_fa fa;
+			memset(&fa, 0, sizeof(fa));
+			memcpy(fa.v6, nic->ipv6_addr, 16);
+			uet_sec_derive_family_keys(sd, UET_SEC_FAM_V6, &fa);
 		}
 	}
 
 	return 0;
 }
 
-int uet_sec_init(struct uet_fa *local_ip, bool is_ipv6)
+int uet_sec_init(struct uet_nic *nic)
 {
-	char *sec, *sec_mode, *sec_ssi;
+	char *sec_mode, *sec_ssi;
 	int i, rc;
 
 	memset(sdkdb, 0, sizeof(sdkdb));
@@ -864,27 +891,19 @@ int uet_sec_init(struct uet_fa *local_ip, bool is_ipv6)
 
 	/* FIXME: Only using SDI=0x1 AN=0x0 for now... */
 
-	if ((sec_mode == NULL) || (strcmp(sec_mode, "direct") == 0)) {
-
-		/* IPv6 with direct mode requires the SSI */
-		if (is_ipv6 && (sec_ssi == NULL)) {
-			UET_TSS_ERR("UET_SEC_SSI required for IPv6 direct mode");
-			return -EINVAL;
-		}
+	if (strcmp(sec_mode, "direct") == 0) {
 
 		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_DIRECT,
-				     (sec_ssi != NULL), false,
-				     local_ip, is_ipv6);
+				     (sec_ssi != NULL), false, nic);
 
 	} else if (strcmp(sec_mode, "cluster") == 0) {
 
 		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_CLUSTER,
-				     (sec_ssi != NULL), true,
-				     local_ip, is_ipv6);
+				     (sec_ssi != NULL), true, nic);
 
 	} else if (strcmp(sec_mode, "server") == 0) {
 
-		/* this implemention requires the SSI for IPv4 and IPv6 */
+		/* this implementation requires the SSI for IPv4 and IPv6 */
 
 		if (sec_ssi == NULL) {
 			UET_TSS_ERR("UET_SEC_SSI required for server mode");
@@ -898,8 +917,7 @@ int uet_sec_init(struct uet_fa *local_ip, bool is_ipv6)
 		}
 
 		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_SERVER,
-				     true, false,
-				     local_ip, is_ipv6);
+				     true, false, nic);
 
 	} else {
 

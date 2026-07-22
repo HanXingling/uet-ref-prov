@@ -31,8 +31,12 @@ shim_names=(rawsock xdp)
 # (not for sng) default ACK type: ack, ack_cc, ack_ccx
 ACK_TYPE=ack_cc
 
-# (not for sng) default Tx timeout (in millisecs) and max Tx retries
+# (not for sng) default Tx timeout (in millisecs) and max Tx retries.
+# Security (TSS) runs use a longer timeout because the crypto path adds
+# per-packet latency that can trip the aggressive default and cause
+# spurious retransmits.
 TX_TIMEOUT=5
+TX_TIMEOUT_SEC=10
 MAX_TX_RETRIES=5
 
 function usage()
@@ -157,12 +161,20 @@ if [ -n "$UET_IMPAIRMENT_SHIM" ]; then
     IMP_SHIM="UET_IMPAIRMENT_SHIM=${UET_IMPAIRMENT_SHIM}"
 fi
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_TX_TIMEOUT=${TX_TIMEOUT} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${IMP_SHIM} ./${app_name}"
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${IMP_SHIM} ./${app_name}"
 
 function run_test()
 {
-    echo sudo $1
-    eval sudo $1 || { rc=$?; echo -e "\nERROR: Test failed!\n"; exit $rc; }
+    # TSS runs (UET_SEC_MODE set) use a longer Tx timeout since the crypto
+    # path adds per-packet latency.
+    local timeout=$TX_TIMEOUT
+    if [[ "$1" == *UET_SEC_MODE* ]]; then
+        timeout=$TX_TIMEOUT_SEC
+    fi
+
+    local cmd="UET_PDS_TX_TIMEOUT=$timeout $1"
+    echo sudo $cmd
+    eval sudo $cmd || { rc=$?; echo -e "\nERROR: Test failed!\n"; exit $rc; }
 }
 
 function sng()

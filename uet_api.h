@@ -90,13 +90,12 @@ typedef void (*uet_eq_err_callback_t)(uet_handle_t handle,
  *
  * parms:
  *   handle - ptr to location where uet instance handle is returned
- *   is_ipv6 - initialize for IPv6
  *
  * returns:
  *   0 on success,
  *   negative value corresponding to fabric errno on error
  */
-int uet_initialize(uet_handle_t *handle, bool is_ipv6);
+int uet_initialize(uet_handle_t *handle);
 
 /*
  * free resources of uet instance
@@ -456,7 +455,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
 		 uint32_t initiator_id, uint32_t job_id,
-		 bool absolute);
+		 bool absolute, bool is_ipv6);
 #endif
 
 /*

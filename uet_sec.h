@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -65,7 +65,8 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 		    uint8_t *pkt,
 		    int pkt_len,
 		    uint8_t **enc_pkt,
-		    int *enc_pkt_len);
+		    int *enc_pkt_len,
+		    bool is_ipv6);
 
 /*
  * Decryption occurs inplace. The length of the tag is returned so the
@@ -76,6 +77,10 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 		    int pkt_len,
 		    int *tag_len);
 
-int uet_sec_init(struct uet_fa *local_ip,
-		 bool is_ipv6);
+/*
+ * Initialize the security domain(s). Dual-stack: the SD holds per-family key
+ * material (keyed on each of the NIC's local v4/v6 addresses) selected per
+ * packet at enc/dec time, so a single wire SDI serves both families.
+ */
+int uet_sec_init(struct uet_nic *nic);
 

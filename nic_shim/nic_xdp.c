@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -873,24 +873,11 @@ int nic_xdp_initialize(struct uet_nic *nic)
 					       nic->ipv6_addr,
 					       nic->ipv6_addr_str) == 0);
 
-	if (nic->is_ipv6) {
-		if (!nic->has_ipv6) {
-			UET_API_ERR("ERROR: IPv6 requested but no IPv6 address");
-			rc = -ENODEV;
-			goto exit_err;
-		}
-
-		memcpy(nic->ip_addr.v6, nic->ipv6_addr, 16);
-		strncpy(nic->ip_addr_str, nic->ipv6_addr_str, INET6_ADDRSTRLEN);
-	} else {
-		if (!nic->has_ipv4) {
-			UET_API_ERR("ERROR: IPv4 requested but no IPv4 address");
-			rc = -ENODEV;
-			goto exit_err;
-		}
-
-		nic->ip_addr.v4 = nic->ipv4_addr;
-		strncpy(nic->ip_addr_str, nic->ipv4_addr_str, INET_ADDRSTRLEN);
+	/* dual-stack: both families are kept, require at least one address */
+	if (!nic->has_ipv4 && !nic->has_ipv6) {
+		UET_API_ERR("ERROR: interface has no IPv4 or IPv6 address");
+		rc = -ENODEV;
+		goto exit_err;
 	}
 
 	/* get the MAC address of the interface */
