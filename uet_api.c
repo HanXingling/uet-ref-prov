@@ -3452,9 +3452,18 @@ static uet_ses_rc_t uet_rx_read_data(
 		return UET_RC_BAD_ADDR;
 	}
 
-	/* copy the data */
-	buf_ptr =  (void *) (((size_t) rx_desc->buf_desc.buf) + msg_off);
-	memcpy(buf_ptr, ses->payload, pp->ses_payload_len);
+	/* scatter the read response into the local buffer (which may be a
+	 * multi-segment scatter/gather list)
+	 */
+	if (rx_desc->buf_desc.type == UET_MSG_BUF_TYPE_IOV) {
+		scatter_buffer_to_iov(rx_desc->buf_desc.iov.iov,
+				      rx_desc->buf_desc.iov.iov_count,
+				      ses->payload, pp->ses_payload_len,
+				      msg_off);
+	} else {
+		buf_ptr = (void *) (((size_t) rx_desc->buf_desc.buf) + msg_off);
+		memcpy(buf_ptr, ses->payload, pp->ses_payload_len);
+	}
 
 	return UET_RC_OK;
 }
@@ -7000,6 +7009,31 @@ ssize_t uet_read(uet_ep_handle_t ep_handle, uint32_t job_id, void *buf,
 
 	return (uet_send_req_api_common(
 			UET_READ_API, ep_handle, job_id, &iov, 1, mr_handle,
+			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
+			remote_mem_addr, remote_key, NULL, context,
+			resource_index));
+}
+
+ssize_t uet_writev(uet_ep_handle_t ep_handle, uint32_t job_id,
+		   const struct iovec *iov, size_t count, uint64_t *data,
+		   uet_mr_handle_t mr_handle, uet_addr_handle_t dst_addr_handle,
+		   uint64_t remote_mem_addr, uint64_t remote_key,
+		   void *context, uint16_t resource_index)
+{
+	return (uet_send_req_api_common(
+			UET_WRITE_API, ep_handle, job_id, iov, count, mr_handle,
+			dst_addr_handle, UET_NO_TAG, data, remote_mem_addr,
+			remote_key, NULL, context, resource_index));
+}
+
+ssize_t uet_readv(uet_ep_handle_t ep_handle, uint32_t job_id,
+		  const struct iovec *iov, size_t count,
+		  uet_mr_handle_t mr_handle, uet_addr_handle_t uet_addr_handle,
+		  uint64_t remote_mem_addr, uint64_t remote_key,
+		  void *context, uint16_t resource_index)
+{
+	return (uet_send_req_api_common(
+			UET_READ_API, ep_handle, job_id, iov, count, mr_handle,
 			uet_addr_handle, UET_NO_TAG, UET_NO_IMM_DATA,
 			remote_mem_addr, remote_key, NULL, context,
 			resource_index));
