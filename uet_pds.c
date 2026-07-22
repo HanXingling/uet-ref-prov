@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -447,7 +447,8 @@ static int uet_pds_sec_tx_pkt(struct uet_instance *uet,
 			     *pkt,
 			     *pkt_len,
 			     &new_pkt,
-			     &new_pkt_len);
+			     &new_pkt_len,
+			     pdc->is_ipv6);
 	if (rc != 0)
 		return rc;
 
@@ -625,8 +626,17 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 {
 	struct uet_pdc_ini_key pdc_key;
 	struct uet_pdc *pdc;
+	struct uet_nic *nic = &uet_ep->uet_domain->uet->nic;
+	bool dst_is_ipv6 = uet_addr_is_ipv6(av_entry->addr);
+	struct uet_fa local_ip;
 
 	PDS_GO();
+
+	memset(&local_ip, 0, sizeof(local_ip));
+	if (dst_is_ipv6)
+		memcpy(local_ip.v6, nic->ipv6_addr, 16);
+	else
+		local_ip.v4 = nic->ipv4_addr;
 
 	/* get the PDC if it already exists */
 	memset(&pdc_key, 0, sizeof(pdc_key));
@@ -635,7 +645,7 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 						     PDC_TYPE_NONE);
 	pdc_key.job_id = uet_ep->job_id;
 	pdc_key.tc = UET_DEFAULT_TC;
-	memcpy(&pdc_key.src_ip, &uet_ep->ip_addr, sizeof(struct uet_fa));
+	memcpy(&pdc_key.src_ip, &local_ip, sizeof(struct uet_fa));
 	memcpy(&pdc_key.dst_ip, &av_entry->addr->fa, sizeof(struct uet_fa));
 
 	HASH_FIND(pdc_ini_hh, pds_state.pdc_ini_ht, &pdc_key,
@@ -673,9 +683,9 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	memcpy(pdc->dst_mac_addr, av_entry->nh_mac_addr,
 	       ETH_ALEN);
 
-	memcpy(&pdc->src_addr, &uet_ep->ip_addr, sizeof(struct uet_fa));
+	memcpy(&pdc->src_addr, &local_ip, sizeof(struct uet_fa));
 	memcpy(&pdc->dst_addr, &av_entry->addr->fa, sizeof(struct uet_fa));
-	pdc->is_ipv6 = uet_addr_is_ipv6(av_entry->addr);
+	pdc->is_ipv6 = dst_is_ipv6;
 
 	pdc->next_psn       = UET_DEFAULT_START_PSN;
 	pdc->tx_bm_base_psn = UET_DEFAULT_START_PSN;

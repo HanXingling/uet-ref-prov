@@ -5552,7 +5552,7 @@ err:
  * Below functions implement UET APIs
  *********************************************************************/
 
-int uet_initialize(uet_handle_t *handle, bool is_ipv6)
+int uet_initialize(uet_handle_t *handle)
 {
 	int rc;
 	time_t seed;
@@ -5593,7 +5593,7 @@ int uet_initialize(uet_handle_t *handle, bool is_ipv6)
 		goto err_return;
 
 	UET_NIC(uet)->uet_ipproto = uet->uet_ipproto;
-	rc = uet_nic_initialize(UET_NIC(uet), is_ipv6);
+	rc = uet_nic_initialize(UET_NIC(uet));
 	if (rc != FI_SUCCESS)
 		goto err_return;
 
@@ -5601,7 +5601,7 @@ int uet_initialize(uet_handle_t *handle, bool is_ipv6)
 	if (rc != 0)
 		goto err_imp_shim;
 
-	rc = uet_sec_init(&uet->nic.ip_addr, is_ipv6);
+	rc = uet_sec_init(&uet->nic);
 	if (rc != FI_SUCCESS)
 		goto err_sec;
 
@@ -5660,6 +5660,8 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	struct fi_info *new_info;
 	struct fid_nic *nic = NULL;
 	struct uet_addr *src_addr;
+	struct uet_fa def_ip;
+	bool def_ipv6;
 
 	uet = (struct uet_instance *) handle;
 
@@ -5750,7 +5752,27 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		rc = -FI_ENOMEM;
 		goto err_return;
 	}
-	uet_init_uet_addr(src_addr, &uet->nic.ip_addr, uet->nic.is_ipv6);
+
+	/*
+	 * Dual-stack: select the local address family. If the caller
+	 * supplies a node address (non-VERBS path), honor its family.
+	 * Otherwise default to an available family (prefer IPv4). On the
+	 * VERBS path the per-endpoint family is (re)bound in uet_endpoint()
+	 * from the QP's local GID, so the advertised address here is only
+	 * a placeholder.
+	 */
+	if (node)
+		def_ipv6 = uet_addr_is_ipv6(node);
+	else
+		def_ipv6 = (!uet->nic.has_ipv4 && uet->nic.has_ipv6);
+
+	memset(&def_ip, 0, sizeof(def_ip));
+	if (def_ipv6)
+		memcpy(def_ip.v6, uet->nic.ipv6_addr, 16);
+	else
+		def_ip.v4 = uet->nic.ipv4_addr;
+
+	uet_init_uet_addr(src_addr, &def_ip, def_ipv6);
 
 	new_info->dest_addrlen = 0;
 	new_info->src_addrlen = sizeof(struct uet_addr);
@@ -5896,7 +5918,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 		 void *context, uet_ep_handle_t *ep_handle,
 		 uint16_t pid_on_fep, uint16_t resource_index,
 		 uint32_t initiator_id, uint32_t job_id,
-		 bool absolute)
+		 bool absolute, bool is_ipv6)
 #else
 int uet_endpoint(uet_domain_handle_t domain_handle,
 		 struct fi_info *info, struct fid_ep *ep,
@@ -5935,6 +5957,17 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->absolute = absolute;
 	if (absolute)
 		uet_ep->uet_addr.flags |= UET_ADDR_ABSOLUTE_MODE;
+
+	/* dual-stack: bind the endpoint to the specified address family */
+	uet_ep->uet_addr.flags &= ~(UET_ADDR_IPV4 | UET_ADDR_IPV6);
+	memset(&uet_ep->uet_addr.fa, 0, sizeof(struct uet_fa));
+	if (is_ipv6) {
+		uet_ep->uet_addr.flags |= UET_ADDR_IPV6;
+		memcpy(uet_ep->uet_addr.fa.v6, uet_dom->uet->nic.ipv6_addr, 16);
+	} else {
+		uet_ep->uet_addr.flags |= UET_ADDR_IPV4;
+		uet_ep->uet_addr.fa.v4 = uet_dom->uet->nic.ipv4_addr;
+	}
 #else
 	rc = uet_addr_resolution(&uet_ep->uet_addr, &uet_ep->job_id);
 	if (rc != FI_SUCCESS) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -87,6 +87,14 @@ static bool uet_pds_ep_tx_active(struct uet_ep *uet_ep)
 	return pds_state->tx.tx_active;
 }
 
+/* determine the address family from a received frame's ethertype */
+static inline bool uet_pkt_is_ipv6(const void *pkt)
+{
+	const struct ethhdr *eth = (const struct ethhdr *)pkt;
+
+	return (eth->h_proto == htons(ETH_P_IPV6));
+}
+
 /* determine if pkt is destined for endpoint */
 static bool uet_pds_ep_addr_match(
 	struct uet_ep *uet_ep, void *pkt, bool pkt_is_ack,
@@ -98,22 +106,21 @@ static bool uet_pds_ep_addr_match(
 		(struct uet_pds_sng_state *)uet_ep->pds;
 	struct uet_rx_desc *rx_desc;
 	struct uet_instance *uet = uet_ep->uet_domain->uet;
-	bool is_ipv6 = uet->nic.is_ipv6;
+	bool is_ipv6 = uet_pkt_is_ipv6(pkt);
 	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 					 sizeof(struct iphdr);
 
-	/* check destination IP address match */
 	if (is_ipv6) {
 		struct ipv6hdr *ipv6 =
 			(struct ipv6hdr *)((uint8_t *)pkt +
 					   sizeof(struct ethhdr));
-		if (memcmp(&ipv6->daddr, uet_ep->ip_addr.v6, 16) != 0)
+		if (memcmp(&ipv6->daddr, uet->nic.ipv6_addr, 16) != 0)
 			return false;
 	} else {
 		struct iphdr *ipv4 =
 			(struct iphdr *)((uint8_t *)pkt +
 					 sizeof(struct ethhdr));
-		if (ntohl(ipv4->daddr) != uet_ep->ip_addr.v4)
+		if (ntohl(ipv4->daddr) != uet->nic.ipv4_addr)
 			return false;
 	}
 
@@ -241,7 +248,7 @@ static bool uet_pds_is_dup_req(struct uet_ep *uet_ep, void *pkt,
 	struct uet_pds_sng_state *pds_state =
 		(struct uet_pds_sng_state *) uet_ep->pds;
 	struct uet_instance *uet = uet_ep->uet_domain->uet;
-	bool is_ipv6 = uet->nic.is_ipv6;
+	bool is_ipv6 = uet_pkt_is_ipv6(pkt);
 	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 					 sizeof(struct iphdr);
 	/* PDS spdcid offset from start of packet */
@@ -341,7 +348,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet, void *pkt,
 				  uet_pds_next_hdr_t next_hdr,
 				  size_t ses_hdr_len, void *ses_hdr)
 {
-	bool is_ipv6 = uet->nic.is_ipv6;
+	bool is_ipv6 = uet_pkt_is_ipv6(pkt);
 	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 					 sizeof(struct iphdr);
 	void *ack_ip = (uint8_t *)ack + sizeof(struct ethhdr);
@@ -441,7 +448,7 @@ static int uet_pds_tx_ack_pkt(struct uet_ep *uet_ep, void *pkt,
 	size_t ip_hdr_size;
 
 	uet = uet_ep->uet_domain->uet;
-	is_ipv6 = uet->nic.is_ipv6;
+	is_ipv6 = uet_pkt_is_ipv6(pkt);
 	ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 				  sizeof(struct iphdr);
 
@@ -527,7 +534,7 @@ static int uet_pds_tx_err_ack_pkt(struct uet_instance *uet,
 	struct uet_ses_req_std *pkt_ses;
 	uint32_t crc;
 	uint8_t *crc_start;
-	bool is_ipv6 = uet->nic.is_ipv6;
+	bool is_ipv6 = pp->is_ipv6;
 	size_t ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 					 sizeof(struct iphdr);
 
@@ -668,7 +675,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
 	av_entry = (struct uet_av_entry *) dst_addr_handle;
 	dst_addr = av_entry->addr;
 	state = &pds_state->tx;
-	is_ipv6 = uet->nic.is_ipv6;
+	is_ipv6 = uet_addr_is_ipv6(dst_addr);
 	ip_hdr_size = (is_ipv6) ? sizeof(struct ipv6hdr) :
 				  sizeof(struct iphdr);
 
@@ -745,7 +752,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
 						   ip_hdr_size));
 		uet_build_ipv6_hdr(uet, (struct ipv6hdr *)ip_hdr,
 				   dst_addr->fa.v6,
-				   uet_ep->ip_addr.v6,
+				   uet->nic.ipv6_addr,
 				   payload_len, tos, true);
 	} else {
 		uint16_t tot_len = (uint16_t)(pkt_len +
@@ -753,7 +760,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
 					       uet->nic.l2_hdr_size));
 		uet_build_ipv4_hdr(uet, (struct iphdr *)ip_hdr,
 				   htonl(dst_addr->fa.v4),
-				   htonl(uet_ep->ip_addr.v4),
+				   htonl(uet->nic.ipv4_addr),
 				   tot_len, tos, true);
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, Broadcom. All rights reserved. The term
+ * Copyright (c) 2024,2025,2026 Broadcom. All rights reserved. The term
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
@@ -54,18 +54,18 @@ struct uet_nic {
 	uint8_t mac_addr[ETH_ALEN];
 	char mac_addr_str[ETH_ALEN*3];
 
-	/* v4/v6 local addresses - both populated at init if available */
-	uint32_t ipv4_addr;
+	/*
+	 * Dual-stack: Both the IPv4 and IPv6 local addresses are populated at
+	 * init (whichever are present). The address family is selected per
+	 * destination/packet at runtime, so there is no single active family.
+	 */
+	uint32_t ipv4_addr;                            /* host order */
 	char ipv4_addr_str[INET_ADDRSTRLEN];
 	bool has_ipv4;
 	uint8_t ipv6_addr[16];
 	char ipv6_addr_str[INET6_ADDRSTRLEN];
 	bool has_ipv6;
 
-	/* active address for this session (set by upper layer) */
-	struct uet_fa ip_addr;                         /* host order */
-	bool is_ipv6;                          /* true if using IPv6 */
-	char ip_addr_str[INET6_ADDRSTRLEN];            /* local addr */
 	char dst_ip_addr_str[INET6_ADDRSTRLEN];  /* destination addr */
 	char nh_ip_addr_str[INET6_ADDRSTRLEN];      /* next hop addr */
 
@@ -173,14 +173,15 @@ int uet_nic_resolve_ipv6_nh(struct uet_nic *nic,
  *
  * parms:
  *      uet - ptr to uet nic struct
- *      is_ipv6 - initialize for IPv6
+ *
+ * Discovers both IPv4 and IPv6 local addresses (whichever are present);
+ * the address family is selected per destination/packet at runtime.
  *
  * returns:
  *      0 on success
  *      negative value corresponding to errno on error
  */
-int uet_nic_initialize(struct uet_nic *nic,
-		       bool is_ipv6);
+int uet_nic_initialize(struct uet_nic *nic);
 
 /*
  * free nic resources
