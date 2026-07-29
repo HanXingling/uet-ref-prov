@@ -47,7 +47,8 @@ There are two PDS implementations available which can be selected using
 the `UET_PDS` environment variable. The first PDS implementation is a simple
 stop-and-go ROD transport that is sufficient to enable development of other
 layers. The second PDS implementation is fully featured transport based on the
-UET PDS Specification.
+UET PDS Specification. It supports the RUD, ROD, RUDI, and UUD delivery modes
+(see [Delivery Modes](#delivery-modes) below).
 
 There are currently two implementations of the NIC shim interface APIs:
 - Raw Ethernet socket
@@ -55,6 +56,28 @@ There are currently two implementations of the NIC shim interface APIs:
 
 Testing is performed using a simple top-level program that performs ping-pong
 message data transfer operations between a client and a server (see `uet.c`).
+
+### Delivery Modes
+
+The `pds` backend (`UET_PDS=pds`) supports all four UET PDS delivery modes:
+
+- **RUD** - Reliable Unordered Delivery. The default for unordered operations.
+- **ROD** - Reliable Ordered Delivery. Selected when the endpoint is configured
+  for message ordering.
+- **RUDI** - Reliable Unordered Delivery for Idempotent operations. A
+  connectionless mode: no PDC, non-sequential per-packet ids, one response per
+  request (no ACK), and all reliability state at the initiator (per-packet RTO).
+  Used for idempotent RMA. Selected by setting `UET_FORCE_RUDI=1` on the `rma`
+  command and it requires the target memory region to be `IDEMPOTENT_SAFE` as
+  well as the peer advertising support for the HPC profile.
+- **UUD** - Unreliable Unordered Delivery. A connectionless, best-effort
+  single-packet datagram send (no PDC, no ACK, no retransmit - fire and forget).
+  Selected by setting `UET_FORCE_UUD=1` on the `uud` command.
+
+RUDI and UUD are only available on the `pds` backend as the `sng` backend rejects
+them. Both are exercised by the test harness via the `rudi` and `uud` test
+names, and are folded into the `all` sweep on every `pds`-capable configuration
+(see `scripts/uet_test.sh`).
 
 ### Congestion Control
 
@@ -178,6 +201,8 @@ Replace `2` with the desired number of senders.
 - **UET_PDS_ACK_TYPE** - [ `ack` | `ack_cc` | `ack_ccx` ] (default=`ack`)
 - **UET_PDS_TX_TIMEOUT** - Time in milliseconds to wait for an ack before retransmitting a Tx packet (default=`5`).
 - **UET_PDS_MAX_TX_RETRIES** - Max number of times a Tx packet is retransmitted before failing (default=`5`).
+- **UET_FORCE_RUDI** - [ `0` | `1` ] (default=`0`) Force the RUDI (Reliable Unordered Delivery for Idempotent operations) PDS delivery mode for RMA read/write operations.
+- **UET_FORCE_UUD** - [ `0` | `1` ] (default=`0`) Force the UUD (Unreliable Unordered Delivery) best-effort single-packet datagram PDS delivery mode for an untagged send.
 - **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.

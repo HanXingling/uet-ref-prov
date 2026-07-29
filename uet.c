@@ -71,6 +71,11 @@
 
 #define UET_NUM_ITERATIONS	100
 #define UET_MSG_SIZE		4096	/* in bytes */
+#define UET_UUD_MSG_SIZE	1024	/* UUD is single-packet only */
+#define UET_UUD_BLAST_N		100	/* datagrams per UUD blast */
+#define UET_UUD_RX_TIMEOUT_MS	500	/* per-datagram bounded wait */
+#define UET_UUD_FIRST_TIMEOUT_MS 30000	/* server wait for 1st datagram */
+#define UET_UUD_DRAIN_QUIET	6	/* empty windows => blast is over */
 #define UET_MIN_ATOMIC_MSG_SIZE 24
 #define UET_NUM_BUFS		((size_t) 8)
 #define UET_DEFAULT_TAG		((uint64_t) 1)
@@ -103,7 +108,7 @@ typedef enum {
 void UET_USAGE(char *cmd)
 {
 	fprintf(stdout,
-	        "Usage: %s <server|client> <command> <remote IPv4 addr>\n"
+	        "Usage: %s <server|client> <command> <remote IPv4/v6 addr>\n"
 	         "  <command>: rma\n"
 	         "             sync_rma\n"
 	         "             untag\n"
@@ -115,7 +120,14 @@ void UET_USAGE(char *cmd)
 	         "             defer_tag\n"
 	         "             defer_tag_any_src\n"
 	         "             atomic\n"
-	         "             sync_atomic\n",
+	         "             sync_atomic\n"
+	         "             uud\n"
+	         "\n"
+	         "  PDS delivery-mode overrides (env vars, require UET_PDS=pds):\n"
+	         "    UET_FORCE_RUDI=1  force RUDI (reliable unordered, idempotent)\n"
+	         "                      on the 'rma' command\n"
+	         "    UET_FORCE_UUD=1   force UUD (unreliable datagram, best-effort)\n"
+	         "                      on the 'uud' command\n",
 	         cmd);
 }
 
@@ -127,6 +139,7 @@ struct uet_cfg {
 	bool tag_any_src;          /* true => tagged buffers match any source */
 	bool rma;                               /* true => use rma operations */
 	bool rudi;                              /* true => RMA data over RUDI */
+	bool uud;                           /* true => untagged send over UUD */
 	bool sync_rma;               /* true => use sync group rma operations */
 	bool atomic;                         /* true => use atomic operations */
 	bool sync_atomic;         /* true => use sync group atomic operations */
@@ -328,6 +341,12 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	 */
 	ctx->cfg.rudi = (getenv("UET_FORCE_RUDI") != NULL);
 
+	/* When UUD is forced (using UET_FORCE_UUD), the untagged send rides
+	 * the best-effort datagram mode. UUD is single-packet only, so the
+	 * message size is capped to a single packet.
+	 */
+	ctx->cfg.uud = (getenv("UET_FORCE_UUD") != NULL);
+
 	if (argc == 4) {
 		if (strcmp(argv[2], "tag") != 0) {
 			if ((strcmp(argv[2], "rma") != 0) &&
@@ -387,7 +406,10 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	addr->initiator_id = UET_ADDR_DEF_INITIATOR_ID;
 
 	ctx->cfg.num_iterations = UET_NUM_ITERATIONS;
-	if (ctx->cfg.dsend_test) {
+	if (ctx->cfg.uud) {
+		ctx->cfg.msg_size = UET_UUD_MSG_SIZE;
+		ctx->cfg.num_iterations = 1;
+	} else if (ctx->cfg.dsend_test) {
 		if (ctx->cfg.tag)
 			ctx->cfg.msg_size = UET_TAG_RENDEZVOUS_SIZE * 2;
 		else
@@ -803,6 +825,41 @@ static uet_rc_t uet_compl_wait(uet_cq_handle_t cq_handle,
 	}
 
 	return UET_SUCCESS_RC;
+}
+
+/*
+ * Bounded CQ poll: returns 1 if a completion was read, 0 on timeout, -1 on
+ * error. Unlike uet_compl_wait() this never blocks forever. Needed for UUD,
+ * where a lost datagram means a completion that will never arrive.
+ */
+static int uet_uud_poll(uet_cq_handle_t cq_handle,
+			struct fi_cq_data_entry *cq_entry,
+			int timeout_ms)
+{
+	struct fi_cq_err_entry err_entry;
+	time_t start, now;
+	ssize_t rc;
+
+	uet_gettime(&start);
+	while (1) {
+		rc = uet_cq_read(cq_handle, cq_entry, 1);
+		if (rc == 1)
+			return 1;
+
+		if (rc < 0) {
+			if (rc == -FI_EAVAIL)
+				uet_cq_readerr(cq_handle, &err_entry);
+
+			UET_ERR("uet_cq_read (uud): %s", fi_strerror(-rc));
+
+			return -1;
+		}
+
+		uet_gettime(&now);
+
+		if ((now - start) >= timeout_ms)
+			return 0;
+	}
 }
 
 /*
@@ -1806,6 +1863,163 @@ static uet_rc_t uet_msg_client_unexpected(struct uet_context *ctx)
 }
 
 /*
+ * UUD datagram test (best-effort, single-packet). A flow-controlled lock-step
+ * ping-pong: the client sends one untagged datagram and waits (bounded) for
+ * the server to echo it, before sending the next. Keeping a single datagram
+ * in flight means the server always has a receive posted (no unexpected
+ * message overrun) and paces the sender without any ACK/RTO. On a clean
+ * network every datagram round-trips. Under impairment a datagram may be
+ * LOST with no recovery. The bounded wait times out, the loss is counted, and
+ * both sides re-sync on the next datagram.
+ */
+static uet_rc_t uet_uud_client(struct uet_context *ctx)
+{
+	struct fi_cq_data_entry cq_entry;
+	bool impaired = false;
+	bool rx_posted = false;
+	int ok = 0, lost = 0, i;
+	ssize_t ret;
+	int got;
+
+	impaired = (getenv("UET_IMPAIRMENT_SHIM") != NULL);
+
+	for (i = 0; i < UET_UUD_BLAST_N; i++) {
+		/* One receive outstanding for the echo. Reposted only after
+		 * it is consumed so a lost echo leaves it to catch the next
+		 * one.
+		 */
+		if (!rx_posted) {
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY,
+				       ctx->rx_msg, ctx->cfg.msg_size,
+				       UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv (uud): %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+
+			rx_posted = true;
+		}
+
+		ret = uet_send(ctx->ep_handle, ctx->cfg.job_id, ctx->tx_msg,
+			       ctx->cfg.msg_size, UET_NULL_HANDLE,
+			       ctx->peer_addr_handle, NULL);
+		if (ret < 0) {
+			UET_ERR("uet_send (uud): %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+
+		/* UUD tx completes immediately (fire and forget) */
+		if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) !=
+		    UET_SUCCESS_RC) {
+			UET_ERR("uet_compl_wait (uud tx)");
+			return UET_ERR_RC;
+		}
+
+		/* Bounded wait for the echo. If missed then this datagram
+		 * was lost with no recovery.
+		 */
+		got = uet_uud_poll(ctx->rx_cq_handle, &cq_entry,
+				   UET_UUD_RX_TIMEOUT_MS);
+		if (got < 0)
+			return UET_ERR_RC;
+
+		if (got == 1) {
+			ok++;
+			rx_posted = false;   /* echo consumed the recv */
+		} else {
+			lost++;              /* recv stays posted; re-syncs */
+		}
+	}
+
+	printf("UUD client: %d/%d datagrams round-tripped (%d lost)\n",
+	       ok, UET_UUD_BLAST_N, lost);
+
+	/* On a clean network every datagram MUST round-trip. Under impairment,
+	 * loss is expected (fire-and-forget, no recovery) and is best effort.
+	 */
+	if (lost && !impaired) {
+		UET_ERR("UUD clean: %d datagrams lost with no impairment", lost);
+		return UET_ERR_RC;
+	}
+
+	return UET_SUCCESS_RC;
+}
+
+static uet_rc_t uet_uud_server(struct uet_context *ctx)
+{
+	struct fi_cq_data_entry cq_entry;
+	bool rx_posted = false;
+	int ok = 0, quiet = 0, tmo;
+	ssize_t ret;
+	int got;
+
+	/* Drain until all datagrams are received or the sender goes quiet.
+	 * Uses two-phase timing. Wait a long time for the FIRST datagram
+	 * then short quiet windows to detect the end of the blast.
+	 */
+	while ((ok < UET_UUD_BLAST_N) && (quiet < UET_UUD_DRAIN_QUIET)) {
+		if (!rx_posted) {
+			ret = uet_recv(ctx->ep_handle, UET_JOB_ID_ANY,
+				       ctx->rx_msg, ctx->cfg.msg_size,
+				       UET_NULL_HANDLE, UET_NULL_HANDLE, NULL);
+			if (ret < 0) {
+				UET_ERR("uet_recv (uud): %s", fi_strerror(-ret));
+				return UET_ERR_RC;
+			}
+
+			rx_posted = true;
+		}
+
+		tmo = (ok == 0) ? UET_UUD_FIRST_TIMEOUT_MS
+				: UET_UUD_RX_TIMEOUT_MS;
+
+		got = uet_uud_poll(ctx->rx_cq_handle, &cq_entry, tmo);
+		if (got < 0)
+			return UET_ERR_RC;
+
+		if (got == 0) {
+			quiet++;             /* recv stays posted */
+			continue;
+		}
+
+		quiet = 0;
+		rx_posted = false;
+
+		if (cq_entry.len != ctx->cfg.msg_size) {
+			UET_ERR("UUD: bad datagram size = %lu", cq_entry.len);
+			return UET_ERR_RC;
+		}
+
+		if (uet_validate_msg(ctx, ctx->rx_msg) != UET_SUCCESS_RC) {
+			UET_ERR("UUD: bad datagram data");
+			return UET_ERR_RC;
+		}
+
+		ok++;
+
+		/* echo the datagram back over UUD (fire and forget) */
+		ret = uet_send(ctx->ep_handle, ctx->cfg.job_id, ctx->tx_msg,
+			       ctx->cfg.msg_size, UET_NULL_HANDLE,
+			       ctx->peer_addr_handle, NULL);
+		if (ret < 0) {
+			UET_ERR("uet_send (uud echo): %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+
+		if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) !=
+		    UET_SUCCESS_RC) {
+			UET_ERR("uet_compl_wait (uud echo tx)");
+			return UET_ERR_RC;
+		}
+	}
+
+	printf("UUD server: %d/%d datagrams received and echoed\n",
+	       ok, UET_UUD_BLAST_N);
+
+	return UET_SUCCESS_RC;
+}
+
+/*
  * perform client message data transfer as follows:
  *   - send message to server
  *   - wait for message to be echoed back
@@ -2106,9 +2320,13 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 
 	for (use_iov = 0; use_iov <= 1; use_iov++) {
 		pds = getenv(UET_PDS);
-		/* TODO: IOV support for SNG mode */
-		if (((pds == NULL) || (strcmp(pds, "sng") == 0)) &&
-				      (use_iov == 1)) {
+		/* TODO: IOV support for SNG mode.
+		 * TODO: IOV support for UUD mode.
+		 */
+		if (((pds == NULL) ||
+		     (strcmp(pds, "sng") == 0) ||
+		     ctx->cfg.uud) &&
+		    (use_iov == 1)) {
 			continue;
 		}
 
@@ -2135,7 +2353,11 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 		for (iteration = 0; iteration < ctx->cfg.num_iterations;
 		     iteration++) {
 			if (ctx->cfg.client) {
-				if (ctx->cfg.rma) {
+				if (ctx->cfg.uud) {
+					rc = uet_uud_client(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				} else if (ctx->cfg.rma) {
 					rc = uet_rma_client(ctx);
 					if (rc != UET_SUCCESS_RC)
 						goto exit;
@@ -2161,7 +2383,11 @@ static int uet_run(int argc, char *argv[], struct uet_context *ctx)
 						goto exit;
 				}
 			} else { /* server */
-				if (ctx->cfg.rma) {
+				if (ctx->cfg.uud) {
+					rc = uet_uud_server(ctx);
+					if (rc != UET_SUCCESS_RC)
+						goto exit;
+				} else if (ctx->cfg.rma) {
 					rc = uet_rma_server(ctx);
 					if (rc != UET_SUCCESS_RC)
 						goto exit;
@@ -2409,6 +2635,24 @@ int main(int argc, char *argv[])
 		test_argv[2] = "sync_atomic";
 		test_argv[3] = ip;
 		test_argv[4] = NULL;
+		memset(ctx, 0, sizeof(struct uet_context));
+
+		rc = uet_run(test_argc, test_argv, ctx);
+		if (rc != UET_SUCCESS_RC)
+			exit(rc);
+	}
+
+	/* UUD is standalone (not in 'all'): it needs UET_FORCE_UUD + the pds
+	 * backend and is a best-effort single-packet datagram send.
+	 */
+	if (strcmp(test, "uud") == 0) {
+		printf("\nUUD Datagram Test\n");
+		printf(  "=================\n");
+		test_argc = 3;
+		test_argv[0] = cmd;
+		test_argv[1] = c_s;
+		test_argv[2] = ip;
+		test_argv[3] = NULL;
 		memset(ctx, 0, sizeof(struct uet_context));
 
 		rc = uet_run(test_argc, test_argv, ctx);

@@ -1,0 +1,19 @@
+
+# Impairment Shim config for UUD best-effort / fire-and-forget testing.
+#
+# Enable via: UET_IMPAIRMENT_SHIM=/path/to/imp_shim_uud.toml
+#
+# DROP-ONLY (no reordering): a single plane, no delay. UUD has NO reliability
+# (no ACK, no RTO, no retransmit), so a dropped datagram is simply LOST with no
+# recovery. The UUD test tolerates this under impairment (best-effort): the
+# server reports received < sent and the run still passes, proving the
+# fire-and-forget contract.
+[config]
+num_planes = 1
+random_enq = false
+# drop_rate in hundredths of a percent. ~2% drop reliably loses a handful of
+# datagrams out of a 100-datagram blast without swamping the run.
+drop_rate = 200
+# 0 = no delay / no reordering
+delay_max = 0
+

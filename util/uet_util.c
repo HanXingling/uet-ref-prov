@@ -1196,8 +1196,8 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		}
 		break;
 	case UET_PDS_TYPE_UUD_REQ:
-		/* TODO: support for parsing UUD */
-		return -EINVAL;
+		pp->pds_len = sizeof(struct uet_pds_uud_req);
+		break;
 	case UET_PDS_TYPE_ACK:
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:
