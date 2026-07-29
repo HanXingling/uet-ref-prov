@@ -22,6 +22,7 @@
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
 #include "uet_pds_rudi.h"
+#include "uet_pds_uud.h"
 #include "imp_shim.h"
 #include "bitmap.h"
 #include "crc32c.h"
@@ -1346,6 +1347,15 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 					   pds_info, msg_id, next_hdr, ses,
 					   ses_len, pkt, pkt_len, dma_rdy);
 
+	/* UUD is connectionless: hand off to the UUD engine before any PDC
+	 * assignment. None of the PDC/PSN/ACK machinery below applies.
+	 */
+	if (mode == UET_PDS_MODE_UUD)
+		return uet_pds_uud_tx_pkt(tx_pkt_handle, pkt_cnt, uet_ep,
+					  dst_addr_handle, mode, flags,
+					  pds_info, msg_id, next_hdr, ses,
+					  ses_len, pkt, pkt_len, dma_rdy);
+
 	switch (mode) {
 	case UET_PDS_MODE_RUD:
 		pds_pkt_type = UET_PDS_TYPE_RUD_REQ;
@@ -1950,10 +1960,11 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 	struct uet_pdc *pdc;
 	int rc;
 
-	/* RUDI is connectionless so no PDC/msgid state to complete. SES
-	 * calls this for every READ_REQ completion, including RUDI reads.
+	/* RUDI and UUD are connectionless so there is no PDC/msgid state to
+	 * complete. SES calls this for every READ_REQ completion (RUDI) and
+	 * has no PDC for UUD datagrams.
 	 */
-	if (mode == UET_PDS_MODE_RUDI)
+	if ((mode == UET_PDS_MODE_RUDI) || (mode == UET_PDS_MODE_UUD))
 		return 0;
 
 	pdc = uet_pdsm_get_msgid_pdc(msg_id);
@@ -3279,6 +3290,12 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if ((pp.pds_type == UET_PDS_TYPE_RUDI_REQ) ||
 	    (pp.pds_type == UET_PDS_TYPE_RUDI_RESP))
 		return uet_pds_rudi_rx(uet, &pp, pkt, pkt_len);
+
+	/* UUD is connectionless and demuxed here by pds_type. The UUD
+	 * engine takes ownership of pkt.
+	 */
+	if (pp.pds_type == UET_PDS_TYPE_UUD_REQ)
+		return uet_pds_uud_rx(uet, &pp, pkt, pkt_len);
 
 	if (pkt_is_ack) {
 

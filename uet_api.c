@@ -3175,28 +3175,32 @@ static uet_ses_rc_t uet_rx_req_pkt(
 			}
 		}
 	} else { /* first packet of message */
-		/* check that generation is enabled */
-		if (tagged) {
-			ep_gen_disabled = uet_ep->tagged_gen_disabled;
-			ep_gen = (uint32_t) uet_ep->tagged_gen;
-		} else {
-			ep_gen_disabled = uet_ep->untagged_gen_disabled;
-			ep_gen = (uint32_t) uet_ep->untagged_gen;
-		}
-		if (ep_gen_disabled) {
-			UET_API_ERR("RX: Disabled Generation");
-			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-					UET_RC_DISABLED_GEN));
-		}
+		/* UUD is connectionless and has no generation semantics */
+		if (pp->pds_type != UET_PDS_TYPE_UUD_REQ) {
+			/* check that generation is enabled */
+			if (tagged) {
+				ep_gen_disabled = uet_ep->tagged_gen_disabled;
+				ep_gen = (uint32_t) uet_ep->tagged_gen;
+			} else {
+				ep_gen_disabled = uet_ep->untagged_gen_disabled;
+				ep_gen = (uint32_t) uet_ep->untagged_gen;
+			}
 
-		/* check for correct generation */
-		rx_gen = (uint32_t)((ntohl(ses->cmn.ri_gen_job_id) &
-				     UET_SES_REQ_RI_GEN_MASK) >>
-				    UET_SES_REQ_RI_GEN_SHIFT);
-		if (rx_gen != ep_gen) {
-			UET_API_ERR("RX: Bad Generation");
-			return (uet_rx_msg_err(uet_ep, pp, rx_desc,
-					UET_RC_BAD_GENERATION));
+			if (ep_gen_disabled) {
+				UET_API_ERR("RX: Disabled Generation");
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						       UET_RC_DISABLED_GEN));
+			}
+
+			/* check for correct generation */
+			rx_gen = (uint32_t)((ntohl(ses->cmn.ri_gen_job_id) &
+					     UET_SES_REQ_RI_GEN_MASK) >>
+					    UET_SES_REQ_RI_GEN_SHIFT);
+			if (rx_gen != ep_gen) {
+				UET_API_ERR("RX: Bad Generation");
+				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
+						       UET_RC_BAD_GENERATION));
+			}
 		}
 
 		/* find buffer */
@@ -3250,8 +3254,13 @@ static uet_ses_rc_t uet_rx_req_pkt(
 							      false, NULL);
 				if (ses_rc == UET_RC_NO_MATCH)
 					UET_API_ERR("RX: Unexpected Message");
-				if (uet_get_pds_mode(uet_ep, false) ==
-				    UET_PDS_MODE_ROD)
+				/* UUD is stateless and an unexpected datagram
+				 * is simply dropped (best effort). Generation
+				 * is always disabled.
+				 */
+				if ((uet_get_pds_mode(uet_ep, false) ==
+				     UET_PDS_MODE_ROD) &&
+				    (pp->pds_type != UET_PDS_TYPE_UUD_REQ))
 					uet_ep->untagged_gen_disabled = true;
 				return (uet_rx_msg_err(uet_ep, pp, rx_desc,
 						       ses_rc));
@@ -5350,6 +5359,14 @@ static ssize_t uet_send_req_api_common(
 	    (remote_key & UET_MR_KEY_IDEMPOTENT_SAFE) &&
 	    (av_entry->addr->fep_cap & UET_FEP_CAP_HPC))
 		tx_desc->pds_mode = UET_PDS_MODE_RUDI;
+
+	/* force UUD when UET_FORCE_UUD is set for a single-packet untagged
+	 * SEND
+	 */
+	if ((send_req_api == UET_SEND_API) &&
+	    getenv("UET_FORCE_UUD") &&
+	    (msg_len <= uet_ep->uet_domain->uet->max_payload_len))
+		tx_desc->pds_mode = UET_PDS_MODE_UUD;
 
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
 		tx_desc->seq_num = uet_alloc_av_msg_seq_num(av_entry);

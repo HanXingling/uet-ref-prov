@@ -1,0 +1,21 @@
+
+# Impairment Shim config for RUDI loss/RTO testing.
+#
+# Enable via: UET_IMPAIRMENT_SHIM=/path/to/imp_shim_rudi.toml
+#
+# DROP-ONLY (no reordering): a single plane, no delay, so packets are dropped
+# but never reordered. This isolates the retransmit/RTO test from out-of-order
+# effects (heavy reordering stresses the RUD read path's PSN window separately).
+#
+# ~5% Tx drop forces the RUDI initiator per-packet RTO to retransmit and the RUD
+# read path to recover. A dropped RUDI response makes the initiator retransmit
+# the request, which the stateless target re-applies (idempotent).
+[config]
+num_planes = 1
+random_enq = false
+# drop_rate in hundredths of a percent. ~1-2% exercises the RUDI RTO/idempotency
+# well; >=5% storms the RUD completion path (pre-existing RUD-under-heavy-loss).
+drop_rate = 100
+# 0 = no delay / no reordering
+delay_max = 0
+

@@ -24,7 +24,7 @@ if [ -z "$LIBFABRIC" ]; then
 fi
 
 # Valid "test", "pds", and "shim" names
-test_names=(all rma rudi sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
+test_names=(all rma rudi uud sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
 pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
 shim_names=(rawsock xdp)
 
@@ -144,14 +144,20 @@ if [ $valid_shim -eq 0 ]; then
     usage
 fi
 
-# RUDI is a delivery mode, not a distinct app test. The 'rudi' test runs the
-# existing 'rma' write/read exchange but forces the RUDI delivery mode via
-# UET_FORCE_RUDI. It requires the 'pds' backend (sng rejects RUDI).
 app_test=$test
 FORCE_RUDI=""
+FORCE_UUD=""
 if [ "$test" = rudi ]; then
+    # RUDI is a delivery mode, not a distinct app test. The 'rudi' test runs
+    # the existing 'rma' write/read exchange but forces the RUDI delivery mode
+    # via UET_FORCE_RUDI. It requires the 'pds' backend (sng rejects RUDI).
     app_test=rma
     FORCE_RUDI="UET_FORCE_RUDI=1"
+elif [ "$test" = uud ]; then
+    # UUD is a best-effort single-packet datagram send. The 'uud' app test
+    # runs the untagged send exchange forcing the UUD delivery mode via
+    # UET_FORCE_UUD. It requires the 'pds' backend (sng rejects UUD).
+    FORCE_UUD="UET_FORCE_UUD=1"
 fi
 
 banner()
@@ -175,7 +181,7 @@ if [ -n "$UET_IMPAIRMENT_SHIM" ]; then
     IMP_SHIM="UET_IMPAIRMENT_SHIM=${UET_IMPAIRMENT_SHIM}"
 fi
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${FORCE_RUDI} ${IMP_SHIM} ./${app_name}"
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${FORCE_RUDI} ${FORCE_UUD} ${IMP_SHIM} ./${app_name}"
 
 function run_test()
 {
@@ -208,6 +214,16 @@ function rudi_pass()
     run_test "$1 UET_FORCE_RUDI=1 $CMD_BASE $actor rma $peer_ip"
 }
 
+# When the full 'all' suite runs on a reliable PDS backend, also exercise the
+# UUD delivery mode. A forced UUD single-packet best-effort datagram send. UUD
+# needs the UUD PDS engine. This cannot be run using the sng backend.
+function uud_pass()
+{
+    [ "$test" = all ] || return 0
+    banner "UUD (forced) $1"
+    run_test "$1 UET_FORCE_UUD=1 $CMD_BASE $actor uud $peer_ip"
+}
+
 function sng()
 {
     UET_DEFS="UET_PDS=sng"
@@ -221,6 +237,7 @@ function pds()
     banner "PDS $test"
     run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
     rudi_pass "$UET_DEFS"
+    uud_pass "$UET_DEFS"
 }
 
 function pds_direct()
@@ -233,6 +250,7 @@ function pds_direct()
     banner "PDS w/ SEC=direct $test"
     run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
     rudi_pass "$UET_DEFS"
+    uud_pass "$UET_DEFS"
 }
 
 function pds_cluster()
@@ -241,6 +259,7 @@ function pds_cluster()
     banner "PDS w/ SEC=cluster $test"
     run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
     rudi_pass "$UET_DEFS"
+    uud_pass "$UET_DEFS"
 }
 
 function pds_cluster_ssi()
@@ -250,6 +269,7 @@ function pds_cluster_ssi()
     banner "PDS w/ SEC=cluster (SSI) $test"
     run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $app_test $peer_ip"
     rudi_pass "$UET_DEFS $UET_SSI_DEFS"
+    uud_pass "$UET_DEFS $UET_SSI_DEFS"
 }
 
 function pds_server_ssi()
@@ -259,6 +279,7 @@ function pds_server_ssi()
     banner "PDS w/ SEC=server (SSI) $test"
     run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $app_test $peer_ip"
     rudi_pass "$UET_DEFS $UET_SSI_DEFS"
+    uud_pass "$UET_DEFS $UET_SSI_DEFS"
 }
 
 if [ $pds = all -o $pds = sng             ]; then sng;             fi

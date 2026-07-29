@@ -61,9 +61,10 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 		pds_req = true;
 		break;
 	case UET_PDS_TYPE_UUD_REQ:
-		/* TODO: unsupported */
-		UET_PDS_WARN("UUD_REQ packets not supported");
-		return false;
+		/* UUD is connectionless and demuxed by pds_type in
+		 * uet_pds_progress_rx(). Simply accept it here.
+		 */
+		return true;
 	case UET_PDS_TYPE_ACK:
 	case UET_PDS_TYPE_ACK_CC:
 	case UET_PDS_TYPE_ACK_CCX:
