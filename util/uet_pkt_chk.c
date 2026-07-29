@@ -78,9 +78,10 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 		return true;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
-		/* TODO: unsupported */
-		UET_PDS_WARN("RUDI packets not supported");
-		return false;
+		/* RUDI is connectionless and demuxed by pds_type in
+		 * uet_pds_progress_rx(). Simply accept it here.
+		 */
+		return true;
 	default:
 		return false;
 	}

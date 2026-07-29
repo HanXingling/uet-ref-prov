@@ -48,9 +48,10 @@ struct uet_addr {
 #define UET_FEP_CAP_AI_MIN	(1 << 0)
 #define UET_FEP_CAP_AI_FULL	(1 << 1)
 #define UET_FEP_CAP_HPC		(1 << 2)
-#define UET_FEP_CAP_REORDER	(1 << 6)
+	/* bits 3-6 reserved, MUST be 0 */
 #define UET_FEP_CAP_OPT_NM_SEM	(1 << 7)
-	uint8_t fep_cap;
+	/* bits 8-15 reserved, MUST be 0 */
+	uint16_t fep_cap;
 	struct uet_fa fa;
 	uint16_t pid_on_fep;
 	uint16_t start_index;

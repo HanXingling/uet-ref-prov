@@ -126,12 +126,13 @@ struct uet_cfg {
 	bool tag;                              /* true => use tagged messages */
 	bool tag_any_src;          /* true => tagged buffers match any source */
 	bool rma;                               /* true => use rma operations */
+	bool rudi;                              /* true => RMA data over RUDI */
 	bool sync_rma;               /* true => use sync group rma operations */
 	bool atomic;                         /* true => use atomic operations */
 	bool sync_atomic;         /* true => use sync group atomic operations */
 	bool unexpected_msg_test;  /* true => this is unexpected message test */
-	bool dsend_test;			/* true => this is dsend test */
-	bool iov_test;				     /* true => test uses iov */
+	bool dsend_test;                        /* true => this is dsend test */
+	bool iov_test;                               /* true => test uses iov */
 	int num_iterations;                 /* number of messages to exchange */
 	size_t msg_size;                         /* size of messages in bytes */
 	char *peer_ip_addr_string;             /* peer ip addr in string form */
@@ -321,6 +322,12 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 
 	ctx->cfg.prog_name = argv[0];
 
+	/* When RUDI is forced (using UET_FORCE_RUDI), RMA carries the bulk
+	 * data over RUDI (idempotent DDP) and once that completes, signals
+	 * completion with a separate WRITE w/ Imm over RUD.
+	 */
+	ctx->cfg.rudi = (getenv("UET_FORCE_RUDI") != NULL);
+
 	if (argc == 4) {
 		if (strcmp(argv[2], "tag") != 0) {
 			if ((strcmp(argv[2], "rma") != 0) &&
@@ -371,7 +378,8 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 		       UET_ADDR_RELATIVE_MODE |
 		       (ctx->cfg.is_ipv6 ? UET_ADDR_IPV6 : UET_ADDR_IPV4) |
 		       UET_ADDR_BIG_MSG_SIZE);
-	addr->fep_cap = UET_FEP_CAP_AI_FULL;
+	/* advertise HPC profile so the peer may select RUDI (MUST for HPC) */
+	addr->fep_cap = (UET_FEP_CAP_AI_FULL | UET_FEP_CAP_HPC);
 	memcpy(&addr->fa, &ctx->cfg.peer_ip_addr, sizeof(struct uet_fa));
 	addr->pid_on_fep = UET_ADDR_DEF_PID_ON_FEP;
 	addr->num_indices = 1;
@@ -577,11 +585,17 @@ static uet_rc_t uet_init_transport(struct uet_context *ctx)
 
 		ctx->info->domain_attr->mr_mode |= FI_MR_PROV_KEY;
 
+		/* RUDI targets the MR for idempotent RMA so mark it as
+		 * IDEMPOTENT_SAFE. The provider still assigns the key but
+		 * preserves this flag.
+		 */
 		ret = uet_mr_reg(ctx->domain_handle, ctx->mr_buf,
 				 ctx->cfg.msg_size,
 				 FI_WRITE | FI_REMOTE_WRITE |
 				 FI_READ  | FI_REMOTE_READ | FI_ATOMIC,
-				 UET_MR_KEY_NONE, UET_FLAGS_NONE, context,
+				 ctx->cfg.rudi ? UET_MR_KEY_IDEMPOTENT_SAFE :
+						 UET_MR_KEY_NONE,
+				 UET_FLAGS_NONE, context,
 				 &ctx->mr_handle);
 		if (ret) {
 			UET_ERR("uet_mr_reg: %s", fi_strerror(-ret));
@@ -902,6 +916,72 @@ static uet_rc_t uet_rma_server_ctrl_exchange(struct uet_context *ctx)
 	return UET_SUCCESS_RC;
 }
 
+static uet_rc_t uet_rma_write_data(struct uet_context *ctx, uint64_t *imm_data)
+{
+	struct fi_cq_data_entry cq_entry;
+	ssize_t ret;
+
+	/* For RUDI the bulk data is written over RUDI. Once that completes,
+	 * a separate zero-length WRITE-with-immediate over RUD delivers
+	 * the target completion. Otherwise a single write-with-immediate
+	 * carries both data and immediate.
+	 */
+	if (ctx->cfg.rudi) {
+		/* bulk data over RUDI (no immediate) */
+		ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
+				ctx->cfg.msg_size, NULL, ctx->mr_handle,
+				ctx->peer_addr_handle,
+				ctx->remote_mr.rma_buf_addr,
+				ctx->remote_mr.key, NULL);
+		if (ret < 0) {
+			UET_ERR("uet_write (RUDI data): %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+
+		if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) !=
+		    UET_SUCCESS_RC) {
+			UET_ERR("uet_compl_wait (RUDI data)");
+			return UET_ERR_RC;
+		}
+
+		/* signal over RUD (zero-length write-with-immediate) */
+		ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
+				0, imm_data, ctx->mr_handle,
+				ctx->peer_addr_handle,
+				ctx->remote_mr.rma_buf_addr,
+				ctx->remote_mr.key, NULL);
+		if (ret < 0) {
+			UET_ERR("uet_write (RUD imm): %s", fi_strerror(-ret));
+			return UET_ERR_RC;
+		}
+
+		if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) !=
+		    UET_SUCCESS_RC) {
+			UET_ERR("uet_compl_wait (RUD imm)");
+			return UET_ERR_RC;
+		}
+
+		return UET_SUCCESS_RC;
+	}
+
+	/* single write-with-immediate (data + target completion) */
+	ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
+			ctx->cfg.msg_size, imm_data, ctx->mr_handle,
+			ctx->peer_addr_handle, ctx->remote_mr.rma_buf_addr,
+			ctx->remote_mr.key, NULL);
+	if (ret < 0) {
+		UET_ERR("uet_write: %s", fi_strerror(-ret));
+		return UET_ERR_RC;
+	}
+
+	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
+		UET_ERR("uet_compl_wait");
+		return UET_ERR_RC;
+	}
+
+	return UET_SUCCESS_RC;
+}
+
 /*
  * perform client RMA data transfer exchange as follows:
  *   - read data from server RMA buffer
@@ -938,19 +1018,8 @@ static uet_rc_t uet_rma_client(struct uet_context *ctx)
 		return UET_ERR_RC;
 	}
 
-	ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
-			ctx->cfg.msg_size, &imm_data, ctx->mr_handle,
-			ctx->peer_addr_handle, ctx->remote_mr.rma_buf_addr,
-			ctx->remote_mr.key, context);
-	if (ret < 0) {
-		UET_ERR("uet_write: %s", fi_strerror(-ret));
+	if (uet_rma_write_data(ctx, &imm_data) != UET_SUCCESS_RC)
 		return UET_ERR_RC;
-	}
-
-	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
-		UET_ERR("uet_compl_wait");
-		return UET_ERR_RC;
-	}
 
 	if (uet_compl_wait(ctx->rx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
 		UET_ERR("uet_compl_wait");
@@ -995,19 +1064,8 @@ static uet_rc_t uet_rma_server(struct uet_context *ctx)
 		return UET_ERR_RC;
 	}
 
-	ret = uet_write(ctx->ep_handle, ctx->cfg.job_id, ctx->mr_buf,
-			ctx->cfg.msg_size, &imm_data, ctx->mr_handle,
-			ctx->peer_addr_handle, ctx->remote_mr.rma_buf_addr,
-			ctx->remote_mr.key, context);
-	if (ret < 0) {
-		UET_ERR("uet_write: %s", fi_strerror(-ret));
+	if (uet_rma_write_data(ctx, &imm_data) != UET_SUCCESS_RC)
 		return UET_ERR_RC;
-	}
-
-	if (uet_compl_wait(ctx->tx_cq_handle, &cq_entry) != UET_SUCCESS_RC) {
-		UET_ERR("uet_compl_wait");
-		return UET_ERR_RC;
-	}
 
 	return UET_SUCCESS_RC;
 }

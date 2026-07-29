@@ -21,6 +21,7 @@
 #include "uet_pkt_chk.h"
 #include "uet_pkt_hdr.h"
 #include "uet_sec.h"
+#include "uet_pds_rudi.h"
 #include "imp_shim.h"
 #include "bitmap.h"
 #include "crc32c.h"
@@ -1231,6 +1232,9 @@ int uet_pds_initialize(struct uet_instance *uet)
 		dlist_insert_tail(&pdc->node, &pds_state.pdc_free_head);
 	}
 
+	/* initialize the connectionless RUDI engine */
+	uet_pds_rudi_init();
+
 	/* good to go... */
 	pds_state.ready = true;
 
@@ -1274,6 +1278,9 @@ void uet_pds_finalize(struct uet_instance *uet)
 		if (pdc->rx_bm)
 			bm_destroy(pdc->rx_bm);
 	}
+
+	/* free any outstanding RUDI requests */
+	uet_pds_rudi_finalize();
 
 	/* wipe out all existing state */
 	memset(&pds_state, 0, sizeof(struct uet_pds_state));
@@ -1329,6 +1336,15 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	uet = uet_ep->uet_domain->uet;
 	av_entry = (struct uet_av_entry *)dst_addr_handle;
+
+	/* RUDI is connectionless: hand off to the RUDI engine before any PDC
+	 * assignment. None of the PDC/PSN/ACK machinery below applies.
+	 */
+	if (mode == UET_PDS_MODE_RUDI)
+		return uet_pds_rudi_tx_pkt(tx_pkt_handle, pkt_cnt, uet_ep,
+					   dst_addr_handle, mode, flags,
+					   pds_info, msg_id, next_hdr, ses,
+					   ses_len, pkt, pkt_len, dma_rdy);
 
 	switch (mode) {
 	case UET_PDS_MODE_RUD:
@@ -1882,6 +1898,11 @@ int uet_pds_progress_tx(struct uet_ep *uet_ep,
 
 	uet = uet_ep->uet_domain->uet;
 
+	/* drive RUDI initiator reliability (per-packet RTO) */
+	rc = uet_pds_rudi_progress_tx(uet_ep, err_pkt_handle);
+	if (rc != 0)
+		return rc;
+
 	/* TODO:
 	 * [x] walk the allocated PDC list
 	 *     [x] walk the tx_pkt_list (sorted in tx time order, oldest first)
@@ -1928,6 +1949,12 @@ int uet_pds_msg_cmpl_ind(struct uet_ep *uet_ep,
 {
 	struct uet_pdc *pdc;
 	int rc;
+
+	/* RUDI is connectionless so no PDC/msgid state to complete. SES
+	 * calls this for every READ_REQ completion, including RUDI reads.
+	 */
+	if (mode == UET_PDS_MODE_RUDI)
+		return 0;
 
 	pdc = uet_pdsm_get_msgid_pdc(msg_id);
 	if (pdc == NULL)
@@ -3245,6 +3272,13 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	}
 
 	uet_pds_pkt_dbg(uet, &pp, false, "RX PACKET");
+
+	/* RUDI is connectionless and demuxed here by pds_type. The RUDI
+	 * engine takes ownership of pkt.
+	 */
+	if ((pp.pds_type == UET_PDS_TYPE_RUDI_REQ) ||
+	    (pp.pds_type == UET_PDS_TYPE_RUDI_RESP))
+		return uet_pds_rudi_rx(uet, &pp, pkt, pkt_len);
 
 	if (pkt_is_ack) {
 

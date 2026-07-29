@@ -24,7 +24,7 @@ if [ -z "$LIBFABRIC" ]; then
 fi
 
 # Valid "test", "pds", and "shim" names
-test_names=(all rma sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
+test_names=(all rma rudi sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
 pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
 shim_names=(rawsock xdp)
 
@@ -34,9 +34,13 @@ ACK_TYPE=ack_cc
 # (not for sng) default Tx timeout (in millisecs) and max Tx retries.
 # Security (TSS) runs use a longer timeout because the crypto path adds
 # per-packet latency that can trip the aggressive default and cause
-# spurious retransmits.
+# spurious retransmits. Impairment-shim runs use a longer timeout still: the
+# shim's userspace Tx queue/thread adds enough round-trip latency that the
+# default RTO would fire on merely-slow (not lost) packets, causing a
+# spurious-retransmit storm.
 TX_TIMEOUT=5
 TX_TIMEOUT_SEC=10
+TX_TIMEOUT_IMP=100
 MAX_TX_RETRIES=5
 
 function usage()
@@ -140,6 +144,16 @@ if [ $valid_shim -eq 0 ]; then
     usage
 fi
 
+# RUDI is a delivery mode, not a distinct app test. The 'rudi' test runs the
+# existing 'rma' write/read exchange but forces the RUDI delivery mode via
+# UET_FORCE_RUDI. It requires the 'pds' backend (sng rejects RUDI).
+app_test=$test
+FORCE_RUDI=""
+if [ "$test" = rudi ]; then
+    app_test=rma
+    FORCE_RUDI="UET_FORCE_RUDI=1"
+fi
+
 banner()
 {
     echo ""
@@ -161,15 +175,21 @@ if [ -n "$UET_IMPAIRMENT_SHIM" ]; then
     IMP_SHIM="UET_IMPAIRMENT_SHIM=${UET_IMPAIRMENT_SHIM}"
 fi
 
-CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${IMP_SHIM} ./${app_name}"
+CMD_BASE="LD_LIBRARY_PATH=${LIBFABRIC}:. UET_IFNAME=${iface} UET_NIC_SHIM=${shim} UET_PDS_ACK_TYPE=${ACK_TYPE} UET_PDS_MAX_TX_RETRIES=${MAX_TX_RETRIES} ${FORCE_RUDI} ${IMP_SHIM} ./${app_name}"
 
 function run_test()
 {
     # TSS runs (UET_SEC_MODE set) use a longer Tx timeout since the crypto
-    # path adds per-packet latency.
+    # path adds per-packet latency. Impairment-shim runs use a longer one
+    # still (shim queue/thread latency); it dominates, so check it last.
     local timeout=$TX_TIMEOUT
+
     if [[ "$1" == *UET_SEC_MODE* ]]; then
         timeout=$TX_TIMEOUT_SEC
+    fi
+
+    if [[ "$1" == *UET_IMPAIRMENT_SHIM* ]]; then
+        timeout=$TX_TIMEOUT_IMP
     fi
 
     local cmd="UET_PDS_TX_TIMEOUT=$timeout $1"
@@ -177,18 +197,30 @@ function run_test()
     eval sudo $cmd || { rc=$?; echo -e "\nERROR: Test failed!\n"; exit $rc; }
 }
 
+# When the full 'all' suite runs on a reliable PDS backend, also exercise
+# the RUDI delivery mode. A forced RUDI RMA WRITE/READ pass used the
+# RUDI PDS engine and an IDEMPOTENT_SAFE MR. This cannot be run using the
+# sng backend.
+function rudi_pass()
+{
+    [ "$test" = all ] || return 0
+    banner "RUDI (forced) $1"
+    run_test "$1 UET_FORCE_RUDI=1 $CMD_BASE $actor rma $peer_ip"
+}
+
 function sng()
 {
     UET_DEFS="UET_PDS=sng"
     banner "SNG $test"
-    run_test "$UET_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
 }
 
 function pds()
 {
     UET_DEFS="UET_PDS=pds"
     banner "PDS $test"
-    run_test "$UET_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+    rudi_pass "$UET_DEFS"
 }
 
 function pds_direct()
@@ -199,14 +231,16 @@ function pds_direct()
         UET_DEFS="$UET_DEFS UET_SEC_SSI=$ssi"
     fi
     banner "PDS w/ SEC=direct $test"
-    run_test "$UET_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+    rudi_pass "$UET_DEFS"
 }
 
 function pds_cluster()
 {
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
     banner "PDS w/ SEC=cluster $test"
-    run_test "$UET_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+    rudi_pass "$UET_DEFS"
 }
 
 function pds_cluster_ssi()
@@ -214,7 +248,8 @@ function pds_cluster_ssi()
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
     UET_SSI_DEFS="UET_SEC_SSI=$ssi"
     banner "PDS w/ SEC=cluster (SSI) $test"
-    run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $app_test $peer_ip"
+    rudi_pass "$UET_DEFS $UET_SSI_DEFS"
 }
 
 function pds_server_ssi()
@@ -222,7 +257,8 @@ function pds_server_ssi()
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=server"
     UET_SSI_DEFS="UET_SEC_SSI=$ssi UET_SEC_CLIENT_SSI=$CLI_SSI"
     banner "PDS w/ SEC=server (SSI) $test"
-    run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $test $peer_ip"
+    run_test "$UET_DEFS $UET_SSI_DEFS $CMD_BASE $actor $app_test $peer_ip"
+    rudi_pass "$UET_DEFS $UET_SSI_DEFS"
 }
 
 if [ $pds = all -o $pds = sng             ]; then sng;             fi
