@@ -87,7 +87,8 @@ static void uet_init_uet_addr(struct uet_addr *uet_addr,
 	else
 		uet_addr->flags |= UET_ADDR_IPV4;
 
-	uet_addr->fep_cap = UET_FEP_CAP_AI_FULL;
+	/* advertise HPC profile so peers may select RUDI (MUST for HPC) */
+	uet_addr->fep_cap = (UET_FEP_CAP_AI_FULL | UET_FEP_CAP_HPC);
 
 	memcpy(&uet_addr->fa, ip_addr, sizeof(struct uet_fa));
 }
@@ -2477,6 +2478,15 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 		return UET_RC_PERM_VIOLATION;
 	}
 
+	/* A RUDI read may only source from an IDEMPOTENT_SAFE memory region
+	 * RUD/ROD reads are unaffected.
+	 */
+	if ((pp->pds_type == UET_PDS_TYPE_RUDI_REQ) &&
+	    !(mr_desc->full_key & UET_MR_KEY_IDEMPOTENT_SAFE)) {
+		UET_API_ERR("RX: RUDI Read: MR not IDEMPOTENT_SAFE");
+		return UET_RC_OP_VIOLATION;
+	}
+
 	/* validate requested data is within memory region */
 	if ((buf_off + pp->ses_payload_len) > mr_desc->buf_desc.len) {
 		UET_API_ERR("RX: Read Req: Invalid Buffer Offset");
@@ -2485,7 +2495,8 @@ static uet_ses_rc_t uet_rx_rd_req_pkt(
 
 	/* check if data is to be carried in ack */
 	max_ack_data = uet_ep->uet_domain->uet->pds.max_ack_data;
-	if ((uet_ep->uet_domain->uet->max_payload_len == max_ack_data) ||
+	if ((pp->pds_type == UET_PDS_TYPE_RUDI_REQ) ||
+	    (uet_ep->uet_domain->uet->max_payload_len == max_ack_data) ||
 	    (req_len <= max_ack_data)) {
 		ack_d_info->valid = true;
 		ack_d_info->payload_len = pp->ses_payload_len;
@@ -3032,6 +3043,7 @@ static uet_ses_rc_t uet_rx_req_pkt(
 	struct uet_rx_desc *rx_desc;
 	struct uet_rx_msg_key msg_key;
 	struct uet_tag_initiator_key tag_key, tag_only_key;
+	struct uet_mr_desc *mr_desc;
 
 	ses = (struct uet_ses_req_std *) pp->ses;
 
@@ -3042,6 +3054,60 @@ static uet_ses_rc_t uet_rx_req_pkt(
 		start_off = ntohll(ses->buf_off);
 	else
 		start_off = 0;
+
+	/* RUDI write: RUDI maintains NO SES state and NO message completion
+	 * at the target. Each packet is placed directly into memory
+	 * (idempotent, out of order) and answered with one response. Bypass
+	 * the RUD message reassembly which relies on the PDC de-duplicating
+	 * and therefore cannot tolerate the duplicate chunks that RUDI's
+	 * no-dedup and retransmit produce. A duplicate chunk simply re-writes
+	 * the same bytes (harmless), and there is no per-message state to
+	 * corrupt or leave dangling. Message completion is at the initiator
+	 * (after all RUDI responses received for a message).
+	 */
+	if (write && (pp->pds_type == UET_PDS_TYPE_RUDI_REQ)) {
+		if (ses->cmn.ver_flags & UET_SES_REQ_FLAG_SOM) {
+			buf_off = start_off;
+		} else {
+			payload_len_msg_off = ntohll(ses->payload_len_msg_off);
+			buf_off = (start_off +
+				   ((payload_len_msg_off &
+				     UET_SES_REQ_STD_MSG_OFF_MASK) >>
+				    UET_SES_REQ_STD_MSG_OFF_SHIFT));
+		}
+
+		mr_desc = uet_get_mr_desc(uet_ep, pp);
+		if (mr_desc == NULL) {
+			UET_API_ERR("RX: RUDI Write: Invalid Key");
+			return UET_RC_BAD_MKEY;
+		}
+
+		if (!(mr_desc->access & FI_REMOTE_WRITE)) {
+			UET_API_ERR("RX: RUDI Write: No Remote Write Permission");
+			return UET_RC_PERM_VIOLATION;
+		}
+
+		/*
+		 * RUDI may only target an IDEMPOTENT_SAFE memory region (spec
+		 * Table 2-16): a RUDI packet can be applied to memory more than
+		 * once (retransmit/replay), so the target MR must be marked safe
+		 * for idempotent operations.
+		 */
+		if (!(mr_desc->full_key & UET_MR_KEY_IDEMPOTENT_SAFE)) {
+			UET_API_ERR("RX: RUDI Write: MR not IDEMPOTENT_SAFE");
+			return UET_RC_OP_VIOLATION;
+		}
+
+		if ((buf_off + pp->ses_payload_len) > mr_desc->buf_desc.len) {
+			UET_API_ERR("RX: RUDI Write: Invalid Buffer Offset");
+			return UET_RC_BAD_ADDR;
+		}
+
+		buf_ptr = (void *)(((size_t) mr_desc->buf_desc.buf) + buf_off);
+		memcpy(buf_ptr, pp->payload, pp->ses_payload_len);
+
+		return UET_RC_OK; /* caller will emit one RUDI response */
+	}
 
 	/* get rx descriptor for message */
 	ses_rc = uet_get_rx_desc(uet_ep, pp, write, sync, UET_RC_OK, &msg_key,
@@ -5276,6 +5342,15 @@ static ssize_t uet_send_req_api_common(
 	tx_desc->backoff_min = UET_INITIAL_BACKOFF_MIN;
 	tx_desc->backoff_max = UET_INITIAL_BACKOFF_MAX;
 	tx_desc->pds_mode = uet_get_pds_mode(uet_ep, rma_op);
+
+	/* force RUDI when UET_FORCE_RUDI is set only for WRITE/READ */
+	if ((((send_req_api == UET_WRITE_API) && (imm_data == NULL)) ||
+	     (send_req_api == UET_READ_API)) &&
+	    getenv("UET_FORCE_RUDI") &&
+	    (remote_key & UET_MR_KEY_IDEMPOTENT_SAFE) &&
+	    (av_entry->addr->fep_cap & UET_FEP_CAP_HPC))
+		tx_desc->pds_mode = UET_PDS_MODE_RUDI;
+
 	if (tx_desc->pds_mode == UET_PDS_MODE_ROD)
 		tx_desc->seq_num = uet_alloc_av_msg_seq_num(av_entry);
 	uet_gettime(&tx_desc->tx_time);
@@ -7408,6 +7483,16 @@ int uet_mr_regattr(uet_domain_handle_t domain_handle, uint32_t job_id,
 int uet_mr_bind_cntr(uet_mr_handle_t mr_handle, uint64_t flags,
 		     uet_cntr_handle_t *cntr_handle)
 {
+	struct uet_mr_desc *mr_desc = (struct uet_mr_desc *) mr_handle;
+
+	/* A completion counter MUST NOT be bound to a memory region marked
+	 * IDEMPOTENT_SAFE. RUDI keeps no target state and may deliver an
+	 * idempotent op more than once, so a bound counter would over-count.
+	 * Fail the bind.
+	 */
+	if (mr_desc && (mr_desc->full_key & UET_MR_KEY_IDEMPOTENT_SAFE))
+		return -FI_EINVAL;
+
 	return -FI_ENOSYS;
 }
 

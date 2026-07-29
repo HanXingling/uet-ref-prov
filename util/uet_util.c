@@ -1015,6 +1015,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 	struct uet_pds_ack_ccx *pds_ack_ccx;
 	struct uet_pds_nack *pds_nack;
 	struct uet_pds_ctrl *pds_ctrl;
+	struct uet_pds_rudi_req *pds_rudi;
 	struct uet_ses_req_std *ses_req;
 	struct uet_ses_rsp *ses_rsp;
 	struct uet_ses_rsp_d *ses_rsp_d;
@@ -1264,8 +1265,10 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		return 0;
 	case UET_PDS_TYPE_RUDI_REQ:
 	case UET_PDS_TYPE_RUDI_RESP:
-		/* TODO: support for parsing RUDI */
-		return -EINVAL;
+		pds_rudi = (struct uet_pds_rudi_req *)pp->pds;
+		pp->pds_len = sizeof(struct uet_pds_rudi_req);
+		pp->pds_rudi_pkt_id = ntohl(pds_rudi->pkt_id);
+		break;
 	default:
 		goto err_exit;
 	}

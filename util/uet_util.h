@@ -88,6 +88,7 @@ struct uet_parsed_pkt {
 	uint8_t pds_flags;
 	uint32_t pds_cack_psn;
 	uint32_t pds_psn;
+	uint32_t pds_rudi_pkt_id;
 	uint16_t pds_spdcid;
 	uint16_t pds_dpdcid;
 	uint8_t pds_cc_type;
