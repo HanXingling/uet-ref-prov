@@ -15,7 +15,8 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 				   bool is_ipv6,
 				   bool *pkt_is_ack,
 				   bool *pkt_is_rd_rsp,
-				   bool *pkt_is_ctrl)
+				   bool *pkt_is_ctrl,
+				   bool *pkt_is_nack)
 {
 	struct uet_sec *sec_hdr;
 	struct uet_pds_req *pds_hdr;
@@ -27,6 +28,7 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 	*pkt_is_ack = false;
 	*pkt_is_rd_rsp = false;
 	*pkt_is_ctrl = false;
+	*pkt_is_nack = false;
 
 	pds_hdr = (struct uet_pds_req *)(pkt +
 					 sizeof(struct ethhdr) +
@@ -71,9 +73,8 @@ static bool uet_pds_pkt_type_valid(uint8_t *pkt,
 		pds_req = false;
 		break;
 	case UET_PDS_TYPE_NACK:
-		/* TODO: unsupported */
-		UET_PDS_WARN("NACK packets not supported");
-		return false;
+		*pkt_is_nack = true;
+		return true;
 	case UET_PDS_TYPE_CTRL:
 		*pkt_is_ctrl = true;
 		return true;
@@ -120,7 +121,8 @@ bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
 			size_t pkt_size,
 			bool *pkt_is_ack,
 			bool *pkt_is_rd_rsp,
-			bool *pkt_is_ctrl)
+			bool *pkt_is_ctrl,
+			bool *pkt_is_nack)
 {
 	struct ethhdr *eth = (struct ethhdr *)pkt;
 	bool is_ipv6;
@@ -193,7 +195,7 @@ bool uet_pds_rx_pkt_chk(struct uet_instance *uet,
 	}
 
 	if (!uet_pds_pkt_type_valid(pkt, pkt_size, is_ipv6, pkt_is_ack,
-				    pkt_is_rd_rsp, pkt_is_ctrl)) {
+				    pkt_is_rd_rsp, pkt_is_ctrl, pkt_is_nack)) {
 		UET_PDS_WARN("invalid UET PDS packet type");
 		return false;
 	}

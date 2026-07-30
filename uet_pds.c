@@ -66,6 +66,12 @@ typedef enum {
 	PDC_TYPE_ROD,
 } pdc_type_t;
 
+/* action to take when a NACK is received on the initiator side */
+enum {
+	UET_NACK_ACTION_DROP = 0,   /* drop the NACK packet */
+	UET_NACK_ACTION_RETX,       /* retransmit the NACKed PSN */
+	UET_NACK_ACTION_CLOSE,      /* close PDC */
+};
 struct uet_pdc_pkt {
 	struct dlist_entry    node;
 	uint32_t              psn;
@@ -704,24 +710,29 @@ static struct uet_pdc *uet_pdsm_assign_ini_pdc(struct uet_ep *uet_ep,
 	return pdc;
 }
 
-static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
+static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
+				   struct uet_pdc **out_pdc,
+				   uet_pds_nack_code_t *nack_code)
 {
 	struct uet_ses_req_cmn *ses_cmn = (struct uet_ses_req_cmn *)pp->ses;
 	struct ethhdr *eth = (struct ethhdr *)pp->eth;
 	struct uet_pdc_tgt_key pdc_key;
 	struct uet_pdc *pdc;
 
+	*out_pdc = NULL;
+
 	if ((pp->pds_type != UET_PDS_TYPE_RUD_REQ) &&
-	    (pp->pds_type != UET_PDS_TYPE_ROD_REQ))
-		return NULL;
+	    (pp->pds_type != UET_PDS_TYPE_ROD_REQ)) {
+		*nack_code = UET_NACK_PDC_MODE_MISMATCH;
+		return -EINVAL;
+	}
 
 	if ((pp->next_hdr != UET_HDR_REQ_SMALL) &&
 	    (pp->next_hdr != UET_HDR_REQ_MEDIUM) &&
-	    (pp->next_hdr != UET_HDR_REQ_STD))
-		return NULL;
-
-	if (!(pp->pds_flags & UET_PDS_REQ_FLAGS_SYN))
-		return NULL;
+	    (pp->next_hdr != UET_HDR_REQ_STD)) {
+		*nack_code = UET_NACK_PDC_HDR_MISMATCH;
+		return -EINVAL;
+	}
 
 	memset(&pdc_key, 0, sizeof(pdc_key));
 	if (pp->is_ipv6) {
@@ -744,13 +755,15 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 		if (pdc->is_initiator) {
 			UET_PDS_ERR("PDC %u is initiator and received SYN",
 				     pdc->pdc_id);
-			return NULL;
+			*nack_code = UET_NACK_INVALID_SYN;
+			return -EINVAL;
 		}
 
 		UET_PDS_DBG("SYN request for PDC %u (PSN %u offset %u)",
 			    pdc->pdc_id, pp->pds_psn, pp->pds_syn_off);
 
-		return pdc;
+		*out_pdc = pdc;
+		return 0;
 	}
 
 	UET_PDS_DBG("first SYN request from PDC %u (PSN %u offset %u)",
@@ -760,7 +773,8 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	pdc = uet_pdsm_alloc_pdc();
 	if (!pdc) {
 		UET_PDS_ERR("no free PDCs available for target");
-		return -ENODEV;
+		*nack_code = UET_NACK_NO_PDC_AVAIL;
+		return -ENOSPC;
 	}
 
 	/* initialze this target PDC and stick it in the hashtable */
@@ -799,37 +813,46 @@ static struct uet_pdc *uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp)
 	UET_PDS_DBG("allocated target PDC %u (state=ESTABLISHED) (dpdcid=%u)",
 		    pdc->pdc_id, pdc->dpdcid);
 
-	return pdc;
+	*out_pdc = pdc;
+	return 0;
 }
 
-static struct uet_pdc *uet_pdsm_get_pdc(uint16_t pdc_id,
-					bool for_fwd)
+static int uet_pdsm_get_pdc(uint16_t pdc_id,
+			    bool for_fwd,
+			    struct uet_pdc **out_pdc)
 {
 	struct uet_pdc *pdc;
+	*out_pdc = NULL;
+
+	if (pdc_id == 0) {
+		UET_PDS_ERR("invalid PDC %u (reserved)", pdc_id);
+		return -EINVAL;
+	}
 
 	if (pdc_id >= UET_PDC_MAX) {
 		UET_PDS_ERR("invalid PDC %u (range)", pdc_id);
-		return NULL;
+		return -EINVAL;
 	}
 
 	pdc = &pds_state.pdc[pdc_id];
 
 	if (pdc->state == PDC_STATE_UNALLOC) {
 		UET_PDS_ERR("invalid PDC %u (unalloc)", pdc_id);
-		return NULL;
+		return -EINVAL;
 	}
 
 	if (pdc->state == PDC_STATE_ERROR) {
 		UET_PDS_ERR("invalid PDC %u (error)", pdc_id);
-		return NULL;
+		return -EINVAL;
 	}
 
 	if (for_fwd && pdc->is_initiator) {
 		UET_PDS_ERR("invalid forward PDC %u (initiator)", pdc_id);
-		return NULL;
+		return -EINVAL;
 	}
 
-	return pdc;
+	*out_pdc = pdc;
+	return 0;
 }
 
 static int uet_pdsm_map_msgid_pdc(uint16_t msg_id,
@@ -1211,7 +1234,12 @@ int uet_pds_initialize(struct uet_instance *uet)
 	pds_state.pdc_tgt_ht = NULL;
 	pds_state.pdc_msgid_ht = NULL;
 
-	for (i = 0; i < UET_PDC_MAX; i++) {
+	/*
+	 * Reserve PDCID=0 according to UET spec 3.5.8.2.
+	 * Only PDCID [1, UET_PDC_MAX-1] are initialized and inserted into the
+	 * allocatable pools.
+	 */
+	for (i = 1; i < UET_PDC_MAX; i++) {
 		pdc = &pds_state.pdc[i];
 		pdc->state = PDC_STATE_UNALLOC;
 		pdc->pdc_id = i;
@@ -1306,6 +1334,128 @@ void uet_pds_ep_finalize(struct uet_ep *uet_ep)
 	uet_ep->pds = NULL;
 }
 
+static int uet_pds_tx_nack(struct uet_instance *uet,
+			   struct uet_pdc *pdc,
+			   struct uet_parsed_pkt *orig_pp,
+			   uet_pds_nack_code_t nack_code,
+			   uint32_t payload)
+{
+	struct uet_pdc tx_pdc;
+	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pds_nack *nack_hdr;
+	struct uet_entropy *entropy_hdr;
+	size_t ip_hdr_size;
+	uint16_t nack_flags;
+	int rc;
+
+	if (pdc == NULL) {
+		memset(&tx_pdc, 0, sizeof(tx_pdc));
+		tx_pdc.pdc_id = 0;
+		tx_pdc.is_ipv6 = orig_pp->is_ipv6;
+		tx_pdc.sec_enabled = false;
+		pdc = &tx_pdc;
+	}
+
+	/* allocate the packet descriptor */
+	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
+	if (pdc_pkt == NULL) {
+		UET_PDS_ERR("failed to alloc PDC packet for NACK pkt");
+		return -ENOMEM;
+	}
+
+	pdc_pkt->pkt_buf_len = (uet->nic.max_pkt_size *
+				((pdc->sec_enabled) ? 2 : 1));
+	pdc_pkt->pkt_buf = calloc(1, pdc_pkt->pkt_buf_len);
+	if (pdc_pkt->pkt_buf == NULL) {
+		UET_PDS_ERR("failed to alloc packet buffer for NACK");
+		free(pdc_pkt);
+		return -ENOMEM;
+	}
+	pdc_pkt->pkt = (pdc->sec_enabled)
+			? (pdc_pkt->pkt_buf + UET_SEC_MAX_HDR_LEN)
+			: pdc_pkt->pkt_buf;
+
+	ip_hdr_size = (pdc->is_ipv6) ? sizeof(struct ipv6hdr) :
+				       sizeof(struct iphdr);
+
+	uet_build_eth_hdr((struct ethhdr *)pdc_pkt->pkt,
+			  ((struct ethhdr *)orig_pp->eth)->h_source,
+			  ((struct ethhdr *)orig_pp->eth)->h_dest,
+			  orig_pp->is_ipv6);
+
+	entropy_hdr = (struct uet_entropy *)(pdc_pkt->pkt +
+					     sizeof(struct ethhdr) +
+					     ip_hdr_size);
+	nack_hdr = (struct uet_pds_nack *)(pdc_pkt->pkt +
+					   sizeof(struct ethhdr) +
+					   ip_hdr_size +
+					   sizeof(struct uet_entropy));
+
+	pdc_pkt->pkt_len = (sizeof(struct ethhdr) +
+			    ip_hdr_size +
+			    sizeof(struct uet_entropy) +
+			    sizeof(struct uet_pds_nack));
+
+	entropy_hdr->entropy = htons(orig_pp->entropy_val);
+
+	nack_flags = UET_PDS_NACK_FLAGS_NONE;
+	if (orig_pp->pds_flags & UET_PDS_REQ_FLAGS_RETX)
+		nack_flags |= UET_PDS_NACK_FLAGS_RETX;
+
+	nack_hdr->prlg.type_next_flags =
+		htons((UET_PDS_TYPE_NACK << UET_PDS_TYPE_SHIFT) |
+		      (UET_HDR_NONE << UET_PDS_NEXT_HDR_SHIFT) |
+		      (nack_flags << UET_PDS_FLAGS_SHIFT));
+	nack_hdr->nack_code = nack_code;
+	nack_hdr->vendor_code = 0;
+	nack_hdr->nack_psn = htonl(orig_pp->pds_psn);
+	nack_hdr->spdcid = htons(pdc->pdc_id);
+	nack_hdr->dpdcid = htons(orig_pp->pds_spdcid);
+	nack_hdr->payload = htonl(payload);
+
+	UET_PDS_WARN("PDC %u TX NACK nack_code=0x%x psn=%u dpdcid=%u",
+		     pdc->pdc_id, nack_code, orig_pp->pds_psn,
+		     orig_pp->pds_spdcid);
+
+	if (pdc->is_ipv6) {
+		struct ipv6hdr *rx_ipv6 = (struct ipv6hdr *)orig_pp->ip;
+		uet_build_ipv6_hdr(uet,
+				   (struct ipv6hdr *)(pdc_pkt->pkt +
+						      sizeof(struct ethhdr)),
+				   (const uint8_t *)&rx_ipv6->saddr,
+				   (const uint8_t *)&rx_ipv6->daddr,
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size -
+				    ip_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	} else {
+		struct iphdr *rx_ipv4 = (struct iphdr *)orig_pp->ip;
+		uet_build_ipv4_hdr(uet,
+				   (struct iphdr *)(pdc_pkt->pkt +
+						    sizeof(struct ethhdr)),
+				   ((struct iphdr *)orig_pp->ip)->saddr,
+				   ((struct iphdr *)orig_pp->ip)->daddr,
+				   (pdc_pkt->pkt_len - uet->nic.l2_hdr_size),
+				   uet->pds.ack_ip_tos,
+				   !pdc->sec_enabled);
+	}
+
+	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
+	if (rc != 0) {
+		UET_PDS_ERR("failed to send NACK packet for PDC %u",
+			    pdc->pdc_id);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return rc;
+	}
+
+	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX NACK PACKET");
+
+	free(pdc_pkt->pkt_buf);
+	free(pdc_pkt);
+	return rc;
+}
+
 int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		   uint64_t pkt_cnt,
 		   struct uet_ep *uet_ep,
@@ -1396,9 +1546,10 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		UET_PDS_DBG("SES Tx %p msg_id %u (pds_info pdcid %u psn %u)",
 			    tx_pkt_handle, msg_id, pds_info->pdcid,
 			    pds_info->opsn);
-		pdc = uet_pdsm_get_pdc(pds_info->pdcid, true);
-		if (pdc == NULL)
-			return -ENODEV;
+		rc = uet_pdsm_get_pdc(pds_info->pdcid, true, &pdc);
+		if (rc != 0) {
+			return rc;
+		}
 	} else if (flags & UET_PDS_FLAG_SOM) {
 		UET_PDS_DBG("SES Tx %p msg_id %u [SOM]%s",
 			    tx_pkt_handle, msg_id,
@@ -2381,6 +2532,7 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 					   bool *rtx)
 {
 	struct uet_pdc_pkt *orig_pkt = NULL;
+	uet_pds_nack_code_t nack_code;
 	int rc;
 
 	*rtx = false;
@@ -2402,6 +2554,10 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 		UET_PDS_WARN("invalid PSN %u on PDC %u (outside MPR %u[+/-%u])",
 			     pdc_pkt->pkt_pp.pds_psn, pdc->pdc_id,
 			     pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
+		nack_code = (pdc_pkt->pkt_pp.pds_flags &
+			     UET_PDS_REQ_FLAGS_SYN) ? UET_NACK_INVALID_SYN :
+			    UET_NACK_PSN_OOR_WINDOW;
+		uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp, nack_code, 0);
 		return -EINVAL;
 	}
 
@@ -2430,7 +2586,12 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 	} else {
 		UET_PDS_ERR("no ACK to retransmit PSN %u on PDC %u",
 			    pdc_pkt->pkt_pp.pds_psn, pdc->pdc_id);
-		return -EINVAL;
+		rc = uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				     UET_NACK_RCVD_SES_PROCG, 0);
+		if (rc != 0)
+			return rc;
+
+		*rtx = true;
 	}
 
 	return 0;
@@ -2476,6 +2637,8 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				 uet->pds.max_ack_data));
 	if (rsp_ses_hdr == NULL) {
 		UET_PDS_ERR("failed to alloc SES response buffer");
+		uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				UET_NACK_NO_SES_MSG_AVAIL, 0);
 		return -ENOMEM;
 	}
 
@@ -2485,14 +2648,11 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 				    &rsp_ses_hdr_len, &ses_nack,
 				    &gtd_del);
 	if (rc == 0) {
-		/* TODO: add support for sending a PDS NACK
-		 * For now, if this is a bad request, not sending a
-		 * NACK will cause a retransmit of the request packet
-		 * by the initiator.
-		 */
 		if (ses_nack) {
 			UET_PDS_ERR("PDC %u PSN %u SES NACK",
 				    pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn);
+			uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+					UET_NACK_NO_SES_MSG_AVAIL, 0);
 			rc = -EINVAL;
 		} else {
 			pdc_pkt->needs_clear = gtd_del;
@@ -2514,6 +2674,8 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 		UET_PDS_ERR("PDC %u PSN %u SES upcall failed (rx_req=%d)",
 			    pdc_pkt->pkt_pp.pds_dpdcid,
 			    pdc_pkt->pkt_pp.pds_psn, rc);
+		uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				UET_NACK_UNEXP_EVENT, 0);
 	}
 
 	free(rsp_ses_hdr);
@@ -2658,6 +2820,164 @@ static void uet_pds_process_cack(struct uet_instance *uet,
 	}
 }
 
+static int uet_pds_nack_action(uet_pds_nack_code_t code)
+{
+	switch (code) {
+	case UET_NACK_TRIMMED:
+	case UET_NACK_TRIMMED_LAST_HOP:
+	case UET_NACK_TRIMMED_ACK:
+	case UET_NACK_NO_PDC_AVAIL:
+	case UET_NACK_NO_CCC_AVAIL:
+	case UET_NACK_NO_BITMAP:
+	case UET_NACK_NO_PKT_BUF:
+	case UET_NACK_NO_GTD_DEL_AVAIL:
+	case UET_NACK_NO_SES_MSG_AVAIL:
+	case UET_NACK_NO_RESOURCE:
+	case UET_NACK_PSN_OOR_WINDOW:
+	case UET_NACK_ROD_OOO:
+	case UET_NACK_PKT_NOT_RCVD:
+	case UET_NACK_ACK_WITH_DATA:
+	case UET_NACK_NEW_START_PSN:
+	case UET_NACK_RCVR_INFER_LESS:
+	case UET_NACK_EXP_NACK_NORMAL:
+	case UET_NACK_EXP_NACK_ERR:
+		return UET_NACK_ACTION_RETX;
+
+	case UET_NACK_INV_DPDCID:
+	case UET_NACK_PDC_HDR_MISMATCH:
+	case UET_NACK_CLOSING:
+	case UET_NACK_CLOSING_IN_ERR:
+	case UET_NACK_GTD_RESP_UNAVAIL:
+	case UET_NACK_INVALID_SYN:
+	case UET_NACK_PDC_MODE_MISMATCH:
+	case UET_NACK_UNEXP_EVENT:
+	case UET_NACK_EXP_NACK_FATAL:
+		return UET_NACK_ACTION_CLOSE;
+
+	/*
+	 * RCVD_SES_PROCG means the target received the packet but the SES
+	 * layer has not yet produced a response. Retransmitting/ACK-req
+	 * probing here only produces a NACK storm on the tail PSN and can
+	 * exhaust the retry budget on the wrong packet. Drop it and let the
+	 * RTO path recover any real gap.
+	 */
+	case UET_NACK_RCVD_SES_PROCG:
+		return UET_NACK_ACTION_DROP;
+
+	default:
+		return UET_NACK_ACTION_DROP;
+	}
+}
+
+/*
+ * Close a PDC in error. All outstanding Tx packets are reported to SES as
+ * unrecoverable failures, and the PDC is transitioned to the ERROR state so
+ * no further traffic is accepted on it.
+ */
+static void uet_pds_close_pdc_in_error(struct uet_instance *uet,
+				       struct uet_pdc *pdc)
+{
+	struct uet_pdc_pkt *pdc_pkt;
+	struct dlist_entry *tmp;
+
+	UET_PDS_ERR("PDC %u closing in error", pdc->pdc_id);
+
+	pdc->state = PDC_STATE_ERROR;
+
+	/* fail and free all outstanding Tx packets, notifying SES */
+	dlist_foreach_container_safe(&pdc->tx_pkt_list_head,
+				     struct uet_pdc_pkt, pdc_pkt,
+				     node, tmp) {
+		if (PSN_IN_MPR(pdc_pkt->psn, pdc->tx_bm_base_psn))
+			bm_unset(pdc->tx_bm,
+				 (pdc_pkt->psn - pdc->tx_bm_base_psn));
+
+		dlist_remove(&pdc_pkt->node);
+
+		if (uet->pds.upcall.pds_err && pdc_pkt->tx_pkt_handle)
+			uet->pds.upcall.pds_err(pdc_pkt->tx_pkt_handle,
+						UET_PDS_ERR_NONE);
+
+		if (pdc_pkt->ack_buf)
+			free(pdc_pkt->ack_buf);
+		if (pdc_pkt->pkt_buf)
+			free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+	}
+}
+
+static int uet_pds_process_nack(struct uet_instance *uet,
+				struct uet_parsed_pkt *pp)
+{
+	struct uet_pdc *pdc;
+	struct uet_pdc_pkt *pdc_pkt;
+	int nack_action;
+	int rc;
+
+	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	if (rc != 0) {
+		UET_PDS_WARN("NACK for unknown/invalid PDC %u (nack_code=0x%x)",
+			     pp->pds_dpdcid, pp->pds_nack_code);
+		return rc;
+	}
+
+	UET_PDS_WARN("PDC %u received NACK (code=0x%x psn=%u spdcid=%u)",
+		     pdc->pdc_id, pp->pds_nack_code, pp->pds_psn,
+		     pp->pds_spdcid);
+
+	nack_action = uet_pds_nack_action(pp->pds_nack_code);
+	if (nack_action == UET_NACK_ACTION_DROP) {
+		UET_PDS_WARN("NACK PSN %u on PDC %u dropped",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	/*
+	 * A NACK that arrives with an out-of-range pds.nack_psn MUST NOT be
+	 * used to update PDC state.
+	 */
+	if (UET_PDS_PSN_AFTER(pdc->tx_bm_base_psn, pp->pds_psn) ||
+	    UET_PDS_PSN_AFTER(pp->pds_psn, pdc->next_psn - 1)) {
+		UET_PDS_WARN("Invalid NACK PSN %u on PDC %u",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	if (nack_action == UET_NACK_ACTION_CLOSE) {
+		uet_pds_close_pdc_in_error(uet, pdc);
+		return 0;
+	}
+
+	/* UET_NACK_ACTION_RETX: retransmit the NACKed PSN */
+	if (!bm_get(pdc->tx_bm, (pp->pds_psn - pdc->tx_bm_base_psn),
+		    (void **)&pdc_pkt)) {
+		UET_PDS_WARN("NACK PSN %u on PDC %u packet not found",
+			     pp->pds_psn, pdc->pdc_id);
+		return -EINVAL;
+	}
+
+	if (pdc_pkt->tx_pkt_acked)
+		return 0;
+
+	if (pdc_pkt->tx_retry_cnt >= uet->pds.max_tx_retries) {
+		UET_PDS_ERR("PDC %u PSN %u NACK retries exhausted",
+			    pdc->pdc_id, pp->pds_psn);
+		uet_pds_close_pdc_in_error(uet, pdc);
+		return 0;
+	}
+
+	rc = uet_pds_rtx_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		UET_PDS_ERR("PDC %u PSN %u NACK-triggered retransmit failed",
+			    pdc->pdc_id, pp->pds_psn);
+		return rc;
+	}
+
+	dlist_remove(&pdc_pkt->node);
+	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+	return 0;
+}
+
 static int uet_pds_process_ack(struct uet_instance *uet,
 			       struct uet_parsed_pkt *pp)
 {
@@ -2683,9 +3003,10 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	 * [x] move the tx_bm PSN window for all contiguous ACK'ed PSN
 	 */
 
-	pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
-	if (pdc == NULL)
-		return -ENODEV;
+	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	if (rc != 0) {
+		return rc;
+	}
 
 	if ((pdc->state != PDC_STATE_SYN) &&
 	    (pdc->dpdcid != pp->pds_spdcid)) {
@@ -2744,7 +3065,18 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		if (rc != 0)
 			return rc;
 
-		/* FIXME, make sure there are no more pending packets */
+		/*
+		 * Do not free the PDC while packets are still pending in
+		 * bitmaps/queues. Keep it in CLOSING and wait for drain.
+		 */
+		if ((bm_count(pdc->tx_bm) > 0) ||
+		    !dlist_empty(&pdc->tx_pkt_list_head)) {
+			UET_PDS_WARN("PDC %u close ACK received but pending "
+				     "packets remain (tx_bm=%d)",
+				     pdc->pdc_id,
+				     bm_count(pdc->tx_bm));
+			return 0;
+		}
 
 		/* free the PDC */
 		uet_pdsm_free_pdc(pdc);
@@ -2864,6 +3196,7 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	struct uet_parsed_pkt *pp = &pdc_pkt->pkt_pp;
 	struct uet_pdc *pdc;
 	bool rtx;
+	uet_pds_nack_code_t nack_code;
 	int rc;
 
 	/* TODO:
@@ -2880,17 +3213,25 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 	 * [x] save response packet and mark if non-default
 	 */
 
-	pdc = uet_pdsm_assign_tgt_pdc(pp);
-	if (pdc == NULL)
-		return -ENODEV;
+	rc = uet_pdsm_assign_tgt_pdc(pp, &pdc, &nack_code);
+	if (rc != 0) {
+		uet_pds_tx_nack(uet, NULL, pp, nack_code, 0);
+		return rc;
+	}
 
 	/* check if this packet is a duplicate */
 	rc = uet_pds_check_duplicate_and_rtx(uet, pdc, pdc_pkt, &rtx);
 	/* TODO: if error, free PDC if allocated with this SYN */
 	if (rc != 0)
 		return rc;
-	else if (rtx)
-		return 0;
+	else if (rtx) {
+		/*
+		 * This packet was already consumed by duplicate/retransmit
+		 * handling. However, it is not inserted into rx_bm, so it
+		 * needs to be freed by the caller.
+		 */
+		return -EEXIST;
+	}
 
 	UET_PDS_DBG("PDC %u rx_bm: base=%u psn=%u SET bit=%u",
 		    pdc->pdc_id, pdc->rx_bm_base_psn, pp->pds_psn,
@@ -2904,45 +3245,45 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
-	return uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	rc = uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		bm_unset(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn));
+		return rc;
+	}
+
+	return 0;
 }
 
 static int uet_pds_process_ack_req_cp(struct uet_instance *uet,
+				      struct uet_pdc *pdc,
 				      struct uet_parsed_pkt *pp)
 {
-	struct uet_pdc *pdc;
 	struct uet_pdc_pkt *orig_pdc_pkt = NULL;
 	int rc;
 
 	UET_PDS_DBG("Received ACK_REQ cp (spdcid=%u dpdcid=%u)",
 		     pp->pds_spdcid, pp->pds_dpdcid);
 
-	/* find the target PDC */
-	pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
-	if (!pdc) {
-		UET_PDS_WARN("ACK REQ cp for unknown PDC %u", pp->pds_dpdcid);
-		return -EINVAL;
-	}
-
 	/* check the psn is within MPR, if not, drop the packet */
 	if (!PSN_IN_MPR(pp->pds_psn, pdc->rx_bm_base_psn)) {
 		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u outside MPR",
 			     pp->pds_dpdcid, pp->pds_psn);
-		return 0;
+		return -EINVAL;
 	}
 
 	if (!bm_get(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn),
 		    (void **)&orig_pdc_pkt)) {
 		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u original pkt not found",
 			     pp->pds_dpdcid, pp->pds_psn);
+		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_PKT_NOT_RCVD, 0);
 		return 0;
 	}
 
 	/* find previous ACK/response */
 	if (orig_pdc_pkt->ack == NULL) {
-		/* TODO: reply with NACK packet */
 		UET_PDS_WARN("ACK REQ cp PDC %u PSN %u original ack not found",
 			     pp->pds_dpdcid, pp->pds_psn);
+		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_RCVD_SES_PROCG, 0);
 		return 0;
 	}
 
@@ -2970,37 +3311,40 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	if (pp->pds_flags & UET_PDS_CTRL_FLAGS_AR)
 		send_ack = true;
 
+	/* find the target PDC */
+	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
+	if (rc != 0) {
+		UET_PDS_WARN("CP type %d for unknown PDC %u",
+			     pp->pds_ctrl_type, pp->pds_dpdcid);
+		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_INV_DPDCID, 0);
+		return rc;
+	}
+
+	/* verify dpdcid matches spdcid */
+	if (pdc->dpdcid != pp->pds_spdcid) {
+		UET_PDS_WARN("PDC %u dpdcid mismatch (%u != %u)",
+			     pdc->pdc_id, pdc->dpdcid, pp->pds_spdcid);
+		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_PDC_HDR_MISMATCH, 0);
+		return -EINVAL;
+	}
+
+	/* verify the PDC is in the correct state */
+	if (pdc->state != PDC_STATE_ESTABLISHED &&
+	    pdc->state != PDC_STATE_CLOSING) {
+		UET_PDS_WARN("PDC %u not in ESTABLISHED or CLOSING "
+			     "(state=%d)",
+			     pdc->pdc_id, pdc->state);
+		uet_pds_tx_nack(uet, pdc, pp, UET_NACK_UNEXP_EVENT, 0);
+		return -EINVAL;
+	}
+
 	switch (pp->pds_ctrl_type) {
 	case UET_PDS_CTRL_TYPE_ACK_REQ:
-		return uet_pds_process_ack_req_cp(uet, pp);
+		return uet_pds_process_ack_req_cp(uet, pdc, pp);
 
 	case UET_PDS_CTRL_TYPE_CLOSE:
 		UET_PDS_DBG("Received CLOSE command (spdcid=%u dpdcid=%u)",
 			    pp->pds_spdcid, pp->pds_dpdcid);
-
-		/* find the target PDC */
-		pdc = uet_pdsm_get_pdc(pp->pds_dpdcid, false);
-		if (!pdc) {
-			UET_PDS_WARN("CLOSE command for unknown PDC %u",
-				     pp->pds_dpdcid);
-			return -EINVAL;
-		}
-
-		/* verify the PDC is in the correct state */
-		if (pdc->state != PDC_STATE_ESTABLISHED &&
-		    pdc->state != PDC_STATE_CLOSING) {
-			UET_PDS_WARN("PDC %u not in ESTABLISHED or CLOSING "
-				     "(state=%d)",
-				     pdc->pdc_id, pdc->state);
-			return -EINVAL;
-		}
-
-		/* verify dpdcid matches spdcid */
-		if (pdc->dpdcid != pp->pds_spdcid) {
-			UET_PDS_WARN("PDC %u dpdcid mismatch (%u != %u)",
-				     pdc->pdc_id, pdc->dpdcid, pp->pds_spdcid);
-			return -EINVAL;
-		}
 
 		/*
 		 * If a close command was already received (PDC is in CLOSING
@@ -3010,30 +3354,8 @@ static int uet_pds_process_control(struct uet_instance *uet,
 			UET_PDS_DBG("PDC %u already CLOSING, duplicate CLOSE "
 				    "command",
 				    pdc->pdc_id);
-
-			/* FIXME Need to send a NACK with UET_CLOSING. */
-
-			/* send ACK if requested */
-			if (send_ack) {
-				struct uet_pdc_pkt temp_pkt;
-
-				UET_PDS_DBG("PDC %u Tx ACK for duplicate CLOSE",
-					    pdc->pdc_id);
-
-				memset(&temp_pkt, 0, sizeof(temp_pkt));
-				memcpy(&temp_pkt.pkt_pp, pp, sizeof(*pp));
-
-				rc = uet_pds_tx_ack_pkt(uet, pdc, &temp_pkt,
-							UET_HDR_NONE, 0,
-							NULL, false);
-				if (rc != 0) {
-					UET_PDS_ERR("failed to send ACK for "
-						    "duplicate CLOSE");
-					return rc;
-				}
-			}
-
-			break;
+			uet_pds_tx_nack(uet, pdc, pp, UET_NACK_CLOSING, 0);
+			return 0;
 		}
 
 		/*
@@ -3045,6 +3367,9 @@ static int uet_pds_process_control(struct uet_instance *uet,
 			UET_PDS_WARN("PDC %u PDC_CLOSE_IN_ERR: received CLOSE "
 				     "with %d outstanding TX packets",
 				     pdc->pdc_id, bm_count(pdc->tx_bm));
+			uet_pds_tx_nack(uet, pdc, pp, UET_NACK_CLOSING_IN_ERR,
+					bm_count(pdc->tx_bm));
+			return -EINVAL;
 		}
 
 		/* send ACK if requested */
@@ -3066,8 +3391,6 @@ static int uet_pds_process_control(struct uet_instance *uet,
 				UET_PDS_ERR("failed to send ACK for CLOSE");
 				return rc;
 			}
-
-			/* FIXME Is the control packet freed here? */
 		}
 
 		/*
@@ -3086,10 +3409,12 @@ static int uet_pds_process_control(struct uet_instance *uet,
 	case UET_PDS_CTRL_TYPE_NEGOTIATION:
 		UET_PDS_ERR("Control type %d not yet supported",
 			     pp->pds_ctrl_type);
+		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_UNEXP_EVENT, 0);
 		return -EINVAL;
 
 	default:
 		UET_PDS_ERR("Unknown control type %d", pp->pds_ctrl_type);
+		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_UNEXP_EVENT, 0);
 		return -EINVAL;
 	}
 
@@ -3117,12 +3442,14 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	    (pp->pds_type != UET_PDS_TYPE_ROD_REQ)) {
 		UET_PDS_WARN("Rx packet type not supported %d",
 			     pp->pds_type);
+		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_PDC_MODE_MISMATCH, 0);
 		return -EINVAL;
 	}
 
 	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
 	if (pdc_pkt == NULL) {
 		UET_PDS_ERR("failed to alloc PDC packet");
+		uet_pds_tx_nack(uet, NULL, pp, UET_NACK_NO_PKT_BUF, 0);
 		return -ENOMEM;
 	}
 
@@ -3130,6 +3457,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	pdc_pkt->msg_id = pp->ses_msg_id;
 	pdc_pkt->pkt = pkt;
 	pdc_pkt->pkt_len = pkt_len;
+	pdc_pkt->pkt_buf = pkt;
+	pdc_pkt->pkt_buf_len = pkt_len;
 	memcpy(&pdc_pkt->pkt_pp, pp, sizeof(*pp));
 	pdc_pkt->pkt_parsed = true;
 
@@ -3159,8 +3488,10 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	 * [x] move the rx_bm PSN window for all contiguous PSNs
 	 */
 
-	pdc = uet_pdsm_get_pdc(pdc_pkt->pkt_pp.pds_dpdcid, false);
-	if (pdc == NULL) {
+	rc = uet_pdsm_get_pdc(pdc_pkt->pkt_pp.pds_dpdcid, false, &pdc);
+	if (rc != 0) {
+		uet_pds_tx_nack(uet, NULL, &pdc_pkt->pkt_pp,
+				UET_NACK_INV_DPDCID, 0);
 		rc = -ENODEV;
 		goto exit_err;
 	}
@@ -3169,6 +3500,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		UET_PDS_WARN("invalid PDC %u (spdcid %u != dpdcid %u)",
 			     pdc->pdc_id, pdc_pkt->pkt_pp.pds_spdcid,
 			     pdc->dpdcid);
+		uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+				UET_NACK_PDC_HDR_MISMATCH, 0);
 		rc = -EINVAL;
 		goto exit_err;
 	}
@@ -3184,8 +3517,8 @@ static int uet_pds_process_request(struct uet_instance *uet,
 				     "after CLOSE (close_cmd_psn=%u)",
 				     pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn,
 				     pdc->close_cmd_psn);
-
-			/* FIXME Need to send a NACK with UET_CLOSING. */
+			uet_pds_tx_nack(uet, pdc, &pdc_pkt->pkt_pp,
+					UET_NACK_CLOSING, 0);
 			rc = -EINVAL;
 			goto exit_err;
 		}
@@ -3195,8 +3528,15 @@ static int uet_pds_process_request(struct uet_instance *uet,
 	rc = uet_pds_check_duplicate_and_rtx(uet, pdc, pdc_pkt, &rtx);
 	if (rc != 0)
 		goto exit_err;
-	else if (rtx)
-		return 0;
+	else if (rtx) {
+		/*
+		 * This packet was already consumed by duplicate/retransmit
+		 * handling. However, it is not inserted into rx_bm, so it
+		 * needs to be freed by this caller.
+		 */
+		rc = -EEXIST;
+		goto exit_err;
+	}
 
 	UET_PDS_DBG("PDC %u rx_bm: base=%u clear psn=%u psn=%u SET bit=%u",
 		    pdc->pdc_id, pdc->rx_bm_base_psn,
@@ -3213,7 +3553,14 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		bm_print_bits(pdc->rx_bm, uet_pdc_rx_bit_char);
 	}
 
-	return uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	rc = uet_pds_process_data_pkt(uet, pdc, pdc_pkt);
+	if (rc != 0) {
+		bm_unset(pdc->rx_bm,
+			 (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn));
+		goto exit_err;
+	}
+
+	return 0;
 
 exit_err:
 	free(pdc_pkt);
@@ -3225,7 +3572,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	uint8_t *pkt;
 	size_t pkt_len;
 	struct uet_parsed_pkt pp;
-	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl;
+	bool pkt_is_ack, pkt_is_rd_rsp, pkt_is_ctrl, pkt_is_nack;
 	struct uet_pdc_pkt *pdc_pkt = NULL;
 	struct uet_pdc *pdc;
 	uet_pds_next_hdr_t rsp_next_hdr;
@@ -3246,17 +3593,18 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (!uet_pds_rx_pkt_chk(uet, pkt, pkt_len,
 				&pkt_is_ack,
 				&pkt_is_rd_rsp,
-				&pkt_is_ctrl)) {
+				&pkt_is_ctrl,
+				&pkt_is_nack)) {
 		UET_PDS_WARN("invalid Rx packet (len=%ld)", pkt_len);
 		rc = -EINVAL;
-		goto exit_err;
+		goto exit;
 	}
 
 	/* parse the packet */
 	rc = uet_parse_pkt(uet, pkt, pkt_len, &pp);
 	if (rc != 0) {
 		UET_PDS_ERR("malformed Rx packet");
-		goto exit_err;
+		goto exit;
 	}
 
 	if (!pp.sec) {
@@ -3278,7 +3626,7 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 			   CRC_LEN) != 0) {
 			UET_PDS_WARN("Rx packet CRC mismatch");
 			rc = -EINVAL;
-			goto exit_err;
+			goto exit;
 		}
 	}
 
@@ -3300,26 +3648,24 @@ int uet_pds_progress_rx(struct uet_instance *uet)
 	if (pkt_is_ack) {
 
 		rc = uet_pds_process_ack(uet, &pp);
-		if (rc != 0)
-			goto exit_err;
+
+	} else if (pkt_is_nack) {
+
+		rc = uet_pds_process_nack(uet, &pp);
 
 	} else if (pkt_is_ctrl) {
 
 		rc = uet_pds_process_control(uet, &pp, pkt, pkt_len);
-		if (rc != 0)
-			goto exit_err;
 
 	} else { /* request packet */
 
 		rc = uet_pds_process_request(uet, &pp, pkt, pkt_len);
-		if (rc != 0)
-			goto exit_err;
+		if (rc == 0)
+			return 0;
 
 	}
 
-	return 0;
-
-exit_err:
+exit:
 	free(pkt);
 	return rc;
 }
