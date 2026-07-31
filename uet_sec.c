@@ -3,6 +3,12 @@
  * Broadcom refers to Broadcom Limited and/or its subsidiaries.
  */
 
+/* Transport Security Sublayer (TSS) crypto core: per-packet security header
+ * build/refresh and AES-GCM encrypt/decrypt. The secure-domain database
+ * (SDKDB), key material, statistics, and the AN key-rotation (SDME stand-in)
+ * lives in uet_sec_sd.c.
+ */
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -15,99 +21,11 @@
 #include "kdf_ctr_cmac_aes.h"
 #include "gcm.h"
 
-#define UET_SEC_MAX_SD         8
-#define UET_SEC_FAM_V4         0
-#define UET_SEC_FAM_V6         1
-#define UET_SEC_FAM(is_ipv6)   ((is_ipv6) ? UET_SEC_FAM_V6 : UET_SEC_FAM_V4)
-#define UET_SEC_KEY_SIZE       32
-#define UET_SEC_KDF_GEN_SIZE   44
-#define UET_SEC_CTR_SIZE       8
-#define UET_SEC_SMALL_CTX_SIZE 10
-#define UET_SEC_LARGE_CTX_SIZE 26
-#define UET_SEC_IV_SIZE        12
+#define UET_SEC_IV_SIZE 12
 
-typedef enum {
-	UET_SEC_ALG_NONE        = 0,
-	UET_SEC_ALG_AES_GCM_256 = 1,
-} uet_sec_alg_t;
-
-typedef enum {
-	UET_SEC_MODE_NONE    = 0,
-	UET_SEC_MODE_DIRECT  = 1,
-	UET_SEC_MODE_CLUSTER = 2,
-	UET_SEC_MODE_SERVER  = 3,
-} uet_sec_mode_t;
-
-struct uet_sec_sd {
-	bool           enabled;
-	uint32_t       sdi;
-	uet_sec_mode_t mode;
-	bool           use_ssi;
-	bool           rekey;
-	uint64_t       rekey_mask;
-	uint8_t        rekey_shift;
-	uint16_t       coff;
-	uet_sec_alg_t  alg;
-	uint16_t       epoch;
-	uint8_t        an;
-	/* [family][an] - per-family key material (aoff derived from family) */
-	uint8_t        key[2][2][UET_SEC_KDF_GEN_SIZE];
-};
-
-static struct uet_sec_sd sdkdb[UET_SEC_MAX_SD];
-
-static char *uet_sec_label1 = "U1";
-static char *uet_sec_label2 = "U2";
-
-/************************************************************************/
-/* FIXME: Default fields used for the fixed SD... not yet configurable! */
-/************************************************************************/
-
-/* key generation: `dd if=/dev/urandom ibs=32 count=1 | xxd -i -c 8` */
-
-static uint8_t def_key[2][UET_SEC_KDF_GEN_SIZE] = {
-	{
-		0x07, 0xe9, 0x72, 0x49, 0x58, 0xd9, 0xe1, 0xf7,
-		0x10, 0xf5, 0x94, 0xe1, 0x8e, 0x11, 0xfd, 0x8d,
-		0x4a, 0x35, 0x82, 0xc2, 0x56, 0xcc, 0xfe, 0xcf,
-		0xc5, 0xeb, 0x19, 0x02, 0xe5, 0x56, 0xbe, 0xd4,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00,
-	},
-	{
-		0xd4, 0xc3, 0xa2, 0xcf, 0xb3, 0xc1, 0x06, 0x7f,
-		0xdd, 0xcf, 0x9f, 0xe2, 0xe1, 0x42, 0x8a, 0x29,
-		0xc8, 0xd3, 0x1b, 0xfb, 0x2a, 0x97, 0x02, 0x64,
-		0x90, 0x0f, 0x16, 0xdf, 0x7c, 0x36, 0xdb, 0x6f,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00,
-	},
-};
-
-#define DEF_SDI         1
-#define DEF_REKEY_MASK  0x0000FFFF00000000UL
-#define DEF_REKEY_SHIFT 32
 #define DEF_AOFF_V4     -12 /* AAD src/dest IPv4 (8) + entropy (4) */
 #define DEF_AOFF_V6     -36 /* AAD src/dest IPv6 (32) + entropy (4) */
 #define UET_SEC_AOFF(is_ipv6) ((is_ipv6) ? DEF_AOFF_V6 : DEF_AOFF_V4)
-#define DEF_COFF        12 /* sizeof security header, +4 if using SSI */
-
-static uint8_t fep_key[2][UET_SEC_KEY_SIZE] = {
-	{
-		0xa1, 0xbf, 0x74, 0xac, 0x7f, 0xf2, 0x35, 0x63,
-		0xec, 0x59, 0x51, 0xaf, 0x99, 0x62, 0x68, 0xf0,
-		0x02, 0xdb, 0x87, 0x82, 0x1c, 0xda, 0xab, 0x47,
-		0x1e, 0x99, 0x1b, 0xd9, 0x96, 0xc4, 0xd7, 0xf1
-	},
-	{
-		0x52, 0xf4, 0x95, 0x91, 0x76, 0xcd, 0xa4, 0x57,
-		0x20, 0x65, 0xc3, 0x0f, 0xaa, 0x48, 0xeb, 0x01,
-		0x5e, 0x62, 0x6e, 0xc8, 0x0b, 0x20, 0x0d, 0xe8,
-		0xdb, 0x1f, 0x2f, 0xfb, 0x9d, 0x4a, 0xdc, 0x27
-	},
-};
-
-/**************************************************************************/
 
 int uet_sec_build_hdr(uint32_t sdi,
 		      uint32_t ssi,
@@ -124,6 +42,7 @@ int uet_sec_build_hdr(uint32_t sdi,
 	struct uet_sec_ssi *sec_ssi;
 	uint64_t tsc;
 	uint32_t tfs;
+	uint8_t tx_an;
 	int copy_len;
 	char *client_ssi;
 
@@ -133,16 +52,22 @@ int uet_sec_build_hdr(uint32_t sdi,
 		return -EINVAL;
 	}
 
-	if (sdi >= UET_SEC_MAX_SD) {
+	sd = uet_sec_sd_get(sdi);
+	if (sd == NULL) {
+		uet_sec_port_stats.out_errored_pkts++;
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
 		return -EINVAL;
 	}
 
-	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
+		uet_sec_port_stats.out_errored_pkts++;
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
 		return -EINVAL;
 	}
+
+	/* active AN + association-change bookkeeping */
+	tx_an = uet_sec_sd_tx_an(sd);
+	uet_sec_sd_tx_rotate(sd);
 
 	copy_len = (sizeof(struct ethhdr) +
 		    (is_ipv6 ? sizeof(struct ipv6hdr) :
@@ -176,14 +101,25 @@ int uet_sec_build_hdr(uint32_t sdi,
 	/* fill in the security header */
 
 	tfs = (uint32_t)((UET_PDS_TYPE_SECURITY << UET_SEC_TYPE_SHIFT) |
-			 ((sd->an << UET_SEC_AN_SHIFT) & UET_SEC_AN_MASK) |
+			 ((tx_an << UET_SEC_AN_SHIFT) & UET_SEC_AN_MASK) |
 			 ((sd->sdi << UET_SEC_SDI_SHIFT) & UET_SEC_SDI_MASK));
 	if (sd->use_ssi)
 		tfs |= (uint32_t)(UET_SEC_SP << UET_SEC_SP_SHIFT);
 
 	sec->type_flags_sdi = htonl(tfs);
 
-	uet_gettime((time_t *)&tsc);
+	/* Invoke (TSC counter) fatal limit. Once the per-SD counter reaches
+	 * the threshold it MUST NOT be reused (IV/nonce uniqueness). Drop the
+	 * packet and count it.
+	 */
+	if (sd->tx_counter >= sd->invoke_fatal_threshold) {
+		sd->stats.out_invoke_fail++;
+		UET_TSS_ERR("SDI %u invoke fatal: TSC counter exhausted\n",
+			    sd->sdi);
+		return -EINVAL;
+	}
+
+	tsc = sd->tx_counter++;
 
 	if (sd->use_ssi) {
 		if ((sd->mode == UET_SEC_MODE_SERVER) &&
@@ -236,19 +172,41 @@ int uet_sec_update_hdr_tsc(uint8_t *pkt, bool is_ipv6)
 	/* get the sdi */
 	sdi = ((tfs & UET_SEC_SDI_MASK) >> UET_SEC_SDI_SHIFT);
 
-	if (sdi >= UET_SEC_MAX_SD) {
+	/* get the SD to pull the latest epoch */
+	sd = uet_sec_sd_get(sdi);
+	if (sd == NULL) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
 		return -EINVAL;
 	}
 
-	/* get the SD to pull the latest epoch */
-	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
 		return -EINVAL;
 	}
 
-	uet_gettime((time_t *)&tsc);
+	/* A retransmit is a fresh frame on the wire. With AN key rotation,
+	 * the active AN may have advanced since the original send, so
+	 * re-stamp the current AN into the header.
+	 */
+	if (sd->rotation_enabled) {
+		tfs &= ~UET_SEC_AN_MASK;
+		tfs |= (((uint32_t)uet_sec_sd_tx_an(sd) << UET_SEC_AN_SHIFT) &
+			UET_SEC_AN_MASK);
+		sec->type_flags_sdi = htonl(tfs);
+	}
+
+	/* association-change bookkeeping */
+	uet_sec_sd_tx_rotate(sd);
+
+	if (sd->tx_counter >= sd->invoke_fatal_threshold) {
+		sd->stats.out_invoke_fail++;
+		UET_TSS_ERR("SDI %u invoke fatal: TSC counter exhausted\n",
+			    sd->sdi);
+		return -EINVAL;
+	}
+
+	/* a retransmit is a new frame on the wire = new counter value */
+	tsc = sd->tx_counter++;
 
 	if (tfs & UET_SEC_SP_MASK) {
 		sec_ssi->epoch_tsc =
@@ -326,12 +284,12 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	sdi = ((tfs & UET_SEC_SDI_MASK) >> UET_SEC_SDI_SHIFT);
 	an  = !!(tfs & UET_SEC_AN_MASK);
 
-	if (sdi >= UET_SEC_MAX_SD) {
+	sd = uet_sec_sd_get(sdi);
+	if (sd == NULL) {
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
 		return -EINVAL;
 	}
 
-	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
 		return -EINVAL;
@@ -371,7 +329,8 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 
 	switch (sd->mode) {
 	case UET_SEC_MODE_DIRECT:
-		memcpy(derived_key, sd->key[fam][an], UET_SEC_KEY_SIZE);
+		memcpy(derived_key, uet_sec_sd_key(sd, fam, an),
+		       UET_SEC_KEY_SIZE);
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
@@ -381,7 +340,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			memcpy((large_context + 6), (uint8_t *)&rekey, 4);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -397,7 +356,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -413,7 +372,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	case UET_SEC_MODE_SERVER:
 		/* in client/server mode the client operates in direct mode */
 		if (!getenv(UET_SEC_SERVER)) {
-			memcpy(derived_key, sd->key[fam][an],
+			memcpy(derived_key, uet_sec_sd_key(sd, fam, an),
 			       UET_SEC_KDF_GEN_SIZE);
 			break;
 		}
@@ -423,7 +382,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
 			memcpy((large_context + 10), &ipv6->daddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -438,7 +397,7 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->daddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[fam][sd->an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -499,6 +458,8 @@ int uet_sec_enc_pkt(struct uet_instance *uet,
 	*enc_pkt = enc_out;
 	*enc_pkt_len = pkt_len;
 
+	sd->stats.out_auth_pkts++;
+
 	return 0;
 }
 
@@ -523,8 +484,11 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	uint32_t tmp_val;
 	uint64_t tmp_lval;
 	uint16_t epoch;
+	uint16_t cur_epoch;
 	uint64_t tsc;
-	uint64_t counter; // 48b
+	uint64_t counter; /* 48b */
+	uint16_t pkt_epoch;
+	uint16_t age;
 	uint8_t an;
 	uint32_t sdi;
 	uint32_t tfs;
@@ -575,6 +539,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	tfs = ntohl(sec->type_flags_sdi);
 	if (((tfs & UET_SEC_TYPE_MASK) >> UET_SEC_TYPE_SHIFT) !=
 	     UET_PDS_TYPE_SECURITY) {
+		uet_sec_port_stats.in_rx_encryption_bypass_pkts++;
 		*tag_len = 0;
 		return 0;
 	}
@@ -583,19 +548,28 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	sdi = ((tfs & UET_SEC_SDI_MASK) >> UET_SEC_SDI_SHIFT);
 	an  = !!(tfs & UET_SEC_AN_MASK);
 
-	if (sdi >= UET_SEC_MAX_SD) {
+	sd = uet_sec_sd_get(sdi);
+	if (sd == NULL) {
+		uet_sec_port_stats.in_errored_pkts++;
 		UET_TSS_ERR("invalid SDI %u\n", sdi);
 		return -EINVAL;
 	}
 
-	sd = &sdkdb[sdi];
 	if (!sd->enabled) {
+		sd->stats.in_invalid_sa++;
 		UET_TSS_ERR("SDI %u is not enabled\n", sdi);
+		return -EINVAL;
+	}
+
+	/* auth-fail latch once tripped, ALL packets on this SD are dropped */
+	if (sd->domain_dropping) {
+		sd->stats.in_invalid++;
 		return -EINVAL;
 	}
 
 	/* if the SSI is being used, verify it's there in the header */
 	if (sd->use_ssi && !(tfs & UET_SEC_SP_MASK)) {
+		sd->stats.in_invalid++;
 		UET_TSS_ERR("security header is missing the SSI\n");
 		return -EINVAL;
 	}
@@ -605,6 +579,32 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 		            : ntohll(sec->epoch_tsc);
 	epoch = htons((uint16_t)((tsc & UET_SEC_EPOCH_MASK) >> UET_SEC_EPOCH_SHIFT));
 	counter = ((tsc & UET_SEC_TSC_MASK) >> UET_SEC_TSC_SHIFT);
+
+	/* Epoch-based packet rejection drops packets whose epoch is older
+	 * than the current epoch by more than rx_max_epoch_lifetime. The
+	 * epoch is only advanced by an SDME on a FEP leave/rejoin (and reset
+	 * to 0 on key rotation), so with no SDME here it is static (0). This
+	 * path is kept for spec completeness but never rejects (epoch is
+	 * always 0).
+	 */
+	if (sd->epoch_based_rejection) {
+		cur_epoch = sd->epoch;
+
+		pkt_epoch = (uint16_t)((tsc & UET_SEC_EPOCH_MASK) >>
+				       UET_SEC_EPOCH_SHIFT);
+		age = (uint16_t)(cur_epoch - pkt_epoch);
+
+		/* age < 0x8000 => pkt epoch is older (RFC-1982); reject only
+		 * if older by more than the lifetime. Same-or-newer value is
+		 * accepted.
+		 */
+		if ((age < 0x8000) && (age > sd->rx_max_epoch_lifetime)) {
+			sd->stats.in_late_pkts++;
+			UET_TSS_WARN("SDI %u late pkt: epoch %u vs current %u",
+				     sd->sdi, pkt_epoch, cur_epoch);
+			return -EINVAL;
+		}
+	}
 
 	/* generate the key needed for decrypting the packet */
 
@@ -618,7 +618,8 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 
 	switch (sd->mode) {
 	case UET_SEC_MODE_DIRECT:
-		memcpy(derived_key, sd->key[fam][an], UET_SEC_KEY_SIZE);
+		memcpy(derived_key, uet_sec_sd_key(sd, fam, an),
+		       UET_SEC_KEY_SIZE);
 		break;
 
 	case UET_SEC_MODE_CLUSTER:
@@ -628,7 +629,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			memcpy((large_context + 6), (uint8_t *)&rekey, 4);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -644,7 +645,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label1,
@@ -660,7 +661,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 	case UET_SEC_MODE_SERVER:
 		/* in client/server mode the client operates in direct mode */
 		if (!getenv(UET_SEC_SERVER)) {
-			memcpy(derived_key, sd->key[fam][an],
+			memcpy(derived_key, uet_sec_sd_key(sd, fam, an),
 			       UET_SEC_KDF_GEN_SIZE);
 			break;
 		}
@@ -670,7 +671,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
 			memcpy((large_context + 10), &ipv6->saddr, 16);
 
-			kdf_ctr_cmac_aes(sd->key[fam][an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -685,7 +686,7 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			tmp_val = (sd->use_ssi) ? sec_ssi->ssi : ipv4->saddr;
 			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
 
-			kdf_ctr_cmac_aes(sd->key[fam][sd->an],
+			kdf_ctr_cmac_aes(uet_sec_sd_key(sd, fam, an),
 					 (UET_SEC_KEY_SIZE * 8),
 					 UET_SEC_CTR_SIZE,
 					 (uint8_t *)uet_sec_label2,
@@ -735,197 +736,23 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 			      (pkt + clrtxt_len),
 			      (pkt + clrtxt_len));
 	if (rc != 0) {
+		sd->stats.in_auth_fail_pkts++;
 		UET_TSS_ERR("failed to decrypt packet\n");
+		/* Auth-fail threshold once exceeded, latch the domain into
+		 * dropping ALL packets for this SD!
+		 */
+		if (sd->stats.in_auth_fail_pkts > sd->auth_fail_threshold) {
+			sd->domain_dropping = true;
+			UET_TSS_ERR("SDI %u authFail: threshold exceeded, "
+				    "dropping all domain packets\n", sd->sdi);
+		}
 		return -EINVAL;
 	}
+
+	sd->stats.in_auth_pkts++;
 
 	*tag_len = UET_SEC_TAG_LEN;
 
 	return 0;
-}
-
-/*
- * Derive the client-side server-mode keys for one address family. Each
- * family's keys are derived from that family's local address (IPv4) or the
- * SSI, so a dual-stack SD derives both families' key material independently
- * into sd->key[fam][an].
- */
-static void uet_sec_derive_family_keys(struct uet_sec_sd *sd,
-				       int fam,
-				       const struct uet_fa *local_ip)
-{
-	uint8_t derived_key[UET_SEC_KDF_GEN_SIZE];
-	uint8_t small_context[UET_SEC_SMALL_CTX_SIZE];
-	uint8_t large_context[UET_SEC_LARGE_CTX_SIZE];
-	char *client_ssi;
-	uint32_t tmp_val;
-	int an;
-	uint16_t epoch = htons(sd->epoch);
-
-	for (an = 0; an < 2; an++) {
-		if (fam == UET_SEC_FAM_V6) {
-			memset(large_context, 0, sizeof(large_context));
-			memcpy((large_context + 4), (uint8_t *)&epoch, 2);
-			memcpy((large_context + 10), local_ip->v6, 16);
-
-			kdf_ctr_cmac_aes(sd->key[fam][an],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 large_context,
-					 UET_SEC_LARGE_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-		} else {
-			memset(small_context, 0, sizeof(small_context));
-			memcpy(small_context, (uint8_t *)&epoch, 2);
-			/* use SSI if available, otherwise use IPv4 */
-			client_ssi = getenv(UET_SEC_SSI);
-			tmp_val = (client_ssi)
-				? htonl(strtoul(client_ssi, NULL, 10))
-				: htonl(local_ip->v4);
-			memcpy((small_context + 6), (uint8_t *)&tmp_val, 4);
-
-			kdf_ctr_cmac_aes(sd->key[fam][an],
-					 (UET_SEC_KEY_SIZE * 8),
-					 UET_SEC_CTR_SIZE,
-					 (uint8_t *)uet_sec_label2,
-					 strlen(uet_sec_label2), /* ignore delimiter */
-					 small_context,
-					 UET_SEC_SMALL_CTX_SIZE,
-					 derived_key,
-					 (UET_SEC_KDF_GEN_SIZE * 8));
-		}
-
-		memcpy(sd->key[fam][an], derived_key, UET_SEC_KDF_GEN_SIZE);
-	}
-}
-
-static int uet_sec_init_sd(uint32_t sdi,
-			   uet_sec_mode_t mode,
-			   bool use_ssi,
-			   bool rekey,
-			   struct uet_nic *nic)
-{
-	struct uet_sec_sd *sd;
-
-	if (sdi >= UET_SEC_MAX_SD) {
-		UET_TSS_ERR("invalid SDI %u\n", sdi);
-		return -EINVAL;
-	}
-
-	sd = &sdkdb[sdi];
-	memset(sd, 0, sizeof(*sd));
-
-	sd->enabled     = true;
-	sd->sdi         = sdi;
-	sd->mode        = mode;
-	sd->use_ssi     = use_ssi;
-	sd->rekey       = rekey;
-	sd->rekey_mask  = DEF_REKEY_MASK;
-	sd->rekey_shift = DEF_REKEY_SHIFT;
-	sd->coff        = (use_ssi) ? (DEF_COFF + 4) : DEF_COFF;
-	sd->alg         = UET_SEC_ALG_AES_GCM_256;
-	sd->epoch       = 1; /* FIXME: init/roll epoch */
-	sd->an          = 0;
-
-	/* seed both families with the default key */
-	memcpy(sd->key[UET_SEC_FAM_V4], def_key, sizeof(def_key));
-	memcpy(sd->key[UET_SEC_FAM_V6], def_key, sizeof(def_key));
-
-	/*
-	 * IPv6 with direct or client/server mode requires the SSI. Under
-	 * dual-stack this is a per-family limitation, not a fatal error: warn
-	 * and leave IPv6 security unavailable so IPv4 is unaffected.
-	 */
-	if (nic->has_ipv6 && !use_ssi &&
-	    ((mode == UET_SEC_MODE_DIRECT) || (mode == UET_SEC_MODE_SERVER)))
-		UET_TSS_WARN("IPv6 secure mode requires SSI; IPv6 security "
-			     "unavailable (IPv4 unaffected)\n");
-
-	/*
-	 * For the client side of server mode, do the KDFs now (no exchange).
-	 * Normally for client/server mode the server key is hidden on the
-	 * server and there is an exchange where the server gives each client
-	 * a key to use in direct mode which is a derivation from the server
-	 * key using the client's SSI.
-	 *
-	 * Dual-stack: derive each available family's keys independently from
-	 * that family's local address. IPv6 requires the SSI.
-	 */
-	if ((mode == UET_SEC_MODE_SERVER) && !getenv(UET_SEC_SERVER)) {
-		if (nic->has_ipv4) {
-			struct uet_fa fa;
-			memset(&fa, 0, sizeof(fa));
-			fa.v4 = nic->ipv4_addr;
-			uet_sec_derive_family_keys(sd, UET_SEC_FAM_V4, &fa);
-		}
-
-		if (nic->has_ipv6 && use_ssi) {
-			struct uet_fa fa;
-			memset(&fa, 0, sizeof(fa));
-			memcpy(fa.v6, nic->ipv6_addr, 16);
-			uet_sec_derive_family_keys(sd, UET_SEC_FAM_V6, &fa);
-		}
-	}
-
-	return 0;
-}
-
-int uet_sec_init(struct uet_nic *nic)
-{
-	char *sec_mode, *sec_ssi;
-	int i, rc;
-
-	memset(sdkdb, 0, sizeof(sdkdb));
-
-	for (i = 0; i < UET_SEC_MAX_SD; i++)
-		sdkdb[i].enabled = false;
-
-	sec_mode = getenv(UET_SEC_MODE);
-	sec_ssi  = getenv(UET_SEC_SSI);
-
-	if (sec_mode == NULL)
-		return 0;
-
-	/* FIXME: Only using SDI=0x1 AN=0x0 for now... */
-
-	if (strcmp(sec_mode, "direct") == 0) {
-
-		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_DIRECT,
-				     (sec_ssi != NULL), false, nic);
-
-	} else if (strcmp(sec_mode, "cluster") == 0) {
-
-		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_CLUSTER,
-				     (sec_ssi != NULL), true, nic);
-
-	} else if (strcmp(sec_mode, "server") == 0) {
-
-		/* this implementation requires the SSI for IPv4 and IPv6 */
-
-		if (sec_ssi == NULL) {
-			UET_TSS_ERR("UET_SEC_SSI required for server mode");
-			return -EINVAL;
-		}
-
-		if (getenv(UET_SEC_SERVER) && !getenv(UET_SEC_CLIENT_SSI)) {
-			UET_TSS_ERR("UET_SEC_CLIENT_SSI required on server "
-				    "for server mode");
-			return -EINVAL;
-		}
-
-		rc = uet_sec_init_sd(DEF_SDI, UET_SEC_MODE_SERVER,
-				     true, false, nic);
-
-	} else {
-
-		UET_TSS_ERR("invalid UET_SEC_MODE environment variable");
-		return -EINVAL;
-
-	}
-
-	return rc;
 }
 

@@ -201,11 +201,13 @@ Replace `2` with the desired number of senders.
 - **UET_PDS_ACK_TYPE** - [ `ack` | `ack_cc` | `ack_ccx` ] (default=`ack`)
 - **UET_PDS_TX_TIMEOUT** - Time in milliseconds to wait for an ack before retransmitting a Tx packet (default=`5`).
 - **UET_PDS_MAX_TX_RETRIES** - Max number of times a Tx packet is retransmitted before failing (default=`5`).
+- **UET_NUM_ITERATIONS** - Override the number of message iterations the test app runs (default=`100`). Used to wall-clock-size a run (e.g., long enough to span several TSS key rotations).
 - **UET_FORCE_RUDI** - [ `0` | `1` ] (default=`0`) Force the RUDI (Reliable Unordered Delivery for Idempotent operations) PDS delivery mode for RMA read/write operations.
 - **UET_FORCE_UUD** - [ `0` | `1` ] (default=`0`) Force the UUD (Unreliable Unordered Delivery) best-effort single-packet datagram PDS delivery mode for an untagged send.
 - **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
 - **UET_SEC_SSI** - The SSI to be used for crypto operations. This value must be unique for all instances of `uet`. If not set the source IP address will be used instead as the source identifier.
 - **UET_SEC_CLIENT_SSI** - If set, the client SSI to be used by the server side of the session. This is only valid for the `UET_SEC_MODE=server` configuration.
+- **UET_SEC_KEY_ROTATION** - [ `0` | `1` ] (default=`0`) Enable AN key rotation for TSS (an SDME stand-in test). Both peers rotate keys off the shared wall clock, so no key exchange is needed. Not supported in `server` mode. See [Key Rotation](#key-rotation).
 - **UET_PDC_CLOSE_THRESH** - Randomly close a PDC after message Tx EOM (100=1% chance to close, default=0).
 - **UET_PKT_DROP_THRESH** - Randomly drop a Tx packet before sending (100=1% chance to drop, default=0). Ignored when `UET_IMPAIRMENT_SHIM` is set.
 - **UET_IMPAIRMENT_SHIM** - Path to a TOML configuration file that enables the impairment shim. See [Impairment Shim](#impairment-shim) below.
@@ -218,9 +220,10 @@ TSS are supported and environment variables are used to select/configure
 the mode.
 
 At this stage of the implementation, only a single static Secure Domain (SD)
-is provisioned with a fixed set of cryptographic keys. No key exchanges or
-key rotations are supported. Note that automatic rekeying is enabled using the
-timestamp field in the packet security header.
+is provisioned with a fixed set of cryptographic keys. No key exchange is
+supported. Automatic rekeying is enabled using the counter (TSC) field in the
+packet security header. AN key rotation is available as a test feature
+(`UET_SEC_KEY_ROTATION`), see [Key Rotation](#key-rotation) below.
 
 - Direct mode
     - `UET_SEC_MODE=direct`
@@ -281,6 +284,27 @@ Example for `server` mode:
        UET_SEC_MODE=server \
        UET_SEC_SSI=2 \
        ./uet client 192.168.1.1
+```
+
+### Key Rotation
+
+Setting `UET_SEC_KEY_ROTATION=1` enables AN (Association Number) key
+rotation, a test stand-in for the out-of-band, SDME-driven rotation of a
+real deployment. Both peers rotate through a compiled-in pool of keys on
+a fixed interval derived from the absolute wall clock, so they stay
+synchronized without any key exchange or signaling (the peers must be
+NTP-synced). Per the TSS spec, each rotation resets the security counter
+and epoch and a fresh per-rotation key preserves IV uniqueness across the
+reset. Rotation is not supported in `server` mode.
+
+Because a rotation spans several seconds, a meaningful test must run long enough
+to cross several rotations — use `UET_NUM_ITERATIONS` to size the run. Example
+(cluster mode with rotation, on both server and client):
+
+```
+       UET_SEC_MODE=cluster
+       UET_SEC_KEY_ROTATION=1
+       UET_NUM_ITERATIONS=800
 ```
 
 ### Crypto

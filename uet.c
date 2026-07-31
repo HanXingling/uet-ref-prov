@@ -70,6 +70,8 @@
 #include "uet_sec.h"
 
 #define UET_NUM_ITERATIONS	100
+#define UET_ITERATIONS_ENV	"UET_NUM_ITERATIONS"
+
 #define UET_MSG_SIZE		4096	/* in bytes */
 #define UET_UUD_MSG_SIZE	1024	/* UUD is single-packet only */
 #define UET_UUD_BLAST_N		100	/* datagrams per UUD blast */
@@ -317,6 +319,7 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	struct in_addr peer_in_addr;
 	struct in6_addr peer_in6_addr;
 	struct uet_addr *addr;
+	char *env_iters;
 
 	ctx->cfg.job_id = UET_DEF_JOB_ID;
 
@@ -406,6 +409,15 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	addr->initiator_id = UET_ADDR_DEF_INITIATOR_ID;
 
 	ctx->cfg.num_iterations = UET_NUM_ITERATIONS;
+
+	/* harness override the number of iterations executed */
+	env_iters = getenv(UET_ITERATIONS_ENV);
+	if (env_iters != NULL) {
+		int n = atoi(env_iters);
+		if (n > 0)
+			ctx->cfg.num_iterations = n;
+	}
+
 	if (ctx->cfg.uud) {
 		ctx->cfg.msg_size = UET_UUD_MSG_SIZE;
 		ctx->cfg.num_iterations = 1;
