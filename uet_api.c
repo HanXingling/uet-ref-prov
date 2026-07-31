@@ -2022,6 +2022,7 @@ static void uet_domain_free_all(struct uet_instance *uet)
 /* free most resources associated with uet instance */
 static void uet_finalize_core(struct uet_instance *uet)
 {
+	uet_sec_finalize();
 	uet_ep_hash_finalize(uet);
 	imp_shim_finalize();
 	uet_nic_finalize(UET_NIC(uet));

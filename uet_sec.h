@@ -7,12 +7,7 @@
 
 #include "uet_api_private.h"
 #include "uet_util.h"
-
-#define UET_SEC_MODE       "UET_SEC_MODE"
-#define UET_SEC_SSI        "UET_SEC_SSI"
-
-#define UET_SEC_SERVER     "UET_SEC_SERVER"
-#define UET_SEC_CLIENT_SSI "UET_SEC_CLIENT_SSI"
+#include "uet_sec_sd.h"
 
 #define UET_SEC_MAX_HDR_LEN sizeof(struct uet_sec_ssi)
 #define UET_SEC_TAG_LEN     16
@@ -76,11 +71,3 @@ int uet_sec_dec_pkt(struct uet_instance *uet,
 		    uint8_t *pkt,
 		    int pkt_len,
 		    int *tag_len);
-
-/*
- * Initialize the security domain(s). Dual-stack: the SD holds per-family key
- * material (keyed on each of the NIC's local v4/v6 addresses) selected per
- * packet at enc/dec time, so a single wire SDI serves both families.
- */
-int uet_sec_init(struct uet_nic *nic);
-

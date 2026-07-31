@@ -25,7 +25,7 @@ fi
 
 # Valid "test", "pds", and "shim" names
 test_names=(all rma rudi uud sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
-pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi)
+pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi pds_cluster_key_rot)
 shim_names=(rawsock xdp)
 
 # (not for sng) default ACK type: ack, ack_cc, ack_ccx
@@ -39,7 +39,7 @@ ACK_TYPE=ack_cc
 # default RTO would fire on merely-slow (not lost) packets, causing a
 # spurious-retransmit storm.
 TX_TIMEOUT=5
-TX_TIMEOUT_SEC=10
+TX_TIMEOUT_SEC=25
 TX_TIMEOUT_IMP=100
 MAX_TX_RETRIES=5
 
@@ -262,6 +262,17 @@ function pds_cluster()
     uud_pass "$UET_DEFS"
 }
 
+# Long, wall-clock-sized cluster run with AN key rotation enabled. Both
+# peers rotate keys off the shared wall clock (no SDME, no signaling), so no
+# exchange is needed. Sized via UET_NUM_ITERATIONS to span several rotations
+# and at least one key-pool wrap.
+function pds_cluster_key_rot()
+{
+    UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster UET_SEC_KEY_ROTATION=1 UET_NUM_ITERATIONS=800"
+    banner "PDS w/ SEC=cluster + AN key rotation $test"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+}
+
 function pds_cluster_ssi()
 {
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
@@ -282,12 +293,13 @@ function pds_server_ssi()
     uud_pass "$UET_DEFS $UET_SSI_DEFS"
 }
 
-if [ $pds = all -o $pds = sng             ]; then sng;             fi
-if [ $pds = all -o $pds = pds             ]; then pds;             fi
-if [ $pds = all -o $pds = pds_direct      ]; then pds_direct;      fi
-if [ $pds = all -o $pds = pds_cluster     ]; then pds_cluster;     fi
-if [ $pds = all -o $pds = pds_cluster_ssi ]; then pds_cluster_ssi; fi
-if [ $pds = all -o $pds = pds_server_ssi  ]; then pds_server_ssi;  fi
+if [ $pds = all -o $pds = sng             ]; then sng;                 fi
+if [ $pds = all -o $pds = pds             ]; then pds;                 fi
+if [ $pds = all -o $pds = pds_direct      ]; then pds_direct;          fi
+if [ $pds = all -o $pds = pds_cluster     ]; then pds_cluster;         fi
+if [ $pds = all -o $pds = pds_cluster_ssi ]; then pds_cluster_ssi;     fi
+if [ $pds = all -o $pds = pds_server_ssi  ]; then pds_server_ssi;      fi
+if [ $pds = pds_cluster_key_rot           ]; then pds_cluster_key_rot; fi
 
 banner "Done!"
 
