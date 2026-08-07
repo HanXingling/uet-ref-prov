@@ -20,7 +20,7 @@ struct bitmap *bm_create(int size); /* size = number of bits (mult of 64) */
 void bm_destroy(struct bitmap *bm);
 void bm_clear(struct bitmap *bm);
 int bm_count(const struct bitmap *bm); /* total bits set */
-void bm_set(struct bitmap *bm, int i, void *data);
+bool bm_set(struct bitmap *bm, int i, void *data);
 void bm_unset(struct bitmap *bm, int i);
 bool bm_get(const struct bitmap *bm, int i, void **data);
 int bm_min(const struct bitmap *bm); /* -1 if empty */
