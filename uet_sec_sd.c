@@ -167,6 +167,36 @@ struct uet_sec_sd *uet_sec_sd_get(uint32_t sdi)
 	return &sdkdb[sdi];
 }
 
+uint32_t uet_sec_sd_get_ini_start_psn(uint32_t sdi)
+{
+	struct uet_sec_sd *sd = uet_sec_sd_get(sdi);
+
+	return (sd != NULL) ? sd->ini_start_psn : 0;
+}
+
+void uet_sec_sd_set_ini_start_psn(uint32_t sdi, uint32_t psn)
+{
+	struct uet_sec_sd *sd = uet_sec_sd_get(sdi);
+
+	if (sd != NULL)
+		sd->ini_start_psn = psn;
+}
+
+uint32_t uet_sec_sd_get_tgt_start_psn(uint32_t sdi)
+{
+	struct uet_sec_sd *sd = uet_sec_sd_get(sdi);
+
+	return (sd != NULL) ? sd->tgt_start_psn : 0;
+}
+
+void uet_sec_sd_set_tgt_start_psn(uint32_t sdi, uint32_t psn)
+{
+	struct uet_sec_sd *sd = uet_sec_sd_get(sdi);
+
+	if (sd != NULL)
+		sd->tgt_start_psn = psn;
+}
+
 /* Current absolute rotation index (bucket number), and optionally the ms
  * elapsed time into that bucket. This is just division/modulo, the quotient
  * is the rotation index, the remainder is how far we are into the interval

@@ -1232,6 +1232,15 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 			pp->pds_len = sizeof(struct uet_pds_ack_ccx);
 			pp->pds_ccx_state = ntohll(pds_ack_ccx->ack_ccx_state);
 		}
+
+		/* closing ACK with expected PSN payload for 0-RTT */
+		if ((pp->pds_type == UET_PDS_TYPE_ACK) &&
+		    (pp->pds_flags & UET_PDS_ACK_FLAGS_EPSN)) {
+			struct uet_pds_ack_epsn *epsn =
+				(struct uet_pds_ack_epsn *)pp->pds;
+			pp->pds_payload = ntohl(epsn->payload);
+			pp->pds_len = sizeof(struct uet_pds_ack_epsn);
+		}
 		break;
 	case UET_PDS_TYPE_NACK:
 		pds_nack = (struct uet_pds_nack *)pp->pds;
@@ -1240,6 +1249,7 @@ int uet_parse_pkt(struct uet_instance *uet, void *pkt, size_t pkt_len,
 		pp->pds_spdcid = ntohs(pds_nack->spdcid);
 		pp->pds_dpdcid = ntohs(pds_nack->dpdcid);
 		pp->pds_nack_code = pds_nack->nack_code;
+		pp->pds_payload = ntohl(pds_nack->payload);
 		return 0;
 	case UET_PDS_TYPE_CTRL:
 		pds_ctrl = (struct uet_pds_ctrl *)pp->pds;

@@ -25,7 +25,7 @@ fi
 
 # Valid "test", "pds", and "shim" names
 test_names=(all rma rudi uud sync_rma atomic sync_atomic tag tag_any_src unexp_untag unexp_tag defer_send defer_tag defer_tag_any_src)
-pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi pds_cluster_key_rot)
+pds_names=(all sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi pds_cluster_key_rot pds_cluster_1rtt pds_cluster_churn pds_cluster_interop)
 shim_names=(rawsock xdp)
 
 # (not for sng) default ACK type: ack, ack_cc, ack_ccx
@@ -273,6 +273,46 @@ function pds_cluster_key_rot()
     run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
 }
 
+# Secure PDC establishment via RANDOM_1RTT_START. All other PDS with crypto
+# tests use 0-RTT by default. For 1-RTT, the target rejects the initiator's
+# start PSN, NACKs a minted one, and the initiator restarts the establishment.
+# Exercises the full round-trip establishment on every PDC.
+function pds_cluster_1rtt()
+{
+    UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster UET_PDS_PSN_METHOD=1rtt"
+    banner "PDS w/ SEC=cluster + 1RTT establishment $test"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+}
+
+# Secure 0RTT establishment under PDC churn. UET_PDC_CLOSE_THRESH randomly
+# closes PDCs after message EOM, forcing re-establishment. Each close advances
+# the SDI expected PSN on the target and returns it in the closing ACK. The
+# initiator adopts it as the next start PSN so re-opened PDCs stay 0-RTT
+# (no NACK) and old start PSNs are rejected.
+function pds_cluster_churn()
+{
+    UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster UET_PDC_CLOSE_THRESH=500"
+    banner "PDS w/ SEC=cluster + PDC churn $test"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+}
+
+# Cross-method secure PDS establishment interop. The two FEPs run DIFFERENT
+# methods (client 0-RTT, server 1-RTT). A FEP's method only governs how it
+# validates incoming SYNs as a target, so this exercises both flows at once.
+#  - client->server: PDCs hit the server's 1-RTT mint/NACK/re-drive
+#  - server->client: PDCs hit the client's 0-RTT acceptance check
+function pds_cluster_interop()
+{
+    if [ "$actor" = client ]; then
+        method=0rtt
+    else
+        method=1rtt
+    fi
+    UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster UET_PDS_PSN_METHOD=$method"
+    banner "PDS w/ SEC=cluster + cross-method interop (cli=0rtt srv=1rtt) $test"
+    run_test "$UET_DEFS $CMD_BASE $actor $app_test $peer_ip"
+}
+
 function pds_cluster_ssi()
 {
     UET_DEFS="UET_PDS=pds UET_SEC_MODE=cluster"
@@ -300,6 +340,9 @@ if [ $pds = all -o $pds = pds_cluster     ]; then pds_cluster;         fi
 if [ $pds = all -o $pds = pds_cluster_ssi ]; then pds_cluster_ssi;     fi
 if [ $pds = all -o $pds = pds_server_ssi  ]; then pds_server_ssi;      fi
 if [ $pds = pds_cluster_key_rot           ]; then pds_cluster_key_rot; fi
+if [ $pds = pds_cluster_1rtt              ]; then pds_cluster_1rtt;    fi
+if [ $pds = pds_cluster_churn             ]; then pds_cluster_churn;   fi
+if [ $pds = pds_cluster_interop           ]; then pds_cluster_interop; fi
 
 banner "Done!"
 
