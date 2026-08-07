@@ -124,6 +124,13 @@ struct uet_sec_sd {
 	uint64_t       auth_fail_threshold;
 	bool           domain_dropping;
 	struct uet_sec_sd_stats stats; /* per-SD stats */
+	/* Secure PDC establishment (EXPECTED_0RTT_START). ini_start_psn is
+	 * the base for new outgoing PDCs. tgt_start_psn is the minimum start
+	 * PSN accepted for a new incoming PDC. tgt_start_psn advances on PDC
+	 * close. ini_start_psn follows the value returned in the closing ACK.
+	 */
+	uint32_t       ini_start_psn;
+	uint32_t       tgt_start_psn;
 	/* AN key rotation (SDME stand-in). When enabled, the active AN, the
 	 * epoch/counter, and the key are all derived from the shared
 	 * wall clock.
@@ -172,6 +179,14 @@ struct uet_sec_sd *uet_sec_sd_get(uint32_t sdi);
 
 /* Active Tx AN right now: clock-derived when rotation is on, else sd->an. */
 uint8_t uet_sec_sd_tx_an(struct uet_sec_sd *sd);
+
+/* Secure PDC establishment PSNs. ini_start_psn = base for new outgoing
+ * PDCs. tgt_start_psn = minimum start PSN accepted for a new incoming PDC.
+ */
+uint32_t uet_sec_sd_get_ini_start_psn(uint32_t sdi);
+void     uet_sec_sd_set_ini_start_psn(uint32_t sdi, uint32_t psn);
+uint32_t uet_sec_sd_get_tgt_start_psn(uint32_t sdi);
+void     uet_sec_sd_set_tgt_start_psn(uint32_t sdi, uint32_t psn);
 
 /* Tx-side association-change bookkeeping. On a rotation boundary (AN/key
  * change) this resets the per-packet counter and epoch to 0. No-op when

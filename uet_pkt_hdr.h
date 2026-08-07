@@ -177,12 +177,12 @@ struct UET_PACKED uet_pds_req_cc_state {
 /* uet pds rod/rud ack header */
 struct UET_PACKED uet_pds_ack {
 	/* uet pds ack flags in prologue */
-#define UET_PDS_ACK_FLAGS_RSV         0x40 /* Reserved */
+#define UET_PDS_ACK_FLAGS_EPSN        0x40 /* 0-RTT closing ACK expected PSN */
 #define UET_PDS_ACK_FLAGS_M           0x20 /* original pkt was ECN marked */
 #define UET_PDS_ACK_FLAGS_RETX        0x10 /* ACK to a retransmit */
 #define UET_PDS_ACK_FLAGS_P           0x08 /* ACK to a probe (PSN ignored) */
 #define UET_PDS_ACK_FLAGS_REQ_CLR_CLS 0x06 /* target requests clear or close */
-#define UET_PDS_ACK_FLAGS_RSV2        0x01 /* Reserved */
+#define UET_PDS_ACK_FLAGS_RSV         0x01 /* Reserved */
 #define UET_PDS_ACK_FLAGS_NONE        0x00
 	struct uet_pds_prlg prlg;
 	union {
@@ -192,6 +192,11 @@ struct UET_PACKED uet_pds_ack {
 	uint32_t            cack_psn;
 	uint16_t            spdcid;
 	uint16_t            dpdcid;
+};
+
+struct UET_PACKED uet_pds_ack_epsn {
+	struct uet_pds_ack ack;
+	uint32_t           payload;
 };
 
 /* uet pds rod/rud ack w/ cc extension header */

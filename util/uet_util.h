@@ -101,6 +101,7 @@ struct uet_parsed_pkt {
 	uint8_t pds_syn_off;
 	uint32_t pds_clear_psn;
 	uint8_t pds_nack_code;
+	uint32_t pds_payload;             /* NACK payload or closing ACK EPSN */
 	uint16_t pds_probe_opaque;
 	uint8_t pds_pdc_info;
 	uint32_t pds_ctrl_payload;
