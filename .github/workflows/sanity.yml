@@ -7,7 +7,14 @@ on:
 jobs:
   run_sanity:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
+    # Run IPv4 and IPv6 as two parallel jobs on separate runners. Each runner
+    # is its own ephemeral VM, so their rawsock endpoints never share an
+    # interface.
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [ipv4, ipv6]
     steps:
       - name: Check out the code
         uses: actions/checkout@v3
@@ -92,43 +99,31 @@ jobs:
           sudo ip -6 neigh add fd00:1::1 lladdr $MAC2 dev vm2 nud permanent
           sudo ip -6 neigh add fd00:1::2 lladdr $MAC1 dev brm nud permanent
 
-      - name: run all tests in SNG mode (IPv4)
+      # Suite via scripts/uet_test.sh, which sets each mode's env (security
+      # modes, SSI, ack_cc, timeouts) and auto-discovers ../libfabric. One
+      # PDS-cell/test per loop iteration keeps the server (background) and
+      # client (foreground) in sync; uet_test.sh exits non-zero on failure.
+      # NOTE: uet_test.sh runs `sudo` internally.
+      # 6 cells x 5 tests = 30 runs, for this job's address family.
+      - name: run suite via uet_test.sh (${{ matrix.family }})
         run: |
-          arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all 10.1.0.2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all 10.1.0.1
-          echo "Client finished."
-
-      - name: run all tests in PDS mode (IPv4)
-        run: |
-          arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
-          echo "Client finished."
-
-      - name: run all tests in SNG mode (IPv6)
-        run: |
-          ip -6 neigh
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all fd00:1::2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all fd00:1::1
-          echo "Client finished."
-
-      - name: run all tests in PDS mode (IPv6)
-        run: |
-          ip -6 neigh
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all fd00:1::2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all fd00:1::1
-          echo "Client finished."
+          if [ "${{ matrix.family }}" = ipv6 ]; then
+            ip -6 neigh
+            srv_peer=fd00:1::2; cli_peer=fd00:1::1
+          else
+            arp -a
+            srv_peer=10.1.0.2; cli_peer=10.1.0.1
+          fi
+          for pds in pds pds_cluster pds_server_ssi \
+                     pds_cluster_1rtt pds_cluster_churn pds_cluster_interop; do
+            for t in rudi uud rma tag atomic; do
+              echo "::group::${{ matrix.family }} $pds/$t"
+              ./scripts/uet_test.sh server brm "$srv_peer" "$t" "$pds" &
+              srv=$!
+              sleep 2
+              ./scripts/uet_test.sh client vm2 "$cli_peer" "$t" "$pds"
+              wait $srv
+              echo "::endgroup::"
+            done
+          done
 
