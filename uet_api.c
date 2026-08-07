@@ -4621,40 +4621,43 @@ static void uet_dsend_init(struct uet_tx_desc *tx_desc)
 /* assemble packet from gather list */
 static void *gather_iov_to_buffer(
 	const struct iovec *iov, size_t iov_count, size_t payload_len,
-	size_t *saved_offset, size_t *iov_index)
+	size_t payload_offset)
 {
-	void *pkt_buf = calloc(payload_len, sizeof(char));
+	uint8_t *pkt_buf = calloc(payload_len, sizeof(*pkt_buf));
+	size_t iov_index = 0;
+	size_t iov_offset;
+	size_t remaining;
+	size_t pkt_offset = 0;
 
 	if (!pkt_buf)
 		return NULL;
 
-	size_t pkt_buf_offset = 0;
-	size_t copied = 0;
-
-	for (; *iov_index < iov_count; (*iov_index)++) {
-		void *current_buf = (void *)(iov[*iov_index].iov_base +
-				*saved_offset);
-		size_t current_len = iov[*iov_index].iov_len - *saved_offset;
-		size_t still_to_send = payload_len - pkt_buf_offset;
-		size_t to_copy = (current_len < still_to_send) ?
-			current_len : still_to_send;
-
-		memcpy(pkt_buf + pkt_buf_offset, current_buf, to_copy);
-		pkt_buf_offset += to_copy;
-		copied += to_copy;
-
-		if (copied == payload_len) {
-			if (current_len > to_copy) {
-				*saved_offset += to_copy;
-			} else if (current_len == to_copy) {
-				*saved_offset = 0;
-				(*iov_index)++;
-			}
-			break;
-		}
-		if (copied < payload_len && current_len <= to_copy)
-			*saved_offset = 0;
+	while ((iov_index < iov_count) &&
+	       (payload_offset >= iov[iov_index].iov_len)) {
+		payload_offset -= iov[iov_index].iov_len;
+		iov_index++;
 	}
+
+	iov_offset = payload_offset;
+	remaining = payload_len;
+	while (remaining && (iov_index < iov_count)) {
+		size_t available = iov[iov_index].iov_len - iov_offset;
+		size_t to_copy = (available < remaining) ? available : remaining;
+
+		memcpy(pkt_buf + pkt_offset,
+		       (uint8_t *)iov[iov_index].iov_base + iov_offset,
+		       to_copy);
+		pkt_offset += to_copy;
+		remaining -= to_copy;
+		iov_index++;
+		iov_offset = 0;
+	}
+
+	if (remaining) {
+		free(pkt_buf);
+		return NULL;
+	}
+
 	return pkt_buf;
 }
 
@@ -4671,8 +4674,6 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 	void *ses, *pkt_buf;
 	uet_pds_next_hdr_t next_hdr;
 	struct uet_pds_info *pds_info = NULL;
-	size_t iov_index = 0;
-	size_t saved_offset = 0;
 
 	uet_ep = tx_desc->uet_ep;
 	pds = &uet_ep->uet_domain->uet->pds;
@@ -4736,8 +4737,7 @@ static int uet_tx_msg(struct uet_tx_desc *tx_desc)
 					tx_desc->buf_desc.iov.iov,
 					tx_desc->buf_desc.iov.iov_count,
 					payload_len,
-					&saved_offset,
-					&iov_index);
+					tx_desc->buf_desc.buf_off);
 
 			if (!pkt_buf) {
 				UET_API_ERR("TX: Msg Buffer is null");
