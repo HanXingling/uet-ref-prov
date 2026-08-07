@@ -7,7 +7,7 @@ on:
 jobs:
   run_sanity:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Check out the code
         uses: actions/checkout@v3
@@ -92,43 +92,36 @@ jobs:
           sudo ip -6 neigh add fd00:1::1 lladdr $MAC2 dev vm2 nud permanent
           sudo ip -6 neigh add fd00:1::2 lladdr $MAC1 dev brm nud permanent
 
-      - name: run all tests in SNG mode (IPv4)
+      # Full suite via scripts/uet_test.sh, which sets each mode's env
+      # (security modes, SSI, ack_cc, timeouts) and auto-discovers
+      # ../libfabric. One PDS test cell per loop iteration keeps the server
+      # and client in sync. uet_test.sh exits non-zero on failure.
+      # NOTE: uet_test.sh runs `sudo` internally
+      - name: run full suite via uet_test.sh (IPv4)
         run: |
           arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all 10.1.0.2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all 10.1.0.1
-          echo "Client finished."
+          for pds in sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi \
+                     pds_cluster_1rtt pds_cluster_churn pds_cluster_interop; do
+            echo "::group::IPv4 $pds"
+            ./scripts/uet_test.sh server brm 10.1.0.2 all "$pds" &
+            srv=$!
+            sleep 2
+            ./scripts/uet_test.sh client vm2 10.1.0.1 all "$pds"
+            wait $srv
+            echo "::endgroup::"
+          done
 
-      - name: run all tests in PDS mode (IPv4)
-        run: |
-          arp -a
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all 10.1.0.2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all 10.1.0.1
-          echo "Client finished."
-
-      - name: run all tests in SNG mode (IPv6)
+      - name: run full suite via uet_test.sh (IPv6)
         run: |
           ip -6 neigh
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=brm ./uet server all fd00:1::2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_IFNAME=vm2 ./uet client all fd00:1::1
-          echo "Client finished."
-
-      - name: run all tests in PDS mode (IPv6)
-        run: |
-          ip -6 neigh
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=brm ./uet server all fd00:1::2 &
-          echo "Server started in background."
-          sleep 2
-          echo "Client started."
-          sudo LD_LIBRARY_PATH=../libfabric/src/.libs:. UET_PDS=pds UET_IFNAME=vm2 ./uet client all fd00:1::1
-          echo "Client finished."
+          for pds in sng pds pds_direct pds_cluster pds_cluster_ssi pds_server_ssi \
+                     pds_cluster_1rtt pds_cluster_churn pds_cluster_interop; do
+            echo "::group::IPv6 $pds"
+            ./scripts/uet_test.sh server brm fd00:1::2 all "$pds" &
+            srv=$!
+            sleep 2
+            ./scripts/uet_test.sh client vm2 fd00:1::1 all "$pds"
+            wait $srv
+            echo "::endgroup::"
+          done
 
