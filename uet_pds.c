@@ -1258,6 +1258,10 @@ static int uet_pds_send_ctrl_pkt(struct uet_instance *uet,
 		cp_psn = orig_pdc_pkt->psn;
 		need_track = false;
 		break;
+	case UET_PDS_CTRL_TYPE_CLEAR:
+		cp_psn = 0;
+		need_track = false;
+		break;
 	default:
 		UET_PDS_ERR("invalid control type %u", ctrl_type);
 		free(pdc_pkt->pkt_buf);
@@ -2558,7 +2562,7 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 	/* TODO: UDP support */
 	entropy_hdr->entropy = htons(pdc_pkt->pkt_pp.entropy_val);
 
-	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR_CLS
+	flags = (pdc_pkt->needs_clear) ? UET_PDS_ACK_FLAGS_REQ_CLR
 				       : UET_PDS_ACK_FLAGS_NONE;
 	ack_pds->prlg.type_next_flags =
 		htons((uet->pds.ack_type << UET_PDS_TYPE_SHIFT) |
@@ -2588,13 +2592,13 @@ static void uet_pds_build_ack_pkt(struct uet_instance *uet,
 }
 
 static void uet_pds_update_cack(struct uet_pdc *pdc,
-				struct uet_pdc_pkt *pdc_pkt)
+				uint32_t pds_clear_psn)
 {
 	struct uet_pdc_pkt *temp;
 	int max_rx_bm_idx;
 	int i = 0;
 
-	UET_PDS_UPDATE_PSN(pdc->max_clear_psn, pdc_pkt->pkt_pp.pds_clear_psn);
+	UET_PDS_UPDATE_PSN(pdc->max_clear_psn, pds_clear_psn);
 
 	max_rx_bm_idx = bm_max(pdc->rx_bm);
 	for (i = 0; i <= max_rx_bm_idx; i++) {
@@ -3061,7 +3065,7 @@ static int uet_pds_upcall_ses_rx_req(struct uet_instance *uet,
 			pdc->accepted_bytes +=
 				uet_max(pdc_pkt->pkt_pp.pkt_payload_len,
 					uet->pds.ack_gen_min_pkt_add);
-			uet_pds_update_cack(pdc, pdc_pkt);
+			uet_pds_update_cack(pdc, pdc_pkt->pkt_pp.pds_clear_psn);
 			uet_pds_update_sack_base(pdc, pdc_pkt, false);
 			/* transmit ACK */
 			if (uet_pds_should_sack(uet, pdc, pdc_pkt)) {
@@ -3616,12 +3620,21 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 	if (rc != 0)
 		return rc;
 
-	/* TODO:
-	 * If the UET_PDS_ACK_FLAGS_REQ_TGT_CLR flag was set on the ACK,
-	 * immediately send a PDS CLEAR control packet now. This allows the
-	 * CLEAR to be acknowledged right away instead of waiting for the
-	 * next request to be sent that would contain a cumulative clear PSN.
+	/*
+	 * If the UET_PDS_ACK_FLAGS_REQ_CLR flag was set on the ACK,
+	 * immediately send a PDS CLEAR control packet now.
+	 * Note: the UET spec only requires a standalone clear CP when no PDS
+	 * request is pending to carry clear_psn_offset
 	 */
+	if (pdc->is_initiator &&
+	    (pp->pds_flags & UET_PDS_ACK_FLAGS_REQ_CLR)) {
+		rc = uet_pds_send_ctrl_pkt(uet, pdc, UET_PDS_CTRL_TYPE_CLEAR,
+				      pdc->tx_bm_base_psn - 1, NULL);
+		if ((rc != 0) && (rc != -EAGAIN)) {
+			UET_PDS_WARN("PDC %u failed to send clear cp (rc=%d)",
+				     pdc->pdc_id, rc);
+		}
+	}
 
 	/*
 	 * Check if PDC has close_requested set and all messages have drained.
@@ -3891,6 +3904,17 @@ static int uet_pds_process_close_command_cp(struct uet_instance *uet,
 	return 0;
 }
 
+static int uet_pds_process_clear_cp(struct uet_instance *uet,
+				    struct uet_pdc *pdc,
+				    struct uet_parsed_pkt *pp)
+{
+	UET_PDS_DBG("Received CLEAR cp (spdcid=%u dpdcid=%u)",
+		    pp->pds_spdcid, pp->pds_dpdcid);
+
+	uet_pds_update_cack(pdc, pp->pds_ctrl_payload);
+	return uet_pds_shift_rx_window(uet, pdc);
+}
+
 static int uet_pds_process_control(struct uet_instance *uet,
 				   struct uet_parsed_pkt *pp,
 				   uint8_t *pkt,
@@ -3936,6 +3960,9 @@ static int uet_pds_process_control(struct uet_instance *uet,
 
 	case UET_PDS_CTRL_TYPE_CLOSE:
 		return uet_pds_process_close_command_cp(uet, pdc, pp);
+
+	case UET_PDS_CTRL_TYPE_CLEAR:
+		return uet_pds_process_clear_cp(uet, pdc, pp);
 
 	case UET_PDS_CTRL_TYPE_PROBE:
 	case UET_PDS_CTRL_TYPE_CREDIT:
