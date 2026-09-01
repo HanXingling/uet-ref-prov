@@ -5745,16 +5745,104 @@ static int uet_fid_nic_close(struct fid *fid)
 	if (nic == NULL)
 		return 0;
 
-	if (nic->device_attr != NULL)
+	if (nic->device_attr != NULL) {
+		free(nic->device_attr->name);
+		free(nic->device_attr->device_id);
+		free(nic->device_attr->device_version);
+		free(nic->device_attr->vendor_id);
+		free(nic->device_attr->driver);
+		free(nic->device_attr->firmware);
 		free(nic->device_attr);
-	if (nic->link_attr != NULL)
+	}
+	free(nic->bus_attr);
+	if (nic->link_attr != NULL) {
+		free(nic->link_attr->network_type);
+		free(nic->link_attr->address);
 		free(nic->link_attr);
-	if (nic->fid.ops != NULL)
-		free(nic->fid.ops);
+	}
 	free(nic);
 
 	return 0;
 }
+
+static int uet_fid_nic_control(struct fid *fid, int command, void *arg)
+{
+	struct fid_nic *nic = (struct fid_nic *)fid;
+	struct fid_nic *dup;
+
+	if (command != FI_DUP)
+		return -FI_ENOSYS;
+	if (arg == NULL)
+		return -FI_EINVAL;
+
+	dup = calloc(1, sizeof(*dup));
+	if (dup == NULL)
+		return -FI_ENOMEM;
+	dup->fid = nic->fid;
+	dup->prov_attr = nic->prov_attr;
+
+	if (nic->device_attr != NULL) {
+		dup->device_attr = calloc(1, sizeof(*dup->device_attr));
+		if (dup->device_attr == NULL)
+			goto err;
+#define UET_DUP_NIC_STRING(_field)                                      \
+		do {                                                        \
+			if (nic->device_attr->_field != NULL) {              \
+				dup->device_attr->_field =                      \
+					strdup(nic->device_attr->_field);        \
+				if (dup->device_attr->_field == NULL)            \
+					goto err;                                 \
+			}                                                   \
+		} while (0)
+		UET_DUP_NIC_STRING(name);
+		UET_DUP_NIC_STRING(device_id);
+		UET_DUP_NIC_STRING(device_version);
+		UET_DUP_NIC_STRING(vendor_id);
+		UET_DUP_NIC_STRING(driver);
+		UET_DUP_NIC_STRING(firmware);
+#undef UET_DUP_NIC_STRING
+	}
+
+	if (nic->bus_attr != NULL) {
+		dup->bus_attr = malloc(sizeof(*dup->bus_attr));
+		if (dup->bus_attr == NULL)
+			goto err;
+		*dup->bus_attr = *nic->bus_attr;
+	}
+
+	if (nic->link_attr != NULL) {
+		dup->link_attr = calloc(1, sizeof(*dup->link_attr));
+		if (dup->link_attr == NULL)
+			goto err;
+		*dup->link_attr = *nic->link_attr;
+		dup->link_attr->network_type = NULL;
+		dup->link_attr->address = NULL;
+		if (nic->link_attr->network_type != NULL) {
+			dup->link_attr->network_type =
+				strdup(nic->link_attr->network_type);
+			if (dup->link_attr->network_type == NULL)
+				goto err;
+		}
+		if (nic->link_attr->address != NULL) {
+			dup->link_attr->address = strdup(nic->link_attr->address);
+			if (dup->link_attr->address == NULL)
+				goto err;
+		}
+	}
+
+	*(struct fid_nic **)arg = dup;
+	return FI_SUCCESS;
+
+err:
+	uet_fid_nic_close(&dup->fid);
+	return -FI_ENOMEM;
+}
+
+static struct fi_ops uet_fid_nic_ops = {
+	.size = sizeof(struct fi_ops),
+	.close = uet_fid_nic_close,
+	.control = uet_fid_nic_control,
+};
 
 int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		const struct fi_info *hints, struct fi_info **info)
@@ -5805,15 +5893,7 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	nic->fid.fclass = FI_CLASS_NIC;
 	nic->fid.context = uet;
 
-	nic->fid.ops = calloc(1, sizeof(struct fi_ops));
-	if (nic->link_attr == NULL) {
-		UET_API_PRINT_ERRNO("calloc");
-		rc = -FI_ENOMEM;
-		goto err_return;
-	}
-
-	nic->fid.ops->size = sizeof(struct fi_ops);
-	nic->fid.ops->close = uet_fid_nic_close;
+	nic->fid.ops = &uet_fid_nic_ops;
 
 	rc = uet_nic_getinfo(UET_NIC(uet), &nic_info);
 	if (rc != FI_SUCCESS) {
@@ -5821,9 +5901,16 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 		goto err_return;
 	}
 
-	nic->device_attr->name       = nic_info.ifname;
-	nic->link_attr->network_type = nic_info.network_type;
-	nic->link_attr->address      = nic_info.mac_addr_str;
+	nic->device_attr->name = strdup(nic_info.ifname);
+	nic->link_attr->network_type = strdup(nic_info.network_type);
+	nic->link_attr->address = strdup(nic_info.mac_addr_str);
+	if (nic->device_attr->name == NULL ||
+	    nic->link_attr->network_type == NULL ||
+	    nic->link_attr->address == NULL) {
+		UET_API_PRINT_ERRNO("strdup");
+		rc = -FI_ENOMEM;
+		goto err_return;
+	}
 	nic->link_attr->mtu          = nic_info.mtu;
 	nic->link_attr->state        =
 		(nic_info.link_state == UET_NIC_LINK_STATE_DOWN)
@@ -5889,15 +5976,8 @@ int uet_getinfo(uet_handle_t handle, struct uet_addr *node,
 	return FI_SUCCESS;
 
 err_return:
-	if (nic != NULL) {
-		if (nic->device_attr != NULL)
-			free(nic->device_attr);
-		if (nic->link_attr != NULL)
-			free(nic->link_attr);
-		if (nic->fid.ops != NULL)
-			free(nic->fid.ops);
-		free(nic);
-	}
+	if (nic != NULL)
+		uet_fid_nic_close(&nic->fid);
 	if (new_info != NULL) {
 #if ENABLE_VERBS
 		uet_verbs_fi_freeinfo(new_info);
