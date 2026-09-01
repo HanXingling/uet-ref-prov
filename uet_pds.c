@@ -27,9 +27,11 @@
 #include "bitmap.h"
 #include "crc32c.h"
 
-#define UET_DEFAULT_TC        0
-#define UET_DEFAULT_MPR       128
-#define UET_DEFAULT_ENTROPY   0x4242
+#define UET_DEFAULT_TC          0
+#define UET_PDS_MPR_GRANULARITY 128U
+#define UET_DEFAULT_MP_RANGE    128U
+#define UET_DEFAULT_MPR         (UET_DEFAULT_MP_RANGE / UET_PDS_MPR_GRANULARITY)
+#define UET_DEFAULT_ENTROPY     0x4242
 
 #define UET_PDC_MAX 64
 
@@ -169,6 +171,9 @@ struct uet_pdc {
 	struct bitmap       *tx_bm;
 	uint32_t             tx_bm_base_psn; /* start PSN for initiator MPR */
 	uint32_t             max_cack_psn; /* highest cack PSN received */
+	uint32_t             peer_mp_range; /* 0 means peer ignores MP_RANGE */
+	uint32_t             mpr_update_cack_psn;
+	bool                 mpr_update_valid;
 
 	/* target side fields */
 	struct bitmap      *rx_bm;
@@ -261,12 +266,26 @@ static inline uint32_t uet_pds_rand_start_psn(void)
 		}                                         \
 	} while (0)
 
-#define PSN_IN_MPR(psn, base_psn)                            \
-	(((uint32_t)((psn) - (base_psn)) >= 0) &&            \
-	 ((uint32_t)((psn) - (base_psn)) < UET_DEFAULT_MPR))
+#define PSN_IN_MPR(psn, base_psn) \
+	((uint32_t)((psn) - (base_psn)) < UET_DEFAULT_MP_RANGE)
 
 #define PSN_IN_PRIOR_MPR(psn, base_psn)                             \
-	PSN_IN_MPR((psn), (uint32_t)((base_psn) - UET_DEFAULT_MPR))
+	PSN_IN_MPR((psn), (uint32_t)((base_psn) - UET_DEFAULT_MP_RANGE))
+
+static inline uint32_t uet_pds_decode_mpr(uint8_t mpr)
+{
+	return (uint32_t)mpr * UET_PDS_MPR_GRANULARITY;
+}
+
+static inline bool uet_pds_tx_psn_allowed(const struct uet_pdc *pdc,
+					   uint32_t psn)
+{
+	if (!PSN_IN_MPR(psn, pdc->tx_bm_base_psn))
+		return false;
+
+	return !pdc->peer_mp_range ||
+	       !UET_PDS_PSN_AFTER(psn, pdc->max_cack_psn + pdc->peer_mp_range);
+}
 
 #define PDS_TYPE_TO_STR(t)                                 \
 	(((t) == UET_PDS_TYPE_RUD_REQ)    ? "RUD_REQ" :    \
@@ -617,6 +636,10 @@ static void uet_init_pdc(struct uet_pdc *pdc,
 	pdc->next_psn = 0;
 	bm_clear(pdc->tx_bm);
 	pdc->tx_bm_base_psn = 0;
+	pdc->max_cack_psn = 0;
+	pdc->peer_mp_range = UET_DEFAULT_MP_RANGE;
+	pdc->mpr_update_cack_psn = 0;
+	pdc->mpr_update_valid = false;
 
 	bm_clear(pdc->rx_bm);
 	pdc->rx_bm_base_psn = 0;
@@ -956,6 +979,7 @@ static int uet_pdsm_assign_tgt_pdc(struct uet_parsed_pkt *pp,
 	pdc->rx_bm_base_psn  = base;
 	pdc->tx_bm_base_psn  = base;
 	pdc->next_psn        = base;
+	pdc->max_cack_psn    = (base - 1);
 	pdc->cack_psn        = (base - 1);
 	pdc->max_clear_psn   = (base - 1);
 	pdc->prev_ar_psn     = (base - 1);
@@ -1139,7 +1163,7 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	struct uet_entropy *entropy_hdr;
 	size_t ip_hdr_size;
 	uint16_t ctrl_flags;
-	int rc;
+	int rc, tx_bm_idx;
 
 	/* allocate the packet descriptor */
 	pdc_pkt = calloc(1, sizeof(struct uet_pdc_pkt));
@@ -1196,9 +1220,14 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	ctrl_hdr->prlg.type_ctrl_flags = htons(ctrl_flags);
 	ctrl_hdr->rsvd = 0;
 
-	/* assign PSN for close command */
-	pdc->close_cmd_psn = pdc->next_psn++;
-	pdc_pkt->psn = pdc->close_cmd_psn;
+	if (!uet_pds_tx_psn_allowed(pdc, pdc->next_psn)) {
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return -EAGAIN;
+	}
+
+	/* Reserve the PSN; commit next_psn only after successful submission. */
+	pdc_pkt->psn = pdc->next_psn;
 	ctrl_hdr->psn = htonl(pdc_pkt->psn);
 
 	ctrl_hdr->spdcid = htons(pdc->pdc_id);
@@ -1235,16 +1264,30 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	pdc_pkt->tx_pkt_handle = NULL; /* no SES handle for control packets */
 	pdc_pkt->tx_pkt_acked = false;
 	pdc_pkt->flags = 0;
+	tx_bm_idx = pdc_pkt->psn - pdc->tx_bm_base_psn;
+
+	if (bm_get(pdc->tx_bm, tx_bm_idx, NULL) ||
+	    !bm_set(pdc->tx_bm, tx_bm_idx, pdc_pkt)) {
+		UET_PDS_ERR("PDC %u cannot track close PSN %u at tx_bm index %d",
+			    pdc->pdc_id, pdc_pkt->psn, tx_bm_idx);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return -EIO;
+	}
 
 	/* send the packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
 	if (rc != 0) {
 		UET_PDS_ERR("failed to send close command for PDC %u",
 			    pdc->pdc_id);
+		bm_unset(pdc->tx_bm, tx_bm_idx);
 		free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 		return rc;
 	}
+
+	pdc->close_cmd_psn = pdc_pkt->psn;
+	pdc->next_psn++;
 
 	/* the packet was sent successfully */
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX CLOSE COMMAND");
@@ -1253,8 +1296,6 @@ static int uet_pds_send_close_cmd(struct uet_instance *uet,
 	UET_PDS_DBG("PDC %u tx_bm: base=%u psn=%u SET bit=%u (close cmd)",
 		    pdc->pdc_id, pdc->tx_bm_base_psn, pdc_pkt->psn,
 		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
-
-	bm_set(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn), pdc_pkt);
 
 	/* insert the packet to the end of the timeout queue for retries */
 	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
@@ -1442,14 +1483,14 @@ int uet_pds_initialize(struct uet_instance *uet)
 		pdc->state = PDC_STATE_UNALLOC;
 		pdc->pdc_id = i;
 
-		pdc->tx_bm = bm_create(UET_DEFAULT_MPR);
+		pdc->tx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		if (!pdc->tx_bm) {
 			UET_PDS_ERR("failed to create Tx bitmap");
 			uet_pdsm_free_pdc(pdc);
 			return -ENOMEM; /* FIXME unwind and free PDCs */
 		}
 
-		pdc->rx_bm = bm_create(UET_DEFAULT_MPR);
+		pdc->rx_bm = bm_create(UET_DEFAULT_MP_RANGE);
 		if (!pdc->rx_bm) {
 			UET_PDS_ERR("failed to create Rx bitmap");
 			bm_destroy(pdc->tx_bm);
@@ -1685,7 +1726,9 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	size_t ip_hdr_size;
 	void *ses_hdr, *payload;
 	uint16_t pds_flags;
-	int rc, hdr_len;
+	int rc, hdr_len, tx_bm_idx;
+	bool map_msg_id = false;
+	bool mapped_msg_id = false;
 
 	PDS_GO();
 
@@ -1759,30 +1802,22 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			    tx_pkt_handle, msg_id,
 			    ((flags & UET_PDS_FLAG_EOM) ? " [EOM]" : ""));
 		pdc = uet_pdsm_assign_ini_pdc(uet_ep, av_entry, mode);
-		if (pdc) {
-			/* verify PDC has no active message */
-			if (pdc->active_msg_id_valid) {
-				UET_PDS_DBG("PDC %u already has "
-					    "active_msg_id %u, cannot start "
-					    "msg_id %u (EAGAIN)",
-					    pdc->pdc_id, pdc->active_msg_id,
-					    msg_id);
-				return -EAGAIN;
-			}
-
-			rc = uet_pdsm_map_msgid_pdc(msg_id, pdc);
-			if (rc != 0)
-				return rc;
-
-			/* set the active message for this PDC */
-			pdc->active_msg_id = msg_id;
-			pdc->active_msg_id_valid = true;
-		} else {
+		if (!pdc) {
 			UET_PDS_DBG("failed to get PDC for SOM %p "
 				    "msg_id %u (EAGAIN)",
 				    tx_pkt_handle, msg_id);
 			return -EAGAIN;
 		}
+
+		/* verify PDC has no active message */
+		if (pdc->active_msg_id_valid) {
+			UET_PDS_DBG("PDC %u active msg_id %u blocks SOM msg_id %u (EAGAIN)",
+				    pdc->pdc_id, pdc->active_msg_id, msg_id);
+			return -EAGAIN;
+		}
+
+		/* Commit this mapping only when the first packet can be sent. */
+		map_msg_id = true;
 	} else {
 		UET_PDS_DBG("SES Tx %p msg_id %u%s",
 			    tx_pkt_handle, msg_id,
@@ -1804,6 +1839,18 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		return -EINVAL;
 	}
 
+	/*
+	 * tx_bm owns all state required to acknowledge or retransmit a PSN.
+	 * Returning -EAGAIN leaves the SES descriptor at its current payload
+	 * offset; ACK progress advances tx_bm_base_psn before SES retries it.
+	 */
+	if (!uet_pds_tx_psn_allowed(pdc, pdc->next_psn)) {
+		UET_PDS_DBG("PDC %u Tx window full: base=%u next=%u local=%u peer=%u",
+			    pdc->pdc_id, pdc->tx_bm_base_psn, pdc->next_psn,
+			    UET_DEFAULT_MP_RANGE, pdc->peer_mp_range);
+		return -EAGAIN;
+	}
+
 	/* for non-SOM packets, verify msg_id matches the active message */
 	if (!(flags & UET_PDS_FLAG_SOM)) {
 		if (!pdc->active_msg_id_valid) {
@@ -1818,47 +1865,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 				    "msg_id %u",
 				    pdc->pdc_id, pdc->active_msg_id, msg_id);
 			return -EINVAL;
-		}
-	}
-
-	if (!pds_info && (flags & UET_PDS_FLAG_EOM)) {
-		if (flags & UET_PDS_FLAG_MAINTAIN_PDC) {
-			UET_PDS_DBG("PDC %u flagged with MAINTAIN_PDC on EOM",
-				    pdc->pdc_id);
-		} else {
-			/* clear the active message on this PDC */
-			pdc->active_msg_id = 0;
-			pdc->active_msg_id_valid = false;
-
-			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
-			if (rc != 0)
-				return rc;
-
-			/* randomly mark the PDC for close */
-			if (pds_pdc_close_thresh &&
-			    pdc->is_initiator && !pdc->close_requested &&
-			    uet_pds_random_check(pds_pdc_close_thresh)) {
-				UET_PDS_ERR("PDC %u random marked for close!",
-					    pdc->pdc_id);
-				pdc->close_requested = true;
-			}
-
-			/*
-			 * PSN-range close, when an encrypted PDC's PSN
-			 * reaches Start_PSN + 2^31, mark it for close (it
-			 * re-establishes on the next send). Marking at EOM
-			 * lets in-process messages complete normally.
-			 */
-			if (pdc->sec_enabled &&
-			    pdc->is_initiator && !pdc->close_requested &&
-			    ((uint32_t)(pdc->next_psn - pdc->start_psn) >=
-			     UET_PSN_RANGE_LIMIT)) {
-				UET_PDS_ERR("PDC %u PSN range exhausted "
-					    "marked for close!",
-					    pdc->pdc_id);
-				pdc->close_requested = true;
-				pds_state.psn_range_close_cnt++;
-			}
 		}
 	}
 
@@ -1934,7 +1940,7 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	pds_hdr->prlg.type_next_flags = htons(pds_flags);
 
-	pdc_pkt->psn = pdc->next_psn++;
+	pdc_pkt->psn = pdc->next_psn;
 	pds_hdr->psn = htonl(pdc_pkt->psn);
 
 	/*
@@ -1953,7 +1959,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 			htons((pdc->syn_offset &
 			       UET_PDS_REQ_PSN_OFFSET_MASK) <<
 			      UET_PDS_REQ_PSN_OFFSET_SHIFT);
-		pdc->syn_offset++;
 	} else {
 		pds_hdr->dpdcid = htons(pdc->dpdcid);
 	}
@@ -1992,14 +1997,50 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 	pdc_pkt->tx_pkt_handle = tx_pkt_handle;
 	pdc_pkt->tx_pkt_acked  = false;
 	pdc_pkt->flags         = flags;
+	tx_bm_idx = pdc_pkt->psn - pdc->tx_bm_base_psn;
+
+	if (bm_get(pdc->tx_bm, tx_bm_idx, NULL) ||
+	    !bm_set(pdc->tx_bm, tx_bm_idx, pdc_pkt)) {
+		UET_PDS_ERR("PDC %u cannot track PSN %u at tx_bm index %d",
+			    pdc->pdc_id, pdc_pkt->psn, tx_bm_idx);
+		free(pdc_pkt->pkt_buf);
+		free(pdc_pkt);
+		return -EIO;
+	}
+
+	if (map_msg_id) {
+		rc = uet_pdsm_map_msgid_pdc(msg_id, pdc);
+		if (rc != 0) {
+			bm_unset(pdc->tx_bm, tx_bm_idx);
+			free(pdc_pkt->pkt_buf);
+			free(pdc_pkt);
+			return rc;
+		}
+
+		pdc->active_msg_id = msg_id;
+		pdc->active_msg_id_valid = true;
+		mapped_msg_id = true;
+	}
 
 	/* send the packet */
 	rc = uet_pds_sec_tx_pkt(uet, pdc, pdc_pkt, true, false);
 	if (rc != 0) {
+		bm_unset(pdc->tx_bm, tx_bm_idx);
+		if (mapped_msg_id) {
+			pdc->active_msg_id = 0;
+			pdc->active_msg_id_valid = false;
+			if (uet_pdsm_unmap_msgid_pdc(msg_id) != 0)
+				UET_PDS_ERR("PDC %u failed to roll back msg_id %u",
+					    pdc->pdc_id, msg_id);
+		}
 		free(pdc_pkt->pkt_buf);
 		free(pdc_pkt);
 		return rc;
 	}
+
+	pdc->next_psn++;
+	if (pdc->state == PDC_STATE_SYN)
+		pdc->syn_offset++;
 
 	/* the packet was sent successfully */
 	uet_pds_pkt_dbg(uet, &pdc_pkt->pkt_pp, true, "TX PACKET");
@@ -2010,8 +2051,6 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 		    pdc_pkt->pkt_pp.pds_clear_psn, pdc_pkt->psn,
 		    (pdc_pkt->psn - pdc->tx_bm_base_psn));
 
-	bm_set(pdc->tx_bm, (pdc_pkt->psn - pdc->tx_bm_base_psn), pdc_pkt);
-
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %u tx_bm (base %u):",
 			    pdc->pdc_id, pdc->tx_bm_base_psn);
@@ -2020,6 +2059,40 @@ int uet_pds_tx_pkt(uet_pkt_handle_t tx_pkt_handle,
 
 	/* insert the packet to the end of the timeout queue */
 	dlist_insert_tail(&pdc_pkt->node, &pdc->tx_pkt_list_head);
+
+	/* Commit end-of-message state only after the EOM packet was sent. */
+	if (!pds_info && (flags & UET_PDS_FLAG_EOM)) {
+		if (flags & UET_PDS_FLAG_MAINTAIN_PDC) {
+			UET_PDS_DBG("PDC %u flagged with MAINTAIN_PDC on EOM",
+				    pdc->pdc_id);
+		} else {
+			pdc->active_msg_id = 0;
+			pdc->active_msg_id_valid = false;
+
+			rc = uet_pdsm_unmap_msgid_pdc(msg_id);
+			if (rc != 0)
+				UET_PDS_ERR("PDC %u failed to unmap completed msg_id %u",
+					    pdc->pdc_id, msg_id);
+
+			if (pds_pdc_close_thresh && pdc->is_initiator &&
+			    !pdc->close_requested &&
+			    uet_pds_random_check(pds_pdc_close_thresh)) {
+				UET_PDS_ERR("PDC %u random marked for close!",
+					    pdc->pdc_id);
+				pdc->close_requested = true;
+			}
+
+			if (pdc->sec_enabled && pdc->is_initiator &&
+			    !pdc->close_requested &&
+			    ((uint32_t)(pdc->next_psn - pdc->start_psn) >=
+			     UET_PSN_RANGE_LIMIT)) {
+				UET_PDS_ERR("PDC %u PSN range exhausted; marked for close!",
+					    pdc->pdc_id);
+				pdc->close_requested = true;
+				pds_state.psn_range_close_cnt++;
+			}
+		}
+	}
 
 	/* if close was requested, send it now */
 	if ((pdc->state == PDC_STATE_ESTABLISHED) && pdc->is_initiator &&
@@ -2164,6 +2237,10 @@ static int uet_pds_rtx_pkt(struct uet_instance *uet,
 		return 0;
 	}
 
+	/* A reduced peer MPR also gates retransmissions. */
+	if (!uet_pds_tx_psn_allowed(pdc, pdc_pkt->psn))
+		return -EAGAIN;
+
 	/* set the retransmit flag in the PDS header */
 	pds_hdr = (struct uet_pds_req *)pdc_pkt->pkt_pp.pds;
 	pds_hdr->prlg.type_next_flags |=
@@ -2198,6 +2275,10 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 	if (delta < uet->pds.tx_timeout)
 		return 0; /* no retransmit */
 
+	if (!pdc_pkt->dst_recvd &&
+	    !uet_pds_tx_psn_allowed(pdc, pdc_pkt->psn))
+		return 0; /* wait for CACK to advance the peer window */
+
 	if (pdc_pkt->tx_retry_cnt >= uet->pds.max_tx_retries) {
 		UET_PDS_ERR("PDC %u PSN %u retry exceeded",
 			    pdc->pdc_id, pdc_pkt->psn);
@@ -2207,6 +2288,9 @@ static int uet_pds_check_rtx_pkt(struct uet_instance *uet,
 	UET_PDS_WARN("PDC %u PSN %u retransmit", pdc->pdc_id, pdc_pkt->psn);
 
 	rc = uet_pds_rtx_pkt(uet, pdc, pdc_pkt);
+	if (rc == -EAGAIN)
+		return 0; /* wait for CACK to advance the peer window */
+
 	if (rc != 0) {
 		UET_PDS_ERR("PDC %u PSN %u retransmit failed",
 			    pdc->pdc_id, pdc_pkt->psn);
@@ -2883,7 +2967,7 @@ static int uet_pds_check_duplicate_and_rtx(struct uet_instance *uet,
 	} else {
 		UET_PDS_WARN("invalid PSN %u on PDC %u (outside MPR %u[+/-%u])",
 			     pdc_pkt->pkt_pp.pds_psn, pdc->pdc_id,
-			     pdc->rx_bm_base_psn, UET_DEFAULT_MPR);
+			     pdc->rx_bm_base_psn, UET_DEFAULT_MP_RANGE);
 		nack_code = (pdc_pkt->pkt_pp.pds_flags &
 			     UET_PDS_REQ_FLAGS_SYN) ? UET_NACK_INVALID_SYN :
 			    UET_NACK_PSN_OOR_WINDOW;
@@ -3347,6 +3431,10 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 	if (pdc_pkt->tx_pkt_acked)
 		return 0;
 
+	if (!pdc_pkt->dst_recvd &&
+	    !uet_pds_tx_psn_allowed(pdc, pdc_pkt->psn))
+		return 0; /* wait for CACK to advance the peer window */
+
 	if (pdc_pkt->tx_retry_cnt >= uet->pds.max_tx_retries) {
 		UET_PDS_ERR("PDC %u PSN %u NACK retries exhausted",
 			    pdc->pdc_id, pp->pds_psn);
@@ -3355,6 +3443,9 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 	}
 
 	rc = uet_pds_rtx_pkt(uet, pdc, pdc_pkt);
+	if (rc == -EAGAIN)
+		return 0; /* wait for CACK to advance the peer window */
+
 	if (rc != 0) {
 		UET_PDS_ERR("PDC %u PSN %u NACK-triggered retransmit failed",
 			    pdc->pdc_id, pp->pds_psn);
@@ -3366,12 +3457,34 @@ static int uet_pds_process_nack(struct uet_instance *uet,
 	return 0;
 }
 
+static void uet_pds_process_mpr(struct uet_pdc *pdc,
+				const struct uet_parsed_pkt *pp)
+{
+	uint32_t mp_range;
+
+	if (pdc->mpr_update_valid &&
+	    !UET_PDS_PSN_AFTER(pp->pds_cack_psn, pdc->mpr_update_cack_psn)) {
+		UET_PDS_DBG("PDC %u ignored stale MPR %u at CACK %u",
+			    pdc->pdc_id, pp->pds_mpr, pp->pds_cack_psn);
+		return;
+	}
+
+	mp_range = uet_pds_decode_mpr(pp->pds_mpr);
+	pdc->peer_mp_range = mp_range;
+	pdc->mpr_update_cack_psn = pp->pds_cack_psn;
+	pdc->mpr_update_valid = true;
+
+	UET_PDS_DBG("PDC %u peer MPR %u -> MP_RANGE %u at CACK %u",
+		    pdc->pdc_id, pp->pds_mpr, mp_range, pp->pds_cack_psn);
+}
+
 static int uet_pds_process_ack(struct uet_instance *uet,
 			       struct uet_parsed_pkt *pp)
 {
 	struct uet_pdc *pdc;
-	struct uet_pdc_pkt *pdc_pkt;
+	struct uet_pdc_pkt *pdc_pkt = NULL;
 	uint32_t start_psn;
+	bool duplicate = false;
 	int rc;
 
 	rc = uet_pdsm_get_pdc(pp->pds_dpdcid, false, &pdc);
@@ -3386,38 +3499,55 @@ static int uet_pds_process_ack(struct uet_instance *uet,
 		return -EINVAL;
 	}
 
-	if (!PSN_IN_MPR(pp->pds_psn, pdc->tx_bm_base_psn)) {
+	if (UET_PDS_PSN_AFTER(pp->pds_cack_psn, pdc->next_psn - 1)) {
+		UET_PDS_WARN("invalid CACK PSN %u on PDC %u (next PSN %u)",
+			     pp->pds_cack_psn, pp->pds_dpdcid, pdc->next_psn);
+		return -EINVAL;
+	}
+
+	/*
+	 * The explicit PSN may already have left the local bitmap when ACKs
+	 * are reordered.  Its newer CACK, MPR, or SACK state is still useful,
+	 * but its SES response must not be delivered twice.
+	 */
+	if (UET_PDS_PSN_AFTER(pdc->tx_bm_base_psn, pp->pds_psn)) {
+		duplicate = true;
+	} else if (!PSN_IN_MPR(pp->pds_psn, pdc->tx_bm_base_psn)) {
 		UET_PDS_WARN("invalid ACK PSN %u on PDC %u "
 			     "(outside MPR %u[+%u])",
 			     pp->pds_psn, pp->pds_dpdcid,
-			     pdc->tx_bm_base_psn, UET_DEFAULT_MPR);
+			     pdc->tx_bm_base_psn, UET_DEFAULT_MP_RANGE);
 		return -EINVAL;
-	}
-
-	if (!bm_get(pdc->tx_bm, (pp->pds_psn - pdc->tx_bm_base_psn),
-		    (void **)&pdc_pkt)) {
+	} else if (!bm_get(pdc->tx_bm,
+			   (pp->pds_psn - pdc->tx_bm_base_psn),
+			   (void **)&pdc_pkt)) {
 		UET_PDS_WARN("invalid ACK PSN %u on PDC %u (packet not found)",
 			     pp->pds_psn, pp->pds_dpdcid);
 		return -EINVAL;
-	}
-
-	if (pdc_pkt->tx_pkt_acked) {
-		UET_PDS_WARN("duplicate ACK PSN %u on PDC %u",
-			     pp->pds_psn, pp->pds_dpdcid);
-		return -EINVAL;
+	} else if (pdc_pkt->tx_pkt_acked) {
+		duplicate = true;
 	}
 
 	/*
 	 * The packets explicitly acknowledged and implicitly acknowledged
 	 * by coalesced ack are processed separately.
 	 */
-	pdc_pkt->tx_pkt_acked = true;
-	dlist_remove(&pdc_pkt->node); /* remove from Tx list */
+	if (!duplicate) {
+		pdc_pkt->tx_pkt_acked = true;
+		dlist_remove(&pdc_pkt->node); /* remove from Tx list */
+	}
+
+	if (pp->pds_type == UET_PDS_TYPE_ACK_CC ||
+	    pp->pds_type == UET_PDS_TYPE_ACK_CCX)
+		uet_pds_process_mpr(pdc, pp);
 	uet_pds_process_cack(uet, pdc, pp);
 	if (pp->pds_type == UET_PDS_TYPE_ACK_CC ||
 	    pp->pds_type == UET_PDS_TYPE_ACK_CCX) {
 		uet_pds_process_sack_bitmap(uet, pdc, pp);
 	}
+
+	if (duplicate)
+		return uet_pds_shift_tx_window(uet, pdc);
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d tx_bm (base %u):",
@@ -3612,7 +3742,12 @@ static int uet_pds_process_syn_pkt(struct uet_instance *uet,
 		    pdc->pdc_id, pdc->rx_bm_base_psn, pp->pds_psn,
 		    (pp->pds_psn - pdc->rx_bm_base_psn));
 
-	bm_set(pdc->rx_bm, (pp->pds_psn - pdc->rx_bm_base_psn), pdc_pkt);
+	if (!bm_set(pdc->rx_bm,
+		    (pp->pds_psn - pdc->rx_bm_base_psn), pdc_pkt)) {
+		UET_PDS_ERR("PDC %u cannot track RX PSN %u",
+			    pdc->pdc_id, pp->pds_psn);
+		return -ERANGE;
+	}
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",
@@ -3921,8 +4056,14 @@ static int uet_pds_process_request(struct uet_instance *uet,
 		    pdc_pkt->pkt_pp.pds_psn,
 		    (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn));
 
-	bm_set(pdc->rx_bm, (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn),
-	       pdc_pkt);
+	if (!bm_set(pdc->rx_bm,
+		    (pdc_pkt->pkt_pp.pds_psn - pdc->rx_bm_base_psn),
+		    pdc_pkt)) {
+		UET_PDS_ERR("PDC %u cannot track RX PSN %u",
+			    pdc->pdc_id, pdc_pkt->pkt_pp.pds_psn);
+		rc = -ERANGE;
+		goto exit_err;
+	}
 
 	if (UET_LOG_LVL >= UET_LOG_DBG) {
 		UET_PDS_DBG("PDC %d rx_bm (base %u):",

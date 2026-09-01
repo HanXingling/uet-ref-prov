@@ -72,7 +72,8 @@
 #define UET_NUM_ITERATIONS	100
 #define UET_ITERATIONS_ENV	"UET_NUM_ITERATIONS"
 
-#define UET_MSG_SIZE		4096	/* in bytes */
+#define UET_DEFAULT_MSG_SIZE	4096	/* in bytes */
+#define UET_MSG_SIZE_ENV	"UET_MSG_SIZE"
 #define UET_UUD_MSG_SIZE	1024	/* UUD is single-packet only */
 #define UET_UUD_BLAST_N		100	/* datagrams per UUD blast */
 #define UET_UUD_RX_TIMEOUT_MS	500	/* per-datagram bounded wait */
@@ -320,6 +321,7 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 	struct in6_addr peer_in6_addr;
 	struct uet_addr *addr;
 	char *env_iters;
+	char *env_msg_size;
 
 	ctx->cfg.job_id = UET_DEF_JOB_ID;
 
@@ -427,7 +429,22 @@ static uet_rc_t uet_init_cfg(int argc, char *argv[],
 		else
 			ctx->cfg.msg_size = UET_MSG_RENDEZVOUS_SIZE * 2;
 	} else {
-		ctx->cfg.msg_size = UET_MSG_SIZE;
+		ctx->cfg.msg_size = UET_DEFAULT_MSG_SIZE;
+		env_msg_size = getenv(UET_MSG_SIZE_ENV);
+		if (env_msg_size != NULL) {
+			char *end;
+			unsigned long long n;
+
+			errno = 0;
+			n = strtoull(env_msg_size, &end, 10);
+			if (errno || (end == env_msg_size) || (*end != '\0') ||
+			    (n == 0) || (n > SIZE_MAX)) {
+				UET_ERR("Invalid %s=%s", UET_MSG_SIZE_ENV,
+					env_msg_size);
+				return UET_ERR_RC;
+			}
+			ctx->cfg.msg_size = (size_t)n;
+		}
 	}
 
 	return UET_SUCCESS_RC;

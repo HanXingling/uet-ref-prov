@@ -111,10 +111,10 @@ static void test_set_get_unset(void)
 		return;
 
 	/* set a handful of bits across both 64-bit words */
-	bm_set(bm, 0, PA);
-	bm_set(bm, 63, PB);
-	bm_set(bm, 64, PC);
-	bm_set(bm, 127, PA);
+	CHECK(bm_set(bm, 0, PA) == true);
+	CHECK(bm_set(bm, 63, PB) == true);
+	CHECK(bm_set(bm, 64, PC) == true);
+	CHECK(bm_set(bm, 127, PA) == true);
 	CHECK_EQ(bm_count(bm), 4);
 
 	/* bm_get returns the bit state and hands back the stored pointer */
@@ -140,10 +140,10 @@ static void test_set_get_unset(void)
 	CHECK(data == NULL);
 	CHECK_EQ(bm_count(bm), 3);
 
-	/* out-of-range / negative indices are silently ignored, no crash */
-	bm_set(bm, -1, PA);
-	bm_set(bm, 128, PA);
-	bm_set(bm, 100000, PA);
+	/* out-of-range / negative indices are rejected without changing state */
+	CHECK(bm_set(bm, -1, PA) == false);
+	CHECK(bm_set(bm, 128, PA) == false);
+	CHECK(bm_set(bm, 100000, PA) == false);
 	CHECK_EQ(bm_count(bm), 3);
 	CHECK(bm_get(bm, -1, NULL) == false);
 	CHECK(bm_get(bm, 128, NULL) == false);

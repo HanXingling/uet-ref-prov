@@ -67,18 +67,21 @@ int bm_count(const struct bitmap *bm)
 	return total;
 }
 
-void bm_set(struct bitmap *bm, int i, void *data)
+bool bm_set(struct bitmap *bm, int i, void *data)
 {
-	int idx = (i / 64);
-
-	if (idx >= bm->bit_arr_len)
-		return; /* could assert() here */
+	int idx;
 
 	if ((i < 0) || (i >= bm->size))
-		return; /* could assert() here */
+		return false;
+
+	idx = (i / 64);
+
+	if (idx >= bm->bit_arr_len)
+		return false;
 
 	bm->bit_arr[idx] |= ((uint64_t)1 << (i % 64));
 	bm->data_arr[i] = data;
+	return true;
 }
 
 void bm_unset(struct bitmap *bm, int i)

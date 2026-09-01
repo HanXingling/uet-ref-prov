@@ -202,6 +202,7 @@ Replace `2` with the desired number of senders.
 - **UET_PDS_TX_TIMEOUT** - Time in milliseconds to wait for an ack before retransmitting a Tx packet (default=`5`).
 - **UET_PDS_MAX_TX_RETRIES** - Max number of times a Tx packet is retransmitted before failing (default=`5`).
 - **UET_NUM_ITERATIONS** - Override the number of message iterations the test app runs (default=`100`). Used to wall-clock-size a run (e.g., long enough to span several TSS key rotations).
+- **UET_MSG_SIZE** - Override the message size used by the test app (default=`4096`).
 - **UET_FORCE_RUDI** - [ `0` | `1` ] (default=`0`) Force the RUDI (Reliable Unordered Delivery for Idempotent operations) PDS delivery mode for RMA read/write operations.
 - **UET_FORCE_UUD** - [ `0` | `1` ] (default=`0`) Force the UUD (Unreliable Unordered Delivery) best-effort single-packet datagram PDS delivery mode for an untagged send.
 - **UET_SEC_MODE** - [ `direct` | `cluster` | `server` ]
