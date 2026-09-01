@@ -203,6 +203,11 @@ static void uet_dealloc_mr_desc(struct uet_domain *uet_dom,
 	size_t offset;
 	size_t mr_index;
 
+	if ((mr_desc->state != UET_MR_DESC_STATE_INACTIVE) &&
+	    (mr_desc->buf_desc.type == UET_MR_BUF_TYPE_IOV))
+		free((void *)mr_desc->buf_desc.iov.iov);
+
+	memset(mr_desc, 0, sizeof(*mr_desc));
 	mr_desc->state = UET_MR_DESC_STATE_INACTIVE;
 
 	offset = ((uint8_t *) mr_desc) - ((uint8_t *) uet_dom->mr_desc);
@@ -1985,17 +1990,20 @@ static bool uet_domain_has_ep(struct uet_domain *uet_dom)
 static void uet_domain_free(struct uet_domain *uet_dom)
 {
 	struct dlist_entry *item;
-	struct iovec *iov;
+	size_t i;
 
 	item = &uet_dom->domain_list_entry;
-	iov = (struct iovec *)uet_dom->mr_desc->buf_desc.iov.iov;
 	dlist_remove(item);
 	if (uet_dom->mr_desc_alloc_cb.state)
 		free(uet_dom->mr_desc_alloc_cb.state);
 	if (uet_dom->mr_desc) {
-		if (iov)
-			free(iov);
-
+		for (i = 0; i < uet_dom->num_mr; i++) {
+			if ((uet_dom->mr_desc[i].state !=
+			     UET_MR_DESC_STATE_INACTIVE) &&
+			    (uet_dom->mr_desc[i].buf_desc.type ==
+			     UET_MR_BUF_TYPE_IOV))
+				free((void *)uet_dom->mr_desc[i].buf_desc.iov.iov);
+		}
 		free(uet_dom->mr_desc);
 	}
 	free(uet_dom);
@@ -6844,16 +6852,23 @@ int uet_mr_regv(uet_domain_handle_t domain_handle, const struct iovec *iov,
 			return rc;
 	}
 
-	/* allocate iov and init */
-	iov_handle = calloc(iov_count, sizeof(struct iovec));
-	if (iov_handle == NULL) {
-		uet_dealloc_mr_desc(uet_dom, &uet_dom->mr_desc[mr_index]);
-		return -FI_ENOMEM;
+	/* A contiguous registration stores the buffer directly. Only retain a
+	 * private iovec copy for a real scatter/gather registration.
+	 */
+	iov_handle = NULL;
+	if (iov_count > 1) {
+		iov_handle = calloc(iov_count, sizeof(struct iovec));
+		if (iov_handle == NULL) {
+			uet_dealloc_mr_desc(uet_dom,
+					    &uet_dom->mr_desc[mr_index]);
+			return -FI_ENOMEM;
+		}
 	}
 
 	for (int i = 0; i < iov_count; i++) {
 		msg_len += iov[i].iov_len;
-		iov_handle[i] = iov[i];
+		if (iov_handle)
+			iov_handle[i] = iov[i];
 	}
 
 	/* init memory region descriptor */
@@ -7035,6 +7050,12 @@ int uet_mr_close(uet_mr_handle_t mr_handle)
 		UET_API_ERR("Can not close unregistered MR");
 		return -FI_EINVAL;
 	case UET_MR_DESC_STATE_DISABLED_BIND:
+		/* Binding is a control-plane association and has no outstanding
+		 * dataplane state until enable. Permit normal libfabric cleanup of
+		 * a registered-and-bound MR that was never enabled.
+		 */
+		mr_desc->uet_ep = NULL;
+		break;
 	case UET_MR_DESC_STATE_ENABLED:
 		UET_API_ERR("Can not close MR that is bound to EP");
 		return -FI_EINVAL;
