@@ -658,6 +658,7 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
 	uint8_t *uet_pkt;
 	struct uet_av_entry *av_entry;
 	struct uet_addr *dst_addr;
+	struct uet_entropy *entropy_hdr;
 	struct uet_pds_req *pds;
 	struct uet_pds_sng_tx_state *state;
 	struct uet_pds_hdr_overlay *pds_overlay;
@@ -692,6 +693,10 @@ int uet_pds_sng_tx_pkt(uet_pkt_handle_t tx_pkt_handle, uint64_t pkt_cnt,
 
 	uet_build_eth_hdr((struct ethhdr *)uet_pkt, av_entry->nh_mac_addr,
 			  uet->nic.mac_addr, is_ipv6);
+	entropy_hdr = (struct uet_entropy *)(uet_pkt + sizeof(struct ethhdr) +
+						  ip_hdr_size);
+	entropy_hdr->entropy = htons(uet_ep->entropy);
+	entropy_hdr->rsvd = 0;
 
 	switch (next_hdr) {
 	case UET_HDR_REQ_STD:

@@ -888,6 +888,19 @@ static void uet_ep_key_init(struct uet_ep_key *key,
 		UET_SES_REQ_RES_INDEX_SHIFT;
 }
 
+static uint16_t uet_ep_entropy_init(const struct uet_ep *uet_ep)
+{
+	uint32_t hash = 2166136261U;
+	uint16_t entropy;
+
+	hash = (hash ^ uet_ep->uet_addr.pid_on_fep) * 16777619U;
+	hash = (hash ^ uet_ep->uet_addr.start_index) * 16777619U;
+	hash = (hash ^ uet_ep->uet_addr.initiator_id) * 16777619U;
+	hash = (hash ^ uet_ep->job_id) * 16777619U;
+	entropy = (uint16_t)(hash ^ (hash >> 16));
+	return entropy ? entropy : 1;
+}
+
 /* insert entry into ip endpoint hash table */
 static void uet_ep_hash_insert(struct uet_ep *uet_ep)
 {
@@ -6237,6 +6250,7 @@ int uet_endpoint(uet_domain_handle_t domain_handle,
 	uet_ep->ep_key.pid_on_fep = uet_ep->uet_addr.pid_on_fep;
 	uet_ep->ep_key.index = uet_ep->uet_addr.start_index;
 	uet_ep_hash_insert(uet_ep);
+	uet_ep->entropy = uet_ep_entropy_init(uet_ep);
 
 	switch (info->tx_attr->tclass) {
 	case FI_TC_BEST_EFFORT:
