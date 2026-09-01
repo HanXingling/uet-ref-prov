@@ -122,6 +122,22 @@ below build libfabric v1.20.1 and use a symlink for the common name.
 
 ## Build and Run
 
+### Strict core diagnostics
+
+The `strict-core` target performs a compile-only check of the project sources
+for both the libfabric (`ENABLE_VERBS=0`) and verbs (`ENABLE_VERBS=1`) library
+variants:
+
+```sh
+make strict-core
+```
+
+It promotes implicit function declarations and integer/pointer conversions to
+errors. These diagnostics remain suppressed by the normal standalone build for
+compatibility with its external libfabric headers. The target does not link or
+install additional binaries; it provides an early check for type-incorrect core
+code and is also run by the GitHub sanity workflow.
+
 ### rawsock
 
 > The `uet` program only has the `rawsock` NIC shim built into it.
@@ -393,4 +409,3 @@ Running `checkpatch.pl` out of tree against a local `.h` or `.c` file:
 ```
 
 Thank you! 😀
-
