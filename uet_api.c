@@ -5510,8 +5510,6 @@ void uet_verbs_fi_freeinfo(struct fi_info *info)
 				free(info->nic->device_attr);
 			if (info->nic->link_attr)
 				free(info->nic->link_attr);
-			if (info->nic->fid.ops)
-				free(info->nic->fid.ops);
 			free(info->nic);
 		}
 		free(info);
@@ -5564,7 +5562,6 @@ struct fi_info *uet_verbs_fi_dupinfo(struct fi_info *info)
 	struct fid_nic *nic = NULL;
 	struct fi_device_attr *device_attr;
 	struct fi_link_attr *link_attr;
-	struct fi_ops *ops;
 
 	dup = calloc(1, sizeof(struct fi_info));
 	if (dup == NULL)
@@ -5642,15 +5639,6 @@ struct fi_info *uet_verbs_fi_dupinfo(struct fi_info *info)
 			*link_attr = *info->nic->link_attr;
 			info->nic->link_attr = link_attr;
 		}
-
-		if (nic->fid.ops) {
-			ops = calloc(1, sizeof(struct fi_ops));
-			if (ops == NULL)
-				goto err;
-
-			*ops = *info->nic->fid.ops;
-			info->nic->fid.ops = ops;
-		}
 	}
 
 	return dup;
@@ -5672,8 +5660,6 @@ err:
 				free(device_attr);
 			if (link_attr)
 				free(link_attr);
-			if (ops)
-				free(ops);
 			free(nic);
 		}
 		free(dup);
