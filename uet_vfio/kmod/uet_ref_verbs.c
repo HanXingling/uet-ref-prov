@@ -146,9 +146,6 @@ static int uet_ref_port_immutable(struct ib_device *ibdev,
 	case UET_DEV_GID_TYPE_UDP:
 		immutable->core_cap_flags = RDMA_CORE_PORT_UET_UDP;
 		break;
-	case UET_DEV_GID_TYPE_UFH:
-		immutable->core_cap_flags = RDMA_CORE_PORT_UET_UFH;
-		break;
 	case UET_DEV_GID_TYPE_IP:
 	default:
 		immutable->core_cap_flags = RDMA_CORE_PORT_UET_IP;
@@ -372,7 +369,7 @@ static int uet_ref_query_qp_semantics(struct ib_device *ibdev,
 	sem->max_rdma_waw_size = 0;
 	sem->max_pdu           = uet_ref_rd0(dev, UET_DEV_REG_MAX_PAYLOAD);
 	sem->imm_data_size     = 64;
-	sem->usage_flags       = IB_UVERBS_QP_USAGE_ATTACH_MR;
+	sem->usage_flags       = 0;
 
 	return 0;
 }

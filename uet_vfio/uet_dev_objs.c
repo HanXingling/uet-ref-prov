@@ -627,9 +627,9 @@ uint32_t uet_dev_qp_create(struct uet_dev *dev,
 	if (rc != FI_SUCCESS)
 		goto err_out;
 
-	rc = uet_ep_enable(qp->ep);
-	if (rc != FI_SUCCESS)
-		goto err_out;
+	/* Endpoint left disabled.
+	 * The modify to RTS sets the path MTU and enables it.
+	 */
 
 	/* A ring that is present must have a power-of-two depth, because the
 	 * index wraps by masking.
@@ -667,7 +667,8 @@ uint32_t uet_dev_qp_create(struct uet_dev *dev,
 	}
 
 	qp->used        = true;
-	qp->state       = UET_DEV_QPS_RTS; /* created directly in RTS */
+	qp->state       = UET_DEV_QPS_RESET;
+	qp->path_mtu    = args->path_mtu;
 	qp->qpn         = args->qpn;
 	qp->pd          = args->pd;
 	qp->send_cq     = args->send_cq;
@@ -785,7 +786,8 @@ uint32_t uet_dev_qp_destroy(struct uet_dev *dev,
  */
 uint32_t uet_dev_qp_modify(struct uet_dev *dev,
 			   uint64_t handle,
-			   uint32_t next_state)
+			   uint32_t next_state,
+			   uint32_t path_mtu)
 {
 	struct uet_dev_qp *qp = uet_dev_qp_get(dev, handle);
 	uint32_t cur_state;
@@ -801,11 +803,25 @@ uint32_t uet_dev_qp_modify(struct uet_dev *dev,
 
 	switch (next_state) {
 	case UET_DEV_QPS_RTS:
-		if (cur_state == UET_DEV_QPS_RTS)
-			break; /* modify in place */
+		if (cur_state == UET_DEV_QPS_RTS) {
+			/* modify in place, but not of the packet size */
+			if (path_mtu && (path_mtu != qp->path_mtu))
+				return UET_DEV_ADMIN_ST_EINVAL;
+
+			break;
+		}
 
 		if (cur_state != UET_DEV_QPS_RESET)
 			return UET_DEV_ADMIN_ST_EINVAL;
+
+		/* the packet size is set as the queue pair is enabled */
+		if (path_mtu) {
+			if (uet_ep_set_path_mtu(qp->ep, path_mtu) !=
+			    FI_SUCCESS)
+				return UET_DEV_ADMIN_ST_EINVAL;
+
+			qp->path_mtu = path_mtu;
+		}
 
 		if (uet_ep_enable(qp->ep) != FI_SUCCESS)
 			return UET_DEV_ADMIN_ST_EINVAL;

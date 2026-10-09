@@ -99,11 +99,6 @@ static void uet_ref_qpn_release(struct uet_ref_pd *pd,
 		  IB_UVERBS_QPN_UET_RI_SHIFT));
 }
 
-/* creation takes the modify attributes as well, see uet_ref_create_qp() */
-static int uet_ref_qp_apply_attrs(struct uet_ref_qp *qp,
-				  const struct ib_qp_attr *attr,
-				  int attr_mask);
-
 int uet_ref_create_qp(struct ib_qp *ibqp,
 		      struct ib_qp_init_attr *init_attr,
 		      struct ib_udata *udata)
@@ -164,43 +159,6 @@ int uet_ref_create_qp(struct ib_qp *ibqp,
 	if (init_attr->jkey)
 		args.jkey_handle = to_uet_jkey(init_attr->jkey)->handle;
 
-	/* The attributes a modify would otherwise carry. This queue pair is
-	 * returned in RTS after creation. There is no modify to carry these
-	 * attributes and creation takes the whole set.
-	 */
-	if (init_attr->qp_attr_mask) {
-		int mask = init_attr->qp_attr_mask;
-
-		if (mask & IB_QP_PATH_MTU) {
-			int bytes;
-
-			bytes = ib_mtu_enum_to_int(init_attr->qp_attr->path_mtu);
-			if (bytes <= 0) {
-				ret = -EINVAL;
-				goto err_qpn;
-			}
-
-			args.path_mtu = (u32)bytes;
-		}
-
-		if ((mask & IB_QP_STATE) &&
-		    init_attr->qp_attr->qp_state != IB_QPS_RTS) {
-			ret = -EOPNOTSUPP;
-			goto err_qpn;
-		}
-
-		mask &= ~(IB_QP_STATE | IB_QP_CUR_STATE | IB_QP_PATH_MTU);
-
-		mask = uet_ref_qp_apply_attrs(qp, init_attr->qp_attr, mask);
-		if (mask) {
-			ibdev_dbg(&dev->ib_dev,
-				  "create_qp: unsupported qp_attr_mask 0x%x\n",
-				  mask);
-			ret = -EOPNOTSUPP;
-			goto err_qpn;
-		}
-	}
-
 	/*
 	 * The rings, if the process supplied them. A queue pair without them
 	 * is still a queue pair - it simply has no datapath, which is what
@@ -250,7 +208,7 @@ int uet_ref_create_qp(struct ib_qp *ibqp,
 	qp->handle = (u32)result[0];
 	qp->qpn = qpn;
 	qp->path_mtu = args.path_mtu;
-	qp->state = IB_QPS_RTS;		/* created ready to send */
+	qp->state = IB_QPS_RESET;	/* core's modify to RTS follows */
 	ibqp->qp_num = qpn;
 
 	/* ib_core's resource tracker insists a queue pair name a port */
@@ -347,13 +305,18 @@ static int uet_ref_qp_apply_attrs(struct uet_ref_qp *qp,
 
 /* The queue pair state machine, which has three states and no more.
  *
- *     create ------> RTS <----------------.
+ *     create
+ *       |
+ *       v
+ *     RESET -------> RTS <----------------.
  *                     | (modify in place)  \
  *                     |                     \
  *                     v                      \
  *                    ERR -----------------> RESET
  *
- * A UET queue pair is created ready to send. INIT and RTR exist in verbs
+ * A UET queue pair is created in RESET and core moves it straight to RTS,
+ * which is when the device enables it and takes its path MTU, so it is
+ * ready to send by the time the caller has it. INIT and RTR exist in verbs
  * to hold a connected queue pair still while its peer is negotiated, and
  * there is nothing here to negotiate, so they are refused rather than
  * tolerated as a no-op overlay. A caller walking the full connected
@@ -376,7 +339,8 @@ int uet_ref_modify_qp(struct ib_qp *ibqp,
 	struct uet_ref_dev *dev = container_of(ibqp->device,
 					       struct uet_ref_dev, ib_dev);
 	enum ib_qp_state cur = qp->state, next;
-	u64 param[2];
+	u32 mtu = 0;
+	u64 param[3];
 	u32 dev_state;
 	int left, ret;
 
@@ -403,11 +367,12 @@ int uet_ref_modify_qp(struct ib_qp *ibqp,
 
 	/*
 	 * Refused before anything is recorded, so a rejected call changes
-	 * nothing. The endpoint segments against this value and there is no
-	 * way to change that underneath work in flight, so a caller asking
-	 * for a different one is asking for something it will not get -
-	 * and being told so beats believing it sends 512-byte packets while
-	 * the wire carries 1024.
+	 * nothing. The device takes the path MTU as it enables the queue
+	 * pair, from RESET to RTS. After that the endpoint segments against
+	 * this value and there is no way to change that underneath work in
+	 * flight, so a caller asking for a different one is asking for
+	 * something it will not get - and being told so beats believing it
+	 * sends 512-byte packets while the wire carries 1024.
 	 */
 	if (attr_mask & IB_QP_PATH_MTU) {
 		u32 want = ib_mtu_enum_to_int(attr->path_mtu);
@@ -417,9 +382,11 @@ int uet_ref_modify_qp(struct ib_qp *ibqp,
 		if ((int)want <= 0)
 			return -EINVAL;
 
-		if (want != have) {
+		if (cur == IB_QPS_RESET && next == IB_QPS_RTS) {
+			mtu = want;
+		} else if (want != have) {
 			ibdev_dbg(&dev->ib_dev,
-				  "modify_qp: path MTU %u refused; this queue pair was created with %u\n",
+				  "modify_qp: path MTU %u refused; this queue pair has %u\n",
 				  want, have);
 			return -EINVAL;
 		}
@@ -457,11 +424,15 @@ int uet_ref_modify_qp(struct ib_qp *ibqp,
 	 */
 	param[0] = qp->handle;
 	param[1] = dev_state;
+	param[2] = mtu;		/* 0 leaves it as it is */
 
-	ret = uet_ref_admin_cmd(dev, UET_DEV_ADMIN_QP_MODIFY, param, 2,
+	ret = uet_ref_admin_cmd(dev, UET_DEV_ADMIN_QP_MODIFY, param, 3,
 				NULL, 0, NULL);
 	if (ret)
 		return ret;
+
+	if (mtu)
+		qp->path_mtu = mtu;
 
 	qp->state = next;
 

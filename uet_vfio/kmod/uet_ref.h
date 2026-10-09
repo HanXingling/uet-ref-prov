@@ -331,7 +331,7 @@ static inline struct uet_ref_job *to_uet_job(struct ib_job *ibjob)
 
 int uet_ref_alloc_job(struct ib_job *ibjob, struct ib_job_attr *attr,
 		      struct uverbs_attr_bundle *attrs);
-int uet_ref_dealloc_job(struct ib_job *ibjob);
+void uet_ref_dealloc_job(struct ib_job *ibjob);
 int uet_ref_query_job(struct ib_job *ibjob, struct ib_job_attr *attr);
 int uet_ref_create_jkey(struct ib_jkey *ibjkey, u32 flags,
 			struct uverbs_attr_bundle *attrs);
