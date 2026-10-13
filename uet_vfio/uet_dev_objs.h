@@ -57,7 +57,7 @@ uint32_t uet_dev_qp_create(struct uet_dev *dev,
 			   uint32_t *out_handle);
 uint32_t uet_dev_qp_destroy(struct uet_dev *dev, uint64_t handle);
 uint32_t uet_dev_qp_modify(struct uet_dev *dev, uint64_t handle,
-			   uint32_t next_state);
+			   uint32_t next_state, uint32_t path_mtu);
 void uet_dev_qp_retire(struct uet_dev *dev, struct uet_dev_qp *qp);
 uint32_t uet_dev_qp_job_id(struct uet_dev *dev, struct uet_dev_qp *qp);
 

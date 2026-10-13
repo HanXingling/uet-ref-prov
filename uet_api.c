@@ -7436,6 +7436,33 @@ int uet_ep_reset(uet_ep_handle_t ep_handle)
 	return FI_SUCCESS;
 }
 
+#if ENABLE_VERBS
+int uet_ep_set_path_mtu(uet_ep_handle_t ep_handle, uint32_t path_mtu)
+{
+	struct uet_ep *uet_ep;
+	size_t max;
+
+	uet_ep = (struct uet_ep *) ep_handle;
+	max = uet_ep->uet_domain->uet->max_payload_len;
+
+	/* Segmentation reads this per packet, so it only changes while
+	 * nothing can be in flight.
+	 */
+	if (uet_ep->ep_state == UET_EP_ENABLED)
+		return -FI_EBUSY;
+
+	if (path_mtu > max) {
+		UET_API_ERR("endpoint path MTU %u exceeds the instance's %zu",
+			    path_mtu, max);
+		return -FI_EINVAL;
+	}
+
+	uet_ep->max_payload_len = path_mtu ? path_mtu : max;
+
+	return FI_SUCCESS;
+}
+#endif
+
 ssize_t uet_ep_flush(uet_ep_handle_t ep_handle, size_t max)
 {
 	struct uet_ep *uet_ep = (struct uet_ep *) ep_handle;

@@ -54,14 +54,21 @@ int uet_ref_alloc_job(struct ib_job *ibjob,
 	return 0;
 }
 
-int uet_ref_dealloc_job(struct ib_job *ibjob)
+void uet_ref_dealloc_job(struct ib_job *ibjob)
 {
 	struct uet_ref_dev *dev = container_of(ibjob->device,
 					       struct uet_ref_dev, ib_dev);
 	u64 param[1] = { to_uet_job(ibjob)->handle };
+	int ret;
 
-	return uet_ref_admin_cmd(dev, UET_DEV_ADMIN_JOB_FREE, param, 1, NULL,
-				 0, NULL);
+	/* Nothing above can act on a failure: this runs from the job's last
+	 * reference, or from core revoking it as the device unregisters.
+	 */
+	ret = uet_ref_admin_cmd(dev, UET_DEV_ADMIN_JOB_FREE, param, 1, NULL,
+				0, NULL);
+	if (ret)
+		dev_warn(&dev->pdev->dev, "job %u not freed: %d\n",
+			 to_uet_job(ibjob)->handle, ret);
 }
 
 int uet_ref_query_job(struct ib_job *ibjob,
@@ -107,6 +114,10 @@ static void uet_ref_addr_from_rdma(struct uet_dev_admin_addr *out,
 	out->is_global = !!(rdma_ah_get_ah_flags(in) & IB_AH_GRH);
 	out->remote_qpn = cpu_to_le32(in_ex->remote_qpn);
 
+	/* RoCE keeps the destination MAC out of the grh */
+	if (in->type == RDMA_AH_ATTR_TYPE_ROCE)
+		memcpy(out->dmac, in->roce.dmac, sizeof(out->dmac));
+
 	if (!out->is_global)
 		return;
 
@@ -142,6 +153,10 @@ static void uet_ref_addr_to_rdma(struct rdma_ah_attr_ex *out_ex,
 	rdma_ah_set_dgid_raw(out, (void *)in->dgid);
 }
 
+/* Core may run these concurrently on one job. The table lives in the device
+ * and every command reaches it through the admin queue, whose lock
+ * serializes them.
+ */
 int uet_ref_job_addr_insert(struct ib_job *ibjob,
 			    u32 index,
 			    struct rdma_ah_attr_ex *ah_attr,

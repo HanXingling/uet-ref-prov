@@ -934,6 +934,24 @@ int uet_ep_enable(uet_ep_handle_t ep_handle);
  */
 int uet_ep_reset(uet_ep_handle_t ep_handle);
 
+#if ENABLE_VERBS
+/*
+ * set the largest payload an endpoint puts in a packet, only while the
+ * endpoint is not enabled (a verbs QP takes its path MTU on the modify that
+ * enables it)
+ *
+ * parms:
+ *   ep_handle - handle identifying uet endpoint instance
+ *   path_mtu  - payload bytes, zero for the instance's value; a custom
+ *               path_mtu cannot be larger than the instance's
+ *
+ * returns:
+ *   0 on success,
+ *   negative value corresponding to fabric errno on error
+ */
+int uet_ep_set_path_mtu(uet_ep_handle_t ep_handle, uint32_t path_mtu);
+#endif
+
 /*
  * cancel a pending asynchronous data transfer
  *

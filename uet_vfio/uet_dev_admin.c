@@ -319,7 +319,8 @@ static void uet_dev_admin_execute(struct uet_dev *dev,
 
 	case UET_DEV_ADMIN_QP_MODIFY:
 		cqe->status = uet_dev_qp_modify(dev, cmd->param[0],
-						(uint32_t)cmd->param[1]);
+						(uint32_t)cmd->param[1],
+						(uint32_t)cmd->param[2]);
 		break;
 
 	case UET_DEV_ADMIN_AH_CREATE: {

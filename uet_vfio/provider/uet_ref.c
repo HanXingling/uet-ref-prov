@@ -142,8 +142,8 @@ static struct ibv_job *uet_ref_alloc_job(struct ibv_context *ibctx,
 	}
 
 	if (attr->comp_mask & IBV_JOB_ATTR_PORT_NUM) {
-		fill_attr_in(cmd, UVERBS_ATTR_ALLOC_JOB_PORT_NUM,
-			     &attr->port_num, sizeof(attr->port_num));
+		fill_attr_in_uint32(cmd, UVERBS_ATTR_ALLOC_JOB_PORT_NUM,
+				    attr->port_num);
 	}
 
 	if (attr->comp_mask & IBV_JOB_ATTR_SGID_INDEX) {
@@ -657,9 +657,6 @@ static struct ibv_qp *uet_ref_create_qp_ex(struct ibv_context *ibctx,
 	struct uet_ref_create_qp_cmd cmd = {};
 	struct uet_ref_qp *qp;
 
-	DECLARE_COMMAND_BUFFER(driver, UVERBS_OBJECT_QP,
-			       UVERBS_METHOD_QP_CREATE, 3);
-
 	if (attr->qp_type != IBV_QPT_RU) {
 		errno = EOPNOTSUPP;
 		return NULL;
@@ -686,34 +683,9 @@ static struct ibv_qp *uet_ref_create_qp_ex(struct ibv_context *ibctx,
 	cmd.uet.rq_addr = (uintptr_t)qp->rq.buf;
 	cmd.uet.rq_entries = qp->rq.entries;
 
-	if (attr->comp_mask & IBV_QP_INIT_ATTR_SRC_ID)
-		fill_attr_in_uint32(driver, UVERBS_ATTR_CREATE_QP_SRC_ID,
-				    attr->src_id);
-
-	if ((attr->comp_mask & IBV_QP_INIT_ATTR_JKEY) && attr->job_key)
-		fill_attr_in_obj(driver, UVERBS_ATTR_CREATE_QP_JOB_KEY,
-				 attr->job_key->handle);
-
-	if ((attr->comp_mask & IBV_QP_INIT_ATTR_QP_SEMANTICS) &&
-	    attr->qp_semantics) {
-		struct ib_uverbs_qp_semantics sem = {};
-
-		sem.comp_mask = attr->qp_semantics->comp_mask;
-		sem.msg_order = attr->qp_semantics->msg_order;
-		sem.max_rdma_raw_size = attr->qp_semantics->max_rdma_raw_size;
-		sem.max_rdma_war_size = attr->qp_semantics->max_rdma_war_size;
-		sem.max_rdma_waw_size = attr->qp_semantics->max_rdma_waw_size;
-		sem.max_pdu = attr->qp_semantics->max_pdu;
-		sem.imm_data_size = attr->qp_semantics->imm_data_size;
-		sem.usage_flags = attr->qp_semantics->usage_flags;
-
-		fill_attr_in(driver, UVERBS_ATTR_CREATE_QP_SEMANTICS,
-			     &sem, sizeof(sem));
-	}
-
 	if (ibv_cmd_create_qp_ex2(ibctx, &qp->vqp, attr, &cmd.ibv_cmd,
 				  sizeof(cmd), &resp.ibv_resp, sizeof(resp),
-				  driver))
+				  NULL))
 		goto err;
 
 	qp->handle = resp.uet.qp_handle;
@@ -1799,7 +1771,7 @@ static int uet_ref_detach_mr(struct ibv_qp *qp,
 
 static int uet_ref_query_qp_semantics(struct ibv_context *ibctx,
 				      enum ibv_qp_type qp_type,
-				      uint8_t port_num,
+				      uint32_t port_num,
 				      uint8_t sgid_index,
 				      struct ibv_qp_semantics *out,
 				      size_t qp_semantic_len)

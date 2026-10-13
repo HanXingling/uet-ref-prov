@@ -137,11 +137,12 @@ struct uet_dev_qp {
 	struct fid_cq cq_fid;
 
 	uint32_t qpn;
-	     /* UET_DEV_QPS_*. Created in RTS! The recovery cycle moves it
-	      * to ERROR and back through RESET. The rings are only run in
-	      * RTS.
+	     /* UET_DEV_QPS_*. Created in RESET, enabled by the modify to
+	      * RTS. The recovery cycle moves it to ERROR and back through
+	      * RESET. The rings are only run in RTS.
 	      */
 	uint32_t state;
+	uint32_t path_mtu; /* bytes; 0 for the instance's */
 	uint32_t pd;
 	uint32_t send_cq;
 	uint32_t recv_cq;

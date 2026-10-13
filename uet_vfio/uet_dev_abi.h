@@ -369,18 +369,26 @@ struct uet_dev_admin_cqe {
 /* Queue pairs. A queue pair is a UET service at a Resource Index, so it
  * becomes an endpoint. The QPN carries the addressing mode, the Resource
  * Index, and the PIDonFEP that identify it.
+ *
+ * QP_MODIFY: param[0] handle, param[1] next state (UET_DEV_QPS_*), param[2]
+ * path MTU in bytes, zero to leave it as it is. The path MTU can only be set
+ * by the modify from RESET to RTS, as the queue pair is enabled. An RTS to RTS
+ * modify that names a different one is refused.
  */
 #define UET_DEV_ADMIN_QP_CREATE		0x0070
 #define UET_DEV_ADMIN_QP_DESTROY	0x0071
 #define UET_DEV_ADMIN_QP_MODIFY		0x0072
 
 /* The states a queue pair can be in (refined state machine). A UET queue pair
- * is created RTS, so there is no INIT and no RTR. A queue pair that has
- * failed can be taken to ERROR, RESET, and brought back which lets an
- * application recover without destroying and rebuilding everything hanging
- * off the queue pair.
+ * is created RESET and goes straight to RTS on its first modify, so there is
+ * no INIT and no RTR. A queue pair that has failed can be taken to ERROR,
+ * RESET, and brought back which lets an application recover without
+ * destroying and rebuilding everything hanging off the queue pair.
  *
- *     create ------> RTS <----------------.
+ *     create
+ *       |
+ *       v
+ *     RESET -------> RTS <----------------.
  *                     | (modify in place)  \
  *                     |                     \
  *                     v                      \
@@ -655,9 +663,10 @@ struct uet_dev_admin_qp_create {
 	uint32_t max_send_sge;
 	uint32_t max_recv_sge;
 	uint32_t db_page;	/* which doorbell page may ring this qp */
-	     /* Largest payload this QP puts in a packet, in bytes. Zero
-	      * takes the instance's. A queue pair may ask for less than the
-	      * link allows, never more, and asking for more is an error.
+	     /* Largest payload this QP puts in a packet, in bytes. Normally
+	      * zero: the modify to RTS sets it, as the queue pair is enabled.
+	      * Zero takes the instance's. A queue pair may ask for less than
+	      * the link allows, never more, and asking for more is an error.
 	      */
 	uint32_t path_mtu;
 	     /* The send and receive rings, allocated by the guest and read
