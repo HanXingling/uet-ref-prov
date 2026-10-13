@@ -372,6 +372,7 @@ void uet_dev_admin_drain_locked(struct uet_dev *dev)
 {
 	struct uet_dev_admin_cmd cmd;
 	struct uet_dev_admin_cqe cqe;
+	uint16_t flags;
 	uint64_t slot;
 	bool ran = false;
 
@@ -411,15 +412,33 @@ void uet_dev_admin_drain_locked(struct uet_dev *dev)
 		uet_dev_admin_execute(dev, &cmd, &cqe);
 		pthread_mutex_unlock(&dev->obj_lock);
 
-		/* write the completion to the admin cq */
+		/* Write the completion to the admin cq. The flags go last:
+		 * VALID tells the driver the entry may be read, so the rest of
+		 * it has to be in memory first.
+		 */
 		slot = (dev->admin_cq_base +
 			((uint64_t)(dev->admin_cq_prod %
 				    dev->admin_cq_entries) *
 			 sizeof(cqe)));
 
+		flags = cqe.flags;
+		cqe.flags = 0;
+
 		if ((dev->backend.dma_write == NULL) ||
 		    (dev->backend.dma_write(dev->backend.ctx, slot, &cqe,
 					    sizeof(cqe)) != 0)) {
+			dev->admin_errors++;
+			dev->admin_sq_cons++;
+			continue;
+		}
+
+		__atomic_thread_fence(__ATOMIC_RELEASE);
+
+		if (dev->backend.dma_write(dev->backend.ctx,
+					   (slot + offsetof(
+						struct uet_dev_admin_cqe,
+						flags)),
+					   &flags, sizeof(flags)) != 0) {
 			dev->admin_errors++;
 			dev->admin_sq_cons++;
 			continue;

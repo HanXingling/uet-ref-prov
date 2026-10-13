@@ -794,37 +794,39 @@ void uet_rw_lock_init(struct uet_rw_lock *lock)
 	lock->val = UET_RW_LOCK_IDLE_VAL;
 }
 
-/* get read access to read-write lock */
+/*
+ * get read access to read-write lock
+ *
+ * The value is the number of readers, or WR_ACQUIRED while a writer holds
+ * the lock. A failed exchange retries from the value it saw, so a reader
+ * joins any number of others and never enters while a writer is inside.
+ * There is no writer preference, so a thread holding read access may take
+ * it again.
+ */
 static void uet_rw_lock_rd(struct uet_rw_lock *lock)
 {
-	uet_rw_lock_val_t expected, new;
-
-	expected = UET_RW_LOCK_IDLE_VAL;
-	new = UET_RW_LOCK_RD_ACQUIRED_VAL;
+	uet_rw_lock_val_t cur;
 
 	while (1) {
-		if (__atomic_compare_exchange_n(
-			&lock->val, &expected, new, false,
+		cur = __atomic_load_n(&lock->val, __ATOMIC_SEQ_CST);
+		if ((cur != UET_RW_LOCK_WR_ACQUIRED_VAL) &&
+		    __atomic_compare_exchange_n(
+			&lock->val, &cur, cur + 1, false,
 			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
 			return;
-		if (new != UET_RW_LOCK_WR_ACQUIRED_VAL) {
-			expected = new;
-			new = expected + 1;
-		}
 	}
 }
 
-/* get write access to read-write lock */
+/* get write access to read-write lock, only from idle */
 static void uet_rw_lock_wr(struct uet_rw_lock *lock)
 {
-	uet_rw_lock_val_t expected, new;
-
-	expected = UET_RW_LOCK_IDLE_VAL;
-	new = UET_RW_LOCK_WR_ACQUIRED_VAL;
+	uet_rw_lock_val_t idle;
 
 	while (1) {
+		/* a failed exchange overwrites this with what it saw */
+		idle = UET_RW_LOCK_IDLE_VAL;
 		if (__atomic_compare_exchange_n(
-			&lock->val, &expected, new, false,
+			&lock->val, &idle, UET_RW_LOCK_WR_ACQUIRED_VAL, false,
 			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
 			return;
 	}
